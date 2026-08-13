@@ -1,0 +1,155 @@
+name: Android
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+concurrency:
+  group: android-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    name: Verify
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Java
+        uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5.7.0
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@9c971963bec38e04b3d30dcc455b5382be2fdbfb # v6.3.0
+
+      - name: Install Android SDK packages
+        shell: bash
+        run: |
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" \
+            "platforms;android-37.0" \
+            "build-tools;37.0.0"
+
+      - name: Run unit tests and lint
+        run: ./gradlew --no-daemon testDebugUnitTest lintDebug
+
+      - name: Validate Compose screenshots
+        run: ./gradlew --no-daemon validateDebugScreenshotTest
+
+      - name: Verify debug packaging on pull requests
+        if: github.event_name == 'pull_request'
+        run: ./gradlew --no-daemon assembleDebug
+
+  publish-test-apk:
+    name: Publish latest test APK
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    needs: verify
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+      contents: read
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Java
+        uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5.7.0
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@9c971963bec38e04b3d30dcc455b5382be2fdbfb # v6.3.0
+
+      - name: Install Android SDK packages
+        shell: bash
+        run: |
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" \
+            "platforms;android-37.0" \
+            "build-tools;37.0.0"
+
+      - name: Build debug APK
+        env:
+          CELESTE_TEST_KEYSTORE_BASE64: ${{ secrets.CELESTE_TEST_KEYSTORE_BASE64 }}
+          CELESTE_TEST_KEYSTORE_PASSWORD: ${{ secrets.CELESTE_TEST_KEYSTORE_PASSWORD }}
+          CELESTE_TEST_KEY_ALIAS: ${{ secrets.CELESTE_TEST_KEY_ALIAS }}
+          CELESTE_TEST_KEYSTORE_PATH: ${{ runner.temp }}/celeste-test.jks
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -z "$CELESTE_TEST_KEYSTORE_BASE64" || -z "$CELESTE_TEST_KEYSTORE_PASSWORD" || -z "$CELESTE_TEST_KEY_ALIAS" ]]; then
+            echo "The test-build signing secrets are not configured." >&2
+            exit 1
+          fi
+          printf '%s' "$CELESTE_TEST_KEYSTORE_BASE64" | base64 --decode > "$CELESTE_TEST_KEYSTORE_PATH"
+          chmod 600 "$CELESTE_TEST_KEYSTORE_PATH"
+          ./gradlew --no-daemon assembleDebug
+
+      - name: Prepare APK
+        shell: bash
+        run: cp app/build/outputs/apk/debug/app-debug.apk Hermes-Celeste-latest.apk
+
+      - name: Upload latest APK
+        id: upload
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          path: Hermes-Celeste-latest.apk
+          if-no-files-found: error
+          retention-days: 90
+          compression-level: 0
+          archive: false
+
+      - name: Remove superseded APK artifacts
+        env:
+          CURRENT_ARTIFACT_ID: ${{ steps.upload.outputs.artifact-id }}
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          while IFS= read -r artifact_id; do
+            if [[ -n "$artifact_id" && "$artifact_id" != "$CURRENT_ARTIFACT_ID" ]]; then
+              gh api --method DELETE \
+                "repos/${GITHUB_REPOSITORY}/actions/artifacts/${artifact_id}"
+            fi
+          done < <(
+            gh api --paginate \
+              "repos/${GITHUB_REPOSITORY}/actions/artifacts?name=Hermes-Celeste-latest.apk&per_page=100" \
+              --jq '.artifacts[].id'
+          )
+
+          mapfile -t remaining_ids < <(
+            gh api --paginate \
+              "repos/${GITHUB_REPOSITORY}/actions/artifacts?name=Hermes-Celeste-latest.apk&per_page=100" \
+              --jq '.artifacts[].id'
+          )
+          if [[ "${#remaining_ids[@]}" -ne 1 || "${remaining_ids[0]}" != "$CURRENT_ARTIFACT_ID" ]]; then
+            echo "Expected only the newly uploaded APK artifact to remain." >&2
+            exit 1
+          fi
+
+      - name: Link test APK
+        env:
+          ARTIFACT_URL: ${{ steps.upload.outputs.artifact-url }}
+        shell: bash
+        run: |
+          {
+            echo "## Hermes Celeste test APK"
+            echo
+            echo "[Download the latest successful debug build](${ARTIFACT_URL})"
+            echo
+            echo "Built from \`${GITHUB_SHA}\`. GitHub sign-in is required."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Remove test keystore
+        if: always()
+        env:
+          CELESTE_TEST_KEYSTORE_PATH: ${{ runner.temp }}/celeste-test.jks
+        shell: bash
+        run: rm -f "$CELESTE_TEST_KEYSTORE_PATH"

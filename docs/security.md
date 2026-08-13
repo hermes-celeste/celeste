@@ -52,6 +52,12 @@ Do not log or fixture:
 
 Use synthetic values in tests and `[REDACTED]` in documentation.
 
+## Test-build signing
+
+GitHub Actions signs the downloadable debug APK with a dedicated test-only key stored in repository Actions secrets. The key exists only to make successive test APKs update-compatible. It must never sign a release or store build.
+
+Do not commit, print, upload as an artifact, or reuse the test keystore or its password. The workflow decodes it into the runner's temporary directory only for packaging and removes it in an `always()` cleanup step. A release signing identity requires a separate design and explicit project-owner approval.
+
 ## Authentication changes
 
 For a new authentication mode:
