@@ -33,6 +33,14 @@ Do not introduce visual-system codenames or revive rejected branding in source, 
 
 Do not duplicate hexadecimal values here. Change tokens in code and validate affected screenshot states.
 
+## Editorial concept anchor
+
+![Recovered Celeste editorial connection concept](references/celeste-editorial-concept.png)
+
+This recovered connection screen is the selected early direction that established Celeste's editorial warmth, serif-led hierarchy, cobalt and coral accents, generous negative space, and restrained halo geometry. It is an iteration anchor, not a claim that the current production UI implements this composition.
+
+The executable source is `app/src/screenshotTest/kotlin/dev/hazydreams/hermesceleste/CelesteEditorialConceptScreenshotTest.kt`. Its accepted screenshot reference is the reproducibility check; `references/celeste-editorial-concept.png` is the stable human-review artifact. Keep the original concept intact. Create additional named concept previews and reference images when exploring revisions, then deliberately promote accepted choices into production components and tokens.
+
 ## Interaction states
 
 Every interactive surface must account for:
