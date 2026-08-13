@@ -85,3 +85,11 @@ Use a real device for Android-only behavior such as lifecycle transitions, IME/i
 There is currently no `app/src/androidTest` suite. The configured instrumentation runner and connected-device tasks do not constitute device coverage; report Android runtime behavior as untested unless it was explicitly exercised.
 
 Base-path-prefixed dashboard routing is supported in source but does not yet have a direct MockWebServer regression. Add one when route joining changes.
+
+## GitHub Actions
+
+`.github/workflows/android.yml` runs the repository checks on pull requests. Pull requests must pass unit tests, lint, screenshot validation, and debug APK assembly without publishing an artifact.
+
+A successful `main` run, including a manually dispatched run, publishes `Hermes-Celeste-latest.apk` as the current test build. The workflow uploads the new APK before deleting older artifacts with the same name, then verifies that exactly one remains. A failed build cannot remove the last known-good package. GitHub requires artifacts to expire; the current APK uses the maximum 90-day retention and requires GitHub sign-in to download.
+
+The test APK is a debug build signed with a dedicated test-only identity, not a release or store artifact. Install it only for project testing. Each successful build uses the same application ID and test signing identity so Android can update-install it over an earlier GitHub Actions build while preserving application data. A locally built debug APK has a different signing identity and cannot update a GitHub-built installation.

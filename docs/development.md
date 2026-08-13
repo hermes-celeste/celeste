@@ -36,6 +36,8 @@ scripts/celeste-env ./gradlew --no-daemon assembleDebug
 
 Use [`testing.md`](testing.md) to select the checks required for a change. `assembleDebug` writes `app/build/outputs/apk/debug/app-debug.apk`.
 
+GitHub Actions uses the checked-in Gradle wrapper directly on a standard Ubuntu runner. Workflow actions must be limited to necessary official actions and pinned to immutable commit SHAs. The CI and current-test-APK behavior is defined in [`testing.md`](testing.md).
+
 ## Change workflow
 
 1. Read `AGENTS.md` and the documents that own the task.

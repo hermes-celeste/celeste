@@ -5,6 +5,8 @@ plugins {
     id("org.jetbrains.kotlin.plugin.serialization")
 }
 
+val testKeystorePath = providers.environmentVariable("CELESTE_TEST_KEYSTORE_PATH").orNull
+
 android {
     namespace = "dev.hazydreams.hermesceleste"
     compileSdk = 37
@@ -27,6 +29,23 @@ android {
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
+    }
+
+    signingConfigs {
+        if (testKeystorePath != null) {
+            create("ciTest") {
+                storeFile = file(testKeystorePath)
+                storePassword = providers.environmentVariable("CELESTE_TEST_KEYSTORE_PASSWORD").get()
+                keyAlias = providers.environmentVariable("CELESTE_TEST_KEY_ALIAS").get()
+                keyPassword = providers.environmentVariable("CELESTE_TEST_KEYSTORE_PASSWORD").get()
+            }
+        }
+    }
+
+    buildTypes {
+        getByName("debug") {
+            signingConfigs.findByName("ciTest")?.let { signingConfig = it }
+        }
     }
 
     packaging {
