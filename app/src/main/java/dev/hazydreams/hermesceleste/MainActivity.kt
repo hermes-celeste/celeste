@@ -27,6 +27,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
@@ -433,6 +434,20 @@ internal fun SessionListScreen(
     }
 }
 
+internal const val STREAMING_TRANSCRIPT_KEY = "streaming:assistant"
+
+internal fun transcriptItemKeys(messages: List<ConversationMessage>): List<String> {
+    val occurrences = mutableMapOf<String, Int>()
+    return messages.mapIndexed { index, message ->
+        val id = message.id?.takeIf(String::isNotBlank)
+            ?: return@mapIndexed "transcript:fallback:$index"
+        val base = "transcript:id:${id.length}:$id"
+        val occurrence = occurrences.getOrDefault(base, 0) + 1
+        occurrences[base] = occurrence
+        if (occurrence == 1) base else "$base:occurrence:$occurrence"
+    }
+}
+
 @Composable
 internal fun ConversationScreen(
     summary: StoredSession,
@@ -450,6 +465,7 @@ internal fun ConversationScreen(
 ) {
     val listState = rememberLazyListState()
     val focusManager = LocalFocusManager.current
+    val transcriptKeys = remember(messages) { transcriptItemKeys(messages) }
     val visibleMessageCount = messages.size + if (streamingText.isNotBlank()) 1 else 0
     LaunchedEffect(visibleMessageCount, streamingText.length) {
         if (visibleMessageCount > 0) listState.animateScrollToItem(visibleMessageCount - 1)
@@ -511,11 +527,14 @@ internal fun ConversationScreen(
                 contentPadding = PaddingValues(horizontal = 16.dp, vertical = 18.dp),
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
-                items(messages, key = { it.id ?: "${it.role}-${it.hashCode()}" }) { message ->
+                itemsIndexed(
+                    items = messages,
+                    key = { index, _ -> transcriptKeys[index] },
+                ) { _, message ->
                     MessageBubble(message)
                 }
                 if (streamingText.isNotBlank()) {
-                    item(key = "streaming-assistant") {
+                    item(key = STREAMING_TRANSCRIPT_KEY) {
                         MessageBubble(
                             ConversationMessage(role = "assistant", text = streamingText, pending = true),
                         )

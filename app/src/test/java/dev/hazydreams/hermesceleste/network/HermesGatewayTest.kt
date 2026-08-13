@@ -11,6 +11,7 @@ import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import mockwebserver3.MockResponse
@@ -92,6 +93,51 @@ class HermesGatewayTest {
         assertEquals("runtime-7", events.single { it.type == "message.delta" }.sessionId)
         assertEquals("hello", events.single { it.type == "message.delta" }.payload.string("text"))
         gateway.close()
+    }
+
+    @Test
+    fun resumedHistoryUsesDurableAndFallbackMessageIdentities() {
+        val messages = decodeGatewayMessages(
+            Json.parseToJsonElement(
+                """[{"row_id":41,"role":"user","text":"Earlier message"},{"role":"tool","name":"terminal","context":"Repeated output"},{"role":"tool","name":"terminal","context":"Repeated output"}]""",
+            ).jsonArray,
+        )
+
+        assertEquals(listOf("row-41", "resume-1", "resume-2"), messages.map { it.id })
+        assertEquals(messages.size, messages.map { it.id }.toSet().size)
+    }
+
+    @Test
+    fun resumedHistoryIgnoresMalformedAndBlankMessageIdentities() {
+        val messages = decodeGatewayMessages(
+            Json.parseToJsonElement(
+                """[
+                    {"row_id":{},"id":"legacy-id","role":"user","text":"One"},
+                    {"row_id":[],"id":" ","message_id":7,"role":"assistant","text":"Two"},
+                    {"row_id":null,"id":true,"role":"assistant","text":"Three"},
+                    {"row_id":" ","id":null,"message_id":false,"role":"tool","text":"Four"}
+                ]""".trimIndent(),
+            ).jsonArray,
+        )
+
+        assertEquals(listOf("legacy-id", "7", "true", "false"), messages.map { it.id })
+    }
+
+    @Test
+    fun resumedHistoryDeduplicatesExplicitAndSyntheticIdentityCollisions() {
+        val messages = decodeGatewayMessages(
+            Json.parseToJsonElement(
+                """[
+                    {"id":"shared","role":"user","text":"One"},
+                    {"message_id":"shared","role":"assistant","text":"Two"},
+                    {"id":"resume-2","role":"assistant","text":"Three"},
+                    {"role":"tool","text":"Four"}
+                ]""".trimIndent(),
+            ).jsonArray,
+        )
+
+        assertEquals(listOf("shared", "resume-1", "resume-2", "resume-3"), messages.map { it.id })
+        assertEquals(messages.size, messages.map { it.id }.toSet().size)
     }
 
     @Test

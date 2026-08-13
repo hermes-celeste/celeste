@@ -73,7 +73,7 @@ suspend fun GatewayConnection.resumeStoredSession(storedSessionId: String): Resu
             ?: result.string("stored_session_id")
             ?: result.string("session_key")
             ?: storedSessionId,
-        messages = result["messages"]?.jsonArray.orEmpty().mapNotNull(::decodeGatewayMessage),
+        messages = decodeGatewayMessages(result["messages"]?.jsonArray.orEmpty()),
         running = running,
         status = status,
         inflightAssistantText = inflightAssistantText(inflight),
@@ -102,6 +102,21 @@ suspend fun GatewayConnection.interruptSession(runtimeSessionId: String): JsonOb
     ).asObject("Hermes returned no interrupt status.")
 }
 
+internal fun decodeGatewayMessages(elements: List<JsonElement>): List<ConversationMessage> {
+    val usedIds = mutableSetOf<String>()
+    return elements.mapIndexedNotNull { index, element ->
+        val message = decodeGatewayMessage(element) ?: return@mapIndexedNotNull null
+        val preferredId = message.id?.takeIf(String::isNotBlank)
+        val id = if (preferredId != null && usedIds.add(preferredId)) {
+            preferredId
+        } else {
+            generateSequence("resume-$index") { current -> "$current-duplicate" }
+                .first(usedIds::add)
+        }
+        message.copy(id = id)
+    }
+}
+
 private fun decodeGatewayMessage(element: JsonElement): ConversationMessage? {
     val row = element as? JsonObject ?: return null
     val role = row.string("role")?.takeIf(String::isNotBlank) ?: return null
@@ -114,10 +129,14 @@ private fun decodeGatewayMessage(element: JsonElement): ConversationMessage? {
         role = role,
         text = text,
         toolName = toolName,
-        id = row["id"]?.jsonPrimitive?.contentOrNull
-            ?: row["message_id"]?.jsonPrimitive?.contentOrNull,
+        id = row["row_id"].scalarIdentity()?.let { "row-$it" }
+            ?: row["id"].scalarIdentity()
+            ?: row["message_id"].scalarIdentity(),
     )
 }
+
+private fun JsonElement?.scalarIdentity(): String? =
+    (this as? JsonPrimitive)?.contentOrNull?.takeIf(String::isNotBlank)
 
 private fun inflightAssistantText(element: JsonElement?): String {
     val row = element as? JsonObject ?: return ""
