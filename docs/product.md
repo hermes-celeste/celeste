@@ -38,9 +38,3 @@ The following surfaces are not implemented yet:
 - the broader Hermes Desktop management surfaces.
 
 This list describes the current boundary, not a promised order of delivery. Update it when a capability crosses from absent to working.
-
-## Source authority
-
-Current official Hermes source is the feature and protocol authority. Design Celeste’s mobile behavior independently using Android-native lifecycle, state, security, accessibility, and background-work patterns.
-
-Protocol source locations and verification rules live in [`hermes-protocol.md`](hermes-protocol.md).
