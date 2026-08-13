@@ -1,0 +1,64 @@
+# Development
+
+## Toolchain
+
+Use `scripts/celeste-env` for every Gradle and Android SDK command. It selects the project toolchain under `~/.local/share/hermes-celeste-toolchain`:
+
+```bash
+scripts/celeste-env ./gradlew --no-daemon tasks
+```
+
+Use the checked-in Gradle wrapper, not a system Gradle installation. Keep `distributionSha256Sum` pinned in `gradle/wrapper/gradle-wrapper.properties`.
+
+The project currently uses Java 17, a single `:app` module, Kotlin, Jetpack Compose, kotlinx.serialization, coroutines, and OkHttp. Build versions and dependency coordinates belong in Gradle files, not this document.
+
+## Host memory constraints
+
+`gradle.properties` deliberately limits heap, workers, and parallelism for the development host. Do not increase the heap or parallel workers without measuring host memory and rerunning a clean build.
+
+Do not combine screenshot rendering and APK packaging in one work phase. LayoutLib and Android packaging can exceed the host memory budget together. Run them in separate Gradle processes and only when the change needs both boundaries verified.
+
+## Common commands
+
+```bash
+# Unit and protocol checks
+scripts/celeste-env ./gradlew --no-daemon testDebugUnitTest
+
+# Android static analysis
+scripts/celeste-env ./gradlew --no-daemon lintDebug
+
+# Accepted UI references
+scripts/celeste-env ./gradlew --no-daemon validateDebugScreenshotTest
+
+# Debug package
+scripts/celeste-env ./gradlew --no-daemon assembleDebug
+```
+
+Use [`testing.md`](testing.md) to select the checks required for a change. `assembleDebug` writes `app/build/outputs/apk/debug/app-debug.apk`.
+
+## Change workflow
+
+1. Read `AGENTS.md` and the documents that own the task.
+2. Inspect the existing implementation and tests before changing architecture.
+3. For Hermes-facing behavior, follow the authority workflow in [`hermes-protocol.md`](hermes-protocol.md).
+4. Make the smallest coherent change across code, tests, and the owning doc.
+5. Run targeted checks during iteration.
+6. Run the full checks required by the changed boundaries.
+7. Finish with `git diff --check` and inspect the complete diff.
+8. Report any runtime surface that was not exercised.
+
+## Android identity
+
+The product and Gradle project are conceptually Celeste. The Android launcher and app-list label is `Hermes Celeste` for searchability. The current application ID and Kotlin namespace are `dev.hazydreams.hermesceleste`; changing an application ID after distribution creates a different Android app, so treat that as a release-level decision.
+
+## Repository policy
+
+The source repository is public at `hermes-celeste/celeste`. Use feature branches and pull requests for normal development once the initial public snapshot is established.
+
+Public source does not authorize a release. Do not publish releases, sign distributable builds, create Play Store infrastructure, or upload artifacts without explicit project-owner approval.
+
+The organization handle does not change the product name. Use `Celeste` in repository-facing branding; `Hermes Celeste` remains the Android launcher and app-list name.
+
+## Generated and private files
+
+Do not commit Gradle/IDE output, local SDK configuration, keystores, or signing properties. `.gitignore` owns the current patterns. Credential and private-data handling is defined in [`security.md`](security.md).

@@ -1,0 +1,87 @@
+# Testing
+
+## Evidence by boundary
+
+Match verification to what changed:
+
+| Change | Required evidence |
+| --- | --- |
+| Documentation only | Link/terminology audit and `git diff --check` |
+| Kotlin state or protocol logic | Focused unit test during iteration, then `testDebugUnitTest` |
+| URL, authentication, HTTP, or WebSocket behavior | MockWebServer/gateway regression plus `testDebugUnitTest`; use the live contract when server admission or shape changed |
+| Compose layout, copy, color, or interaction state | Relevant unit checks plus host screenshot review and `validateDebugScreenshotTest` |
+| Manifest, resources, launcher, packaging, or install behavior | `lintDebug assembleDebug`; device verification when behavior crosses onto Android |
+| Release milestone | Unit tests, lint, screenshots, APK assembly, and meaningful real-device flows |
+
+Always run `git diff --check`. Disclose any changed runtime surface that was not exercised.
+
+## Unit and protocol tests
+
+Tests live under `app/src/test`.
+
+- `DashboardUrlPolicyTest` owns URL normalization and cleartext admission.
+- `DashboardClientTest` owns HTTP/authentication and short WebSocket operations.
+- `HermesGatewayTest` owns readiness, request correlation, events, endpoint refresh, and disconnect behavior.
+- `CelesteViewModelTest` owns session creation/resume, event reduction, interruption, reconnect, and no-resend invariants.
+- `LiveHermesDashboardTest` is the opt-in real-server contract.
+
+Add a regression at the lowest layer that owns the failure. Cross-layer lifecycle invariants belong in the ViewModel tests even when a socket symptom exposed them.
+
+Mock WebSocket tests use real time with `runBlocking`. Do not convert them to `runTest`: virtual-time advancement can outrun real MockWebServer callbacks and create false timeouts. Pure coroutine/state tests can use `runTest`.
+
+Run all local unit tests with:
+
+```bash
+scripts/celeste-env ./gradlew --no-daemon testDebugUnitTest
+```
+
+## Host-rendered Compose screenshots
+
+Screenshot scenarios live in `app/src/screenshotTest`; accepted PNGs live in `app/src/screenshotTestDebug/reference`. The current matrix covers connection, password sign-in, conversation listing, a blank new conversation, composing, streaming, completion, and reconnection.
+
+Validate accepted references:
+
+```bash
+scripts/celeste-env ./gradlew --no-daemon validateDebugScreenshotTest
+```
+
+For an intentionally accepted visual change, update references only after project-owner review:
+
+```bash
+scripts/celeste-env ./gradlew --no-daemon updateDebugScreenshotTest
+scripts/celeste-env ./gradlew --no-daemon validateDebugScreenshotTest
+```
+
+Run update and validation in separate Gradle invocations. A combined task graph can validate stale references before the update runs.
+
+A reference update is not proof by itself. Inspect the generated images for clipping, hierarchy, contrast, copy, and state accuracy.
+
+The screenshot plugin and validation API are experimental, and the current references use exact image comparison. Toolchain, font, renderer, dimensions, preview names, and dependency changes can alter baselines. Host-rendered LayoutLib screenshots do not verify real-device rendering, IME behavior, lifecycle/process death, platform accessibility, or networking.
+
+## Live Hermes contract
+
+Pass the dashboard URL and optional ephemeral token only through the process environment:
+
+```bash
+HERMES_CELESTE_LIVE_URL=http://127.0.0.1:9119 \
+HERMES_CELESTE_LIVE_TOKEN='[REDACTED]' \
+scripts/celeste-env ./gradlew --no-daemon testDebugUnitTest \
+  --tests 'dev.hazydreams.hermesceleste.network.LiveHermesDashboardTest'
+```
+
+The test lists and resumes a real stored session. It skips when the URL is absent. Never print or persist the token. Remove temporary token files and stop any dashboard process created for the test.
+
+## APK and device cadence
+
+Do not build or install an APK for every Kotlin iteration. Use host tests per change and update-install on a real device at meaningful user-facing milestones, preserving app data:
+
+```bash
+scripts/celeste-env ./gradlew --no-daemon lintDebug assembleDebug
+scripts/celeste-env adb install -r app/build/outputs/apk/debug/app-debug.apk
+```
+
+Use a real device for Android-only behavior such as lifecycle transitions, IME/insets, system back, permissions, network changes, launcher assets, and performance. Record the flows and device conditions exercised rather than reporting “tested on device” without specifics.
+
+There is currently no `app/src/androidTest` suite. The configured instrumentation runner and connected-device tasks do not constitute device coverage; report Android runtime behavior as untested unless it was explicitly exercised.
+
+Base-path-prefixed dashboard routing is supported in source but does not yet have a direct MockWebServer regression. Add one when route joining changes.
