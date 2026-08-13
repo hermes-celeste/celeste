@@ -71,6 +71,7 @@ Do not substitute one for the other because they happen to match in a test fixtu
 - A newly created blank runtime may not yet be resumable. If it disconnects before the first prompt, recreate only that untouched empty session and preserve the draft.
 - On foreground, health-check the persistent socket. Replace and reconcile a stale connection rather than trusting an apparently open transport.
 - Ignore events carrying a different non-empty runtime session ID.
+- Give every rendered transcript row a unique UI identity. Prefer a scalar, nonblank Hermes `row_id`; synthesize a deterministic per-resume identity when projections such as tool rows omit one. Namespace Compose keys separately from protocol IDs and occurrence-qualify duplicates so malformed or reused server IDs cannot collide with local, tool, fallback, or streaming rows.
 - Recovered in-flight assistant text may include a prefix already present in persisted history. Render only the unpersisted suffix.
 - Attach the event collector before connecting. `HermesGateway.events` has no replay and a bounded extra buffer, so late collectors can miss conversational events.
 
