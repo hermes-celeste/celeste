@@ -32,7 +32,10 @@ jobs:
 
       - name: Install Android SDK packages
         shell: bash
-        run: sdkmanager "platforms;android-37" "build-tools;37.0.0"
+        run: |
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" \
+            "platforms;android-37" \
+            "build-tools;37.0.0"
 
       - name: Run unit tests and lint
         run: ./gradlew --no-daemon testDebugUnitTest lintDebug
@@ -67,7 +70,10 @@ jobs:
 
       - name: Install Android SDK packages
         shell: bash
-        run: sdkmanager "platforms;android-37" "build-tools;37.0.0"
+        run: |
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" \
+            "platforms;android-37" \
+            "build-tools;37.0.0"
 
       - name: Build debug APK
         env:
