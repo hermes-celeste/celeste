@@ -1,10 +1,14 @@
 package dev.hazydreams.hermesceleste.network
 
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.async
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import mockwebserver3.MockResponse
@@ -330,6 +334,30 @@ class DashboardClientTest {
     }
 
     @Test
+    fun disposableResumeUsesCanonicalGatewayMessageDecoding() = runBlocking {
+        val transcript = """[
+            {"row_id":41,"role":"user","content":"Run the check"},
+            {"role":"assistant","text":"Checking"},
+            {"role":"tool","tool_name":"terminal","context":"Repeated output"},
+            {"role":"tool","name":"terminal","context":"Repeated output"},
+            {"id":"final","role":"assistant","content":"Done"}
+        ]""".trimIndent()
+        server.enqueue(sessionResumeWebSocket(transcript))
+        val baseUrl = server.url("/").toString().trimEnd('/')
+
+        val disposable = DashboardClient().resumeSession(
+            baseUrl = baseUrl,
+            credential = GatewayCredential.None,
+            storedSessionId = "stored-42",
+        )
+        val canonical = decodeGatewayMessages(Json.parseToJsonElement(transcript).jsonArray)
+
+        assertEquals(canonical, disposable.messages)
+        assertEquals(listOf("row-41", "resume-1", "resume-2", "resume-3", "final"), disposable.messages.map { it.id })
+        assertEquals(listOf(null, null, "terminal", "terminal", null), disposable.messages.map { it.toolName })
+    }
+
+    @Test
     fun listsProfilesWithTheOfficialStaticTokenHeader() = runTest {
         server.enqueue(
             MockResponse.Builder()
@@ -352,6 +380,138 @@ class DashboardClientTest {
         val request = server.takeRequest()
         assertEquals("/api/profiles", request.url.encodedPath)
         assertEquals("profile-session-token", request.headers["X-Hermes-Session-Token"])
+    }
+
+    @Test
+    fun missingLegacyProfileCatalogUsesOnlyTheDefaultProfile() = runTest {
+        server.enqueue(MockResponse.Builder().code(404).body("not found").build())
+        val baseUrl = server.url("/").toString().trimEnd('/')
+
+        val profiles = DashboardClient().listProfiles(baseUrl, GatewayCredential.None)
+
+        assertEquals(listOf(DashboardProfile(name = "default", isDefault = true)), profiles)
+    }
+
+    @Test
+    fun profileCatalogFailuresAreNotConvertedToTheDefaultProfile() {
+        val baseUrl = server.url("/").toString().trimEnd('/')
+        listOf(
+            401 to AuthenticationRejected::class.java,
+            403 to AuthenticationRejected::class.java,
+            429 to RateLimited::class.java,
+            500 to TransportUnavailable::class.java,
+        ).forEach { (status, expectedType) ->
+            server.enqueue(MockResponse.Builder().code(status).build())
+
+            val failure = runCatching {
+                runBlocking { DashboardClient().listProfiles(baseUrl, GatewayCredential.None) }
+            }.exceptionOrNull()
+
+            assertTrue("Expected ${expectedType.simpleName} for HTTP $status", expectedType.isInstance(failure))
+        }
+
+        listOf("[]", """{"profiles":[{}]}""").forEach { malformedBody ->
+            server.enqueue(MockResponse.Builder().code(200).body(malformedBody).build())
+            assertThrows(InvalidDashboardResponse::class.java) {
+                runBlocking { DashboardClient().listProfiles(baseUrl, GatewayCredential.None) }
+            }
+        }
+    }
+
+    @Test
+    fun disposableRequestsIgnoreResponsesWithUnexpectedIds() = runBlocking {
+        DisposableOperation.entries.forEach { operation ->
+            server.enqueue(disposableWebSocket(operation) { webSocket ->
+                webSocket.send(successFrame(operation, id = "another-request"))
+                webSocket.send(successFrame(operation))
+            })
+
+            val result = operation.execute(DashboardClient(), server.url("/").toString().trimEnd('/'))
+
+            when (operation) {
+                DisposableOperation.SessionList -> assertTrue((result as List<*>).isEmpty())
+                DisposableOperation.SessionResume -> assertEquals("runtime-7", (result as ResumedSession).runtimeSessionId)
+            }
+        }
+    }
+
+    @Test
+    fun cancellingDisposableRequestsCancelsTheirSockets() = runBlocking {
+        DisposableOperation.entries.forEach { operation ->
+            val requestReceived = CompletableDeferred<Unit>()
+            val disconnected = CompletableDeferred<Unit>()
+            server.enqueue(
+                MockResponse.Builder()
+                    .webSocketUpgrade(
+                        object : WebSocketListener() {
+                            override fun onMessage(webSocket: WebSocket, text: String) {
+                                requestReceived.complete(Unit)
+                            }
+
+                            override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
+                                disconnected.complete(Unit)
+                            }
+
+                            override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
+                                disconnected.complete(Unit)
+                            }
+                        },
+                    )
+                    .build(),
+            )
+            val request = async {
+                operation.execute(DashboardClient(), server.url("/").toString().trimEnd('/'))
+            }
+
+            withTimeout(5_000) { requestReceived.await() }
+            request.cancelAndJoin()
+
+            withTimeout(5_000) { disconnected.await() }
+        }
+    }
+
+    @Test
+    fun disposableRequestsClassifyUpgradeFailures() = runBlocking {
+        val baseUrl = server.url("/").toString().trimEnd('/')
+        DisposableOperation.entries.forEach { operation ->
+            listOf(
+                401 to AuthenticationRejected::class.java,
+                403 to AuthenticationRejected::class.java,
+                429 to RateLimited::class.java,
+                500 to TransportUnavailable::class.java,
+            ).forEach { (status, expectedType) ->
+                server.enqueue(MockResponse.Builder().code(status).build())
+
+                val failure = runCatching {
+                    operation.execute(DashboardClient(), baseUrl)
+                }.exceptionOrNull()
+
+                assertTrue(
+                    "Expected ${expectedType.simpleName} for ${operation.name} HTTP $status",
+                    expectedType.isInstance(failure),
+                )
+                if (status == 500) assertEquals(operation.transportFailure, failure?.message)
+            }
+        }
+    }
+
+    @Test
+    fun disposableRequestsRejectMalformedOperationResponses() = runBlocking {
+        val baseUrl = server.url("/").toString().trimEnd('/')
+        DisposableOperation.entries.forEach { operation ->
+            server.enqueue(disposableWebSocket(operation) { webSocket ->
+                webSocket.send(
+                    """{"jsonrpc":"2.0","id":"${operation.requestId}","result":{}}""",
+                )
+            })
+
+            val failure = runCatching {
+                operation.execute(DashboardClient(), baseUrl)
+            }.exceptionOrNull()
+
+            assertTrue("Expected InvalidDashboardResponse for ${operation.name}", failure is InvalidDashboardResponse)
+            assertEquals(operation.invalidResponse, failure?.message)
+        }
     }
 
     @Test
@@ -444,7 +604,10 @@ class DashboardClientTest {
             )
             .build()
 
-    private fun sessionResumeWebSocket(): MockResponse =
+    private fun sessionResumeWebSocket(
+        messages: String =
+            """[{"role":"user","text":"perfect. lets build that."},{"role":"assistant","text":"on it."}]""",
+    ): MockResponse =
         MockResponse.Builder()
             .webSocketUpgrade(
                 object : WebSocketListener() {
@@ -456,7 +619,7 @@ class DashboardClientTest {
                             request["params"]?.jsonObject?.get("session_id")?.jsonPrimitive?.content,
                         )
                         webSocket.send(
-                            """{"jsonrpc":"2.0","id":"session-resume","result":{"session_id":"runtime-7","resumed":"stored-42","messages":[{"role":"user","text":"perfect. lets build that."},{"role":"assistant","text":"on it."}]}}""",
+                            """{"jsonrpc":"2.0","id":"session-resume","result":{"session_id":"runtime-7","resumed":"stored-42","messages":$messages}}""",
                         )
                     }
 
@@ -466,6 +629,59 @@ class DashboardClientTest {
                 },
             )
             .build()
+
+    private fun disposableWebSocket(
+        operation: DisposableOperation,
+        respond: (WebSocket) -> Unit,
+    ): MockResponse = MockResponse.Builder()
+        .webSocketUpgrade(
+            object : WebSocketListener() {
+                override fun onMessage(webSocket: WebSocket, text: String) {
+                    val request = Json.parseToJsonElement(text).jsonObject
+                    assertEquals(operation.method, request["method"]?.jsonPrimitive?.content)
+                    respond(webSocket)
+                }
+
+                override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
+                    webSocket.close(code, reason)
+                }
+            },
+        )
+        .build()
+
+    private fun successFrame(operation: DisposableOperation, id: String = operation.requestId): String =
+        when (operation) {
+            DisposableOperation.SessionList ->
+                """{"jsonrpc":"2.0","id":"$id","result":{"sessions":[]}}"""
+            DisposableOperation.SessionResume ->
+                """{"jsonrpc":"2.0","id":"$id","result":{"session_id":"runtime-7","resumed":"stored-42","messages":[]}}"""
+        }
+
+    private enum class DisposableOperation(
+        val method: String,
+        val requestId: String,
+        val transportFailure: String,
+        val invalidResponse: String,
+    ) {
+        SessionList(
+            method = "session.list",
+            requestId = "session-list",
+            transportFailure = "Could not open the Hermes session connection.",
+            invalidResponse = "Hermes returned no session list.",
+        ),
+        SessionResume(
+            method = "session.resume",
+            requestId = "session-resume",
+            transportFailure = "Could not open the Hermes conversation.",
+            invalidResponse = "Hermes returned no runtime session identity.",
+        ),
+        ;
+
+        suspend fun execute(client: DashboardClient, baseUrl: String): Any = when (this) {
+            SessionList -> client.listSessions(baseUrl, GatewayCredential.None)
+            SessionResume -> client.resumeSession(baseUrl, GatewayCredential.None, "stored-42")
+        }
+    }
 
     private companion object {
         const val gatewayReadyFrame =

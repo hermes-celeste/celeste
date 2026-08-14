@@ -14,6 +14,7 @@ import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.booleanOrNull
@@ -151,7 +152,11 @@ class AuthenticationRejected(message: String) : DashboardFailure(message)
 
 class RateLimited(message: String) : DashboardFailure(message)
 
-class TransportUnavailable(message: String, cause: Throwable? = null) : DashboardFailure(message, cause)
+class TransportUnavailable(
+    message: String,
+    cause: Throwable? = null,
+    internal val statusCode: Int? = null,
+) : DashboardFailure(message, cause)
 
 class InvalidDashboardResponse(message: String, cause: Throwable? = null) : DashboardFailure(message, cause)
 
@@ -347,27 +352,17 @@ class DashboardClient(
             }
             .get()
             .build()
-        val root = executeJson(request, "Hermes profiles") as? JsonObject
-            ?: throw IOException("Hermes returned no profile catalog.")
-        val profiles = (root["profiles"] as? JsonArray).orEmpty().mapNotNull { element ->
-            when (element) {
-                is JsonObject -> element["name"]?.jsonPrimitive?.contentOrNull
-                    ?.takeIf(String::isNotBlank)
-                    ?.let { name ->
-                        DashboardProfile(
-                            name = name,
-                            isDefault = name == "default" ||
-                                element["is_default"]?.jsonPrimitive?.booleanOrNull == true,
-                            model = element["model"]?.jsonPrimitive?.contentOrNull,
-                            provider = element["provider"]?.jsonPrimitive?.contentOrNull,
-                        )
-                    }
-
-                else -> (element as? JsonPrimitive)?.contentOrNull
-                    ?.takeIf(String::isNotBlank)
-                    ?.let { DashboardProfile(name = it, isDefault = it == "default") }
+        val root = try {
+            executeJson(request, "Hermes profiles")
+        } catch (error: TransportUnavailable) {
+            if (error.statusCode == 404) {
+                return@withContext listOf(DashboardProfile(name = "default", isDefault = true))
             }
-        }.distinctBy(DashboardProfile::name)
+            throw error
+        } as? JsonObject ?: throw InvalidDashboardResponse("Hermes returned no profile catalog.")
+        val rows = root["profiles"] as? JsonArray
+            ?: throw InvalidDashboardResponse("Hermes returned no profile catalog.")
+        val profiles = rows.map(::decodeProfile).distinctBy(DashboardProfile::name)
         if (profiles.any(DashboardProfile::isDefault)) profiles
         else listOf(DashboardProfile(name = "default", isDefault = true)) + profiles
     }
@@ -497,88 +492,81 @@ class DashboardClient(
     private fun failureFor(code: Int, operation: String): DashboardFailure = when (code) {
         401, 403 -> AuthenticationRejected("$operation needs sign-in.")
         429 -> RateLimited("$operation was rate-limited. Try again shortly.")
-        else -> TransportUnavailable("$operation returned HTTP $code.")
+        else -> TransportUnavailable("$operation returned HTTP $code.", statusCode = code)
     }
 
-    private suspend fun requestSessionList(wsUrl: String, limit: Int): List<StoredSession> =
-        suspendCancellableCoroutine { continuation ->
-            val completed = AtomicBoolean(false)
-            lateinit var socket: WebSocket
-
-            fun succeed(sessions: List<StoredSession>) {
-                if (completed.compareAndSet(false, true)) {
-                    socket.close(1000, "session list received")
-                    continuation.resume(sessions)
-                }
-            }
-
-            fun fail(error: Throwable) {
-                if (completed.compareAndSet(false, true)) {
-                    socket.cancel()
-                    continuation.resumeWithException(error)
-                }
-            }
-
-            val listener = object : WebSocketListener() {
-                override fun onOpen(webSocket: WebSocket, response: Response) {
-                    val request = buildJsonObject {
-                        put("jsonrpc", "2.0")
-                        put("id", SESSION_LIST_REQUEST_ID)
-                        put("method", "session.list")
-                        put("params", buildJsonObject { put("limit", limit) })
-                    }
-                    if (!webSocket.send(request.toString())) {
-                        fail(IOException("Hermes rejected the session-list request."))
-                    }
-                }
-
-                override fun onMessage(webSocket: WebSocket, text: String) {
-                    val root = runCatching { json.parseToJsonElement(text).jsonObject }.getOrNull() ?: return
-                    if (root["id"]?.jsonPrimitive?.contentOrNull != SESSION_LIST_REQUEST_ID) return
-                    root["error"]?.jsonObject?.let { error ->
-                        val message = error["message"]?.jsonPrimitive?.contentOrNull ?: "Hermes session list failed."
-                        fail(IOException(message))
-                        return
-                    }
-                    val rows = root["result"]?.jsonObject?.get("sessions")?.jsonArray
-                        ?: run {
-                            fail(IOException("Hermes returned no session list."))
-                            return
-                        }
-                    succeed(rows.mapNotNull(::decodeSession))
-                }
-
-                override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
-                    val error = when (response?.code) {
-                        401, 403 -> AuthenticationRejected("Hermes rejected the dashboard credential.")
-                        429 -> RateLimited("Hermes rate-limited the dashboard connection.")
-                        else -> TransportUnavailable("Could not open the Hermes session connection.", t)
-                    }
-                    fail(error)
-                }
-
-                override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
-                    if (!completed.get()) fail(IOException("Hermes closed the connection before returning sessions."))
-                }
-            }
-
-            socket = httpClient.newWebSocket(Request.Builder().url(wsUrl).build(), listener)
-            continuation.invokeOnCancellation {
-                if (completed.compareAndSet(false, true)) socket.cancel()
-            }
+    private suspend fun requestSessionList(wsUrl: String, limit: Int): List<StoredSession> {
+        val frame = buildJsonObject {
+            put("jsonrpc", "2.0")
+            put("id", SESSION_LIST_REQUEST_ID)
+            put("method", "session.list")
+            put("params", buildJsonObject { put("limit", limit) })
         }
+        return requestSingleWebSocketResponse(
+            request = Request.Builder().url(wsUrl).build(),
+            frame = frame,
+            expectedId = SESSION_LIST_REQUEST_ID,
+            operation = "Hermes session connection",
+        ) { result ->
+            val rows = (result as? JsonObject)?.get("sessions") as? JsonArray
+                ?: throw InvalidDashboardResponse("Hermes returned no session list.")
+            rows.mapNotNull(::decodeSession)
+        }
+    }
 
     private suspend fun requestSessionResume(
         wsUrl: String,
         storedSessionId: String,
-    ): ResumedSession = suspendCancellableCoroutine { continuation ->
+    ): ResumedSession {
+        val frame = buildJsonObject {
+            put("jsonrpc", "2.0")
+            put("id", SESSION_RESUME_REQUEST_ID)
+            put("method", "session.resume")
+            put(
+                "params",
+                buildJsonObject {
+                    put("session_id", storedSessionId)
+                    put("cols", 80)
+                    put("source", "android")
+                },
+            )
+        }
+        return requestSingleWebSocketResponse(
+            request = Request.Builder().url(wsUrl).build(),
+            frame = frame,
+            expectedId = SESSION_RESUME_REQUEST_ID,
+            operation = "Hermes conversation",
+        ) { element ->
+            val result = element as? JsonObject
+                ?: throw InvalidDashboardResponse("Hermes returned no resumed session.")
+            val runtimeId = result["session_id"]?.jsonPrimitive?.contentOrNull.orEmpty()
+            if (runtimeId.isBlank()) {
+                throw InvalidDashboardResponse("Hermes returned no runtime session identity.")
+            }
+            ResumedSession(
+                runtimeSessionId = runtimeId,
+                storedSessionId = result["resumed"]?.jsonPrimitive?.contentOrNull
+                    ?: result["session_key"]?.jsonPrimitive?.contentOrNull
+                    ?: storedSessionId,
+                messages = decodeGatewayMessages(result["messages"]?.jsonArray.orEmpty()),
+            )
+        }
+    }
+
+    private suspend fun <T> requestSingleWebSocketResponse(
+        request: Request,
+        frame: JsonObject,
+        expectedId: String,
+        operation: String,
+        decode: (JsonElement) -> T,
+    ): T = suspendCancellableCoroutine { continuation ->
         val completed = AtomicBoolean(false)
         lateinit var socket: WebSocket
 
-        fun succeed(session: ResumedSession) {
+        fun succeed(value: T) {
             if (completed.compareAndSet(false, true)) {
-                socket.close(1000, "session resumed")
-                continuation.resume(session)
+                socket.close(1000, "response received")
+                continuation.resume(value)
             }
         }
 
@@ -591,79 +579,63 @@ class DashboardClient(
 
         val listener = object : WebSocketListener() {
             override fun onOpen(webSocket: WebSocket, response: Response) {
-                val request = buildJsonObject {
-                    put("jsonrpc", "2.0")
-                    put("id", SESSION_RESUME_REQUEST_ID)
-                    put("method", "session.resume")
-                    put(
-                        "params",
-                        buildJsonObject {
-                            put("session_id", storedSessionId)
-                            put("cols", 80)
-                            put("source", "android")
-                        },
-                    )
-                }
-                if (!webSocket.send(request.toString())) {
-                    fail(IOException("Hermes rejected the session-resume request."))
+                if (!webSocket.send(frame.toString())) {
+                    fail(TransportUnavailable("$operation rejected the request."))
                 }
             }
 
             override fun onMessage(webSocket: WebSocket, text: String) {
-                val root = runCatching { json.parseToJsonElement(text).jsonObject }.getOrNull() ?: return
-                if (root["id"]?.jsonPrimitive?.contentOrNull != SESSION_RESUME_REQUEST_ID) return
-                root["error"]?.jsonObject?.let { error ->
-                    val message = error["message"]?.jsonPrimitive?.contentOrNull
-                        ?: "Hermes could not open that session."
-                    fail(IOException(message))
-                    return
-                }
-                val result = root["result"]?.jsonObject
+                val root = runCatching { json.parseToJsonElement(text) as? JsonObject }
+                    .getOrNull()
                     ?: run {
-                        fail(IOException("Hermes returned no resumed session."))
+                        fail(InvalidDashboardResponse("$operation returned an unreadable response."))
                         return
                     }
-                val runtimeId = result["session_id"]?.jsonPrimitive?.contentOrNull.orEmpty()
-                if (runtimeId.isBlank()) {
-                    fail(IOException("Hermes returned no runtime session identity."))
+                if ((root["id"] as? JsonPrimitive)?.contentOrNull != expectedId) return
+                (root["error"] as? JsonObject)?.let { error ->
+                    fail(IOException((error["message"] as? JsonPrimitive)?.contentOrNull ?: "$operation failed."))
                     return
                 }
-                val resumedId = result["resumed"]?.jsonPrimitive?.contentOrNull
-                    ?: result["session_key"]?.jsonPrimitive?.contentOrNull
-                    ?: storedSessionId
-                val messages = result["messages"]?.jsonArray.orEmpty().mapNotNull(::decodeMessage)
-                succeed(
-                    ResumedSession(
-                        runtimeSessionId = runtimeId,
-                        storedSessionId = resumedId,
-                        messages = messages,
-                    ),
-                )
+                val result = root["result"]
+                    ?: run {
+                        fail(InvalidDashboardResponse("$operation returned no response."))
+                        return
+                    }
+                runCatching { decode(result) }
+                    .onSuccess(::succeed)
+                    .onFailure { error ->
+                        fail(
+                            if (error is DashboardFailure) {
+                                error
+                            } else {
+                                InvalidDashboardResponse("$operation returned an unreadable response.", error)
+                            },
+                        )
+                    }
             }
 
             override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
-                val error = when (response?.code) {
-                    401, 403 -> AuthenticationRejected("Hermes rejected the dashboard credential.")
-                    429 -> RateLimited("Hermes rate-limited the dashboard connection.")
-                    else -> TransportUnavailable("Could not open the Hermes conversation.", t)
-                }
-                fail(error)
+                fail(
+                    when (response?.code) {
+                        401, 403 -> AuthenticationRejected("Hermes rejected the dashboard credential.")
+                        429 -> RateLimited("Hermes rate-limited the dashboard connection.")
+                        else -> TransportUnavailable("Could not open the $operation.", t)
+                    },
+                )
             }
 
             override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
-                if (!completed.get()) {
-                    fail(IOException("Hermes closed the connection before opening the conversation."))
-                }
+                fail(TransportUnavailable("$operation closed before returning a response."))
             }
         }
 
-        socket = httpClient.newWebSocket(Request.Builder().url(wsUrl).build(), listener)
+        socket = httpClient.newWebSocket(request, listener)
         continuation.invokeOnCancellation {
             if (completed.compareAndSet(false, true)) socket.cancel()
         }
     }
 
-    private fun decodeSession(element: kotlinx.serialization.json.JsonElement): StoredSession? {
+    private fun decodeSession(element: JsonElement): StoredSession? {
         val row = element as? JsonObject ?: return null
         val id = row["id"]?.jsonPrimitive?.contentOrNull?.takeIf(String::isNotBlank) ?: return null
         return StoredSession(
@@ -679,14 +651,26 @@ class DashboardClient(
         )
     }
 
-    private fun decodeMessage(element: kotlinx.serialization.json.JsonElement): ConversationMessage? {
-        val row = element as? JsonObject ?: return null
-        val role = row["role"]?.jsonPrimitive?.contentOrNull?.takeIf(String::isNotBlank) ?: return null
-        val toolName = row["name"]?.jsonPrimitive?.contentOrNull
-        val text = row["text"]?.jsonPrimitive?.contentOrNull
-            ?: row["context"]?.jsonPrimitive?.contentOrNull
-            ?: if (role == "tool") toolName.orEmpty() else ""
-        return ConversationMessage(role = role, text = text, toolName = toolName)
+    private fun decodeProfile(element: JsonElement): DashboardProfile {
+        if (element is JsonPrimitive && element.isString) {
+            val name = element.contentOrNull?.takeIf(String::isNotBlank)
+                ?: throw InvalidDashboardResponse("Hermes returned an invalid profile catalog.")
+            return DashboardProfile(name = name, isDefault = name == "default")
+        }
+        val row = element as? JsonObject
+            ?: throw InvalidDashboardResponse("Hermes returned an invalid profile catalog.")
+        val name = (row["name"] as? JsonPrimitive)
+            ?.takeIf { it.isString }
+            ?.contentOrNull
+            ?.takeIf(String::isNotBlank)
+            ?: throw InvalidDashboardResponse("Hermes returned an invalid profile catalog.")
+        return DashboardProfile(
+            name = name,
+            isDefault = name == "default" ||
+                (row["is_default"] as? JsonPrimitive)?.booleanOrNull == true,
+            model = (row["model"] as? JsonPrimitive)?.contentOrNull,
+            provider = (row["provider"] as? JsonPrimitive)?.contentOrNull,
+        )
     }
 
     private fun buildWebSocketUrl(baseUrl: String, parameter: String?, value: String?): String {

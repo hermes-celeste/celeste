@@ -28,6 +28,7 @@ Run agent sessions from the repository root. Hermes loads `AGENTS.md` from the w
 | [`docs/development.md`](docs/development.md) | Toolchain, build setup, repository policy, and local development workflow |
 | [`docs/testing.md`](docs/testing.md) | Test layers, command selection, screenshots, live contracts, and device milestones |
 | [`docs/security.md`](docs/security.md) | Trust boundaries, credential handling, transport rules, backup policy, and sensitive data |
+| [`docs/plans/2026-08-14-codebase-cleanup.md`](docs/plans/2026-08-14-codebase-cleanup.md) | Ordered cleanup scope, exclusions, tasks, and verification gates |
 
 ## Writing docs
 

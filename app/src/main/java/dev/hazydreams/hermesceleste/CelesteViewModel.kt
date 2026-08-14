@@ -485,20 +485,15 @@ internal class CelesteViewModel(
             )
         }.onFailure { error ->
             if (!isCurrentConnectionAttempt(attempt)) return@onFailure
-            dashboard.clearAuthentication()
-            credential = null
-            currentDescriptor = null
             if (error is AuthenticationRejected) {
-                connectionStoreMutex.withLock {
-                    runCatching { connectionStore.clearSecret() }
-                }
-                mutableState.value = manualState(
+                invalidateReusableAuthentication(
                     descriptor = descriptor,
-                    phase = ConnectionPhase.AuthenticationRequired,
                     probe = restoredProbe,
-                    errorMessage = "Saved sign-in is no longer valid. Sign in again.",
                 )
             } else {
+                dashboard.clearAuthentication()
+                credential = null
+                currentDescriptor = null
                 mutableState.value = CelesteUiState(
                     connectionPhase = ConnectionPhase.RestoreFailed,
                     dashboardUrl = descriptor.baseUrl,
@@ -515,12 +510,26 @@ internal class CelesteViewModel(
         selectedCredential: GatewayCredential,
     ): LoadedDashboard {
         val sessions = dashboard.listSessions(baseUrl, selectedCredential)
-        val profiles = runCatching {
-            dashboard.listProfiles(baseUrl, selectedCredential)
-        }.getOrElse {
-            listOf(DashboardProfile(name = "default", isDefault = true))
-        }
+        val profiles = dashboard.listProfiles(baseUrl, selectedCredential)
         return LoadedDashboard(selectedCredential, sessions, profiles)
+    }
+
+    private suspend fun invalidateReusableAuthentication(
+        descriptor: SavedConnectionDescriptor?,
+        probe: DashboardProbeResult? = null,
+    ) {
+        credential = null
+        currentDescriptor = null
+        dashboard.clearAuthentication()
+        connectionStoreMutex.withLock {
+            runCatching { connectionStore.clearSecret() }
+        }
+        mutableState.value = manualState(
+            descriptor = descriptor,
+            phase = ConnectionPhase.AuthenticationRequired,
+            probe = probe,
+            errorMessage = "Saved sign-in is no longer valid. Sign in again.",
+        )
     }
 
     private fun publishConnectedDashboard(
@@ -1095,17 +1104,7 @@ internal class CelesteViewModel(
                     val descriptor = currentDescriptor
                     reconnectJob = null
                     closeGateway()
-                    credential = null
-                    currentDescriptor = null
-                    dashboard.clearAuthentication()
-                    connectionStoreMutex.withLock {
-                        runCatching { connectionStore.clearSecret() }
-                    }
-                    mutableState.value = manualState(
-                        descriptor = descriptor,
-                        phase = ConnectionPhase.AuthenticationRequired,
-                        errorMessage = "Saved sign-in is no longer valid. Sign in again.",
-                    )
+                    invalidateReusableAuthentication(descriptor)
                     return@launch
                 }
                 reconnectAttempts += 1

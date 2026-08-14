@@ -10,6 +10,14 @@ import dev.hazydreams.hermesceleste.network.DashboardProbeResult
 import dev.hazydreams.hermesceleste.network.DashboardProfile
 import dev.hazydreams.hermesceleste.network.StoredSession
 import dev.hazydreams.hermesceleste.ui.HermesCelesteTheme
+import dev.hazydreams.hermesceleste.ui.conversation.ConversationScreen
+import dev.hazydreams.hermesceleste.ui.gateway.ConnectionLoadingScreen
+import dev.hazydreams.hermesceleste.ui.gateway.ConnectionUnavailableScreen
+import dev.hazydreams.hermesceleste.ui.gateway.GatewaySettingsActions
+import dev.hazydreams.hermesceleste.ui.gateway.GatewaySettingsScreen
+import dev.hazydreams.hermesceleste.ui.gateway.GatewaySettingsUiState
+import dev.hazydreams.hermesceleste.ui.gateway.SettingsScreen
+import dev.hazydreams.hermesceleste.ui.sessions.SessionListScreen
 
 private val previewSessions = listOf(
     StoredSession(
@@ -66,30 +74,90 @@ private val previewMessages = listOf(
     ),
 )
 
+private val gatewaySetupState = GatewaySettingsUiState(
+    dashboardUrl = "",
+    probe = null,
+    savedAuthMode = null,
+    username = "",
+    password = "",
+    sessionToken = "",
+    connectionPhase = ConnectionPhase.ManualSetup,
+    loadingMessage = null,
+    errorMessage = null,
+)
+
+private val passwordSignInState = GatewaySettingsUiState(
+    dashboardUrl = "https://hermes.example.net",
+    probe = DashboardProbeResult(
+        baseUrl = "https://hermes.example.net",
+        authRequired = true,
+        providers = listOf(AuthProvider("password", "Password", supportsPassword = true)),
+        version = "0.20.0",
+    ),
+    savedAuthMode = SavedAuthMode.ProviderSession,
+    username = "celeste",
+    password = "preview-only",
+    sessionToken = "",
+    connectionPhase = ConnectionPhase.AuthenticationRequired,
+    loadingMessage = null,
+    errorMessage = "Sign in required.",
+)
+
+private val sessionTokenState = GatewaySettingsUiState(
+    dashboardUrl = "http://100.64.0.12:9119",
+    probe = DashboardProbeResult(
+        baseUrl = "http://100.64.0.12:9119",
+        authRequired = false,
+        providers = emptyList(),
+        version = "0.20.0",
+    ),
+    savedAuthMode = null,
+    username = "",
+    password = "",
+    sessionToken = "",
+    connectionPhase = ConnectionPhase.ManualSetup,
+    loadingMessage = null,
+    errorMessage = null,
+)
+
+private val connectedGatewayState = GatewaySettingsUiState(
+    dashboardUrl = "https://hermes.example.net",
+    probe = DashboardProbeResult(
+        baseUrl = "https://hermes.example.net",
+        authRequired = true,
+        providers = listOf(AuthProvider("password", "Password", supportsPassword = true)),
+        version = "0.20.0",
+    ),
+    savedAuthMode = SavedAuthMode.ProviderSession,
+    username = "celeste",
+    password = "",
+    sessionToken = "",
+    connectionPhase = ConnectionPhase.Connected,
+    loadingMessage = null,
+    errorMessage = null,
+)
+
+private fun gatewayPreviewActions(onBack: (() -> Unit)?): GatewaySettingsActions =
+    GatewaySettingsActions(
+        onUsernameChange = {},
+        onPasswordChange = {},
+        onSessionTokenChange = {},
+        onApplyAddress = {},
+        onConnect = {},
+        onRetry = {},
+        onSignOut = {},
+        onForgetConnection = {},
+        onBack = onBack,
+    )
+
 @PreviewTest
 @Preview(name = "01 · Gateway setup", widthDp = 390, heightDp = 844, showBackground = true)
 @Composable
 fun GatewaySetupPreviewScreenshot() {
     HermesCelesteTheme {
         GatewaySettingsScreen(
-            dashboardUrl = "",
-            probe = null,
-            savedAuthMode = null,
-            username = "",
-            onUsernameChange = {},
-            password = "",
-            onPasswordChange = {},
-            sessionToken = "",
-            onSessionTokenChange = {},
-            connectionPhase = ConnectionPhase.ManualSetup,
-            loadingMessage = null,
-            errorMessage = null,
-            onApplyAddress = {},
-            onConnect = {},
-            onRetry = {},
-            onSignOut = {},
-            onForgetConnection = {},
-            onBack = null,
+            state = gatewaySetupState,
+            actions = gatewayPreviewActions(onBack = null),
         )
     }
 }
@@ -100,29 +168,8 @@ fun GatewaySetupPreviewScreenshot() {
 fun PasswordConnectPreviewScreenshot() {
     HermesCelesteTheme {
         GatewaySettingsScreen(
-            dashboardUrl = "https://hermes.example.net",
-            probe = DashboardProbeResult(
-                baseUrl = "https://hermes.example.net",
-                authRequired = true,
-                providers = listOf(AuthProvider("password", "Password", supportsPassword = true)),
-                version = "0.20.0",
-            ),
-            savedAuthMode = SavedAuthMode.ProviderSession,
-            username = "celeste",
-            onUsernameChange = {},
-            password = "preview-only",
-            onPasswordChange = {},
-            sessionToken = "",
-            onSessionTokenChange = {},
-            connectionPhase = ConnectionPhase.AuthenticationRequired,
-            loadingMessage = null,
-            errorMessage = "Sign in required.",
-            onApplyAddress = {},
-            onConnect = {},
-            onRetry = {},
-            onSignOut = {},
-            onForgetConnection = {},
-            onBack = {},
+            state = passwordSignInState,
+            actions = gatewayPreviewActions(onBack = {}),
         )
     }
 }
@@ -133,29 +180,8 @@ fun PasswordConnectPreviewScreenshot() {
 fun SessionTokenGatewayPreviewScreenshot() {
     HermesCelesteTheme {
         GatewaySettingsScreen(
-            dashboardUrl = "http://100.64.0.12:9119",
-            probe = DashboardProbeResult(
-                baseUrl = "http://100.64.0.12:9119",
-                authRequired = false,
-                providers = emptyList(),
-                version = "0.20.0",
-            ),
-            savedAuthMode = null,
-            username = "",
-            onUsernameChange = {},
-            password = "",
-            onPasswordChange = {},
-            sessionToken = "",
-            onSessionTokenChange = {},
-            connectionPhase = ConnectionPhase.ManualSetup,
-            loadingMessage = null,
-            errorMessage = null,
-            onApplyAddress = {},
-            onConnect = {},
-            onRetry = {},
-            onSignOut = {},
-            onForgetConnection = {},
-            onBack = null,
+            state = sessionTokenState,
+            actions = gatewayPreviewActions(onBack = null),
         )
     }
 }
@@ -180,29 +206,8 @@ fun SettingsPreviewScreenshot() {
 fun ConnectedGatewayPreviewScreenshot() {
     HermesCelesteTheme {
         GatewaySettingsScreen(
-            dashboardUrl = "https://hermes.example.net",
-            probe = DashboardProbeResult(
-                baseUrl = "https://hermes.example.net",
-                authRequired = true,
-                providers = listOf(AuthProvider("password", "Password", supportsPassword = true)),
-                version = "0.20.0",
-            ),
-            savedAuthMode = SavedAuthMode.ProviderSession,
-            username = "celeste",
-            onUsernameChange = {},
-            password = "",
-            onPasswordChange = {},
-            sessionToken = "",
-            onSessionTokenChange = {},
-            connectionPhase = ConnectionPhase.Connected,
-            loadingMessage = null,
-            errorMessage = null,
-            onApplyAddress = {},
-            onConnect = {},
-            onRetry = {},
-            onSignOut = {},
-            onForgetConnection = {},
-            onBack = {},
+            state = connectedGatewayState,
+            actions = gatewayPreviewActions(onBack = {}),
         )
     }
 }

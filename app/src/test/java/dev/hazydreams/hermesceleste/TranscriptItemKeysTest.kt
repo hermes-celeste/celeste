@@ -1,6 +1,8 @@
 package dev.hazydreams.hermesceleste
 
 import dev.hazydreams.hermesceleste.network.ConversationMessage
+import dev.hazydreams.hermesceleste.ui.conversation.STREAMING_TRANSCRIPT_KEY
+import dev.hazydreams.hermesceleste.ui.conversation.transcriptItemKeys
 import org.junit.Assert.assertEquals
 import org.junit.Test
 
