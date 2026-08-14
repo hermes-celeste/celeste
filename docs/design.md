@@ -2,9 +2,11 @@
 
 ## Direction
 
-Celeste uses an editorial, heavenly visual language: deep ink, warm light, cobalt, coral, and restrained halo geometry. The interface should feel calm, legible, and native to Android rather than like a miniature Desktop window.
+Celeste uses a luminous, minimal heavenly visual language: near-white ivory, ink, warm gold, hairline controls, restrained halo geometry, and a subtle top-down warmth. The interface should feel calm, spacious, and native to Android rather than like a miniature Desktop window.
 
-The current implementation is dark-only. Light and dark modes are equal intended product surfaces; do not claim light-mode support until it is implemented and screenshot-tested.
+Apple software is a quality calibration, not a visual identity to copy: prefer quiet hierarchy, clean sans-serif typography, minimal explanatory copy, precise spacing, and controls that feel inevitable. Serif type is a rare atmospheric accent, not the default interface voice. A subtle top-down warmth can unify every surface; halo details belong at edges, transitions, and connection states so conversation-heavy surfaces stay clear.
+
+The current implementation establishes the light surface first. Dark mode remains an intended product surface; do not claim dark-mode support until it is implemented and screenshot-tested.
 
 Do not introduce visual-system codenames or revive rejected branding in source, tests, documentation, or assets.
 
@@ -17,18 +19,18 @@ Do not introduce visual-system codenames or revive rejected branding in source, 
 - **State is semantic.** Derive visuals from authoritative gateway/session state, not from animation-local state.
 - **More than color.** Pair color with copy, shape, motion, or iconography for state distinctions.
 - **Android-native behavior.** Respect system back, IME, navigation insets, lifecycle, accessibility, and reduced motion.
+- **One visual system from launch onward.** The native launch window, adaptive icon, system bars, popups, and dialogs must use the same ivory, ink, and warm-gold palette as Compose.
 - **Polish the common path.** Connection, session selection, composing, streaming, stopping, and recovery deserve complete states before decorative breadth.
 
 ## Current tokens
 
 `app/src/main/java/dev/hazydreams/hermesceleste/ui/CelesteTheme.kt` owns executable color values. This document owns their intended roles:
 
-- ink — page background and strongest contrast field;
-- panel / raised panel — grouping and layered transcript surfaces;
-- coral — primary action and connected/available emphasis;
-- cobalt — secondary action, user authorship, and synchronization;
-- gold — active Hermes work and streaming attention;
-- warm text / muted text — reading hierarchy;
+- ivory / white — page background and raised controls;
+- ink — text, primary outlines, and strongest contrast;
+- panel / raised panel — quiet grouping and transcript differentiation;
+- gold — luminous decoration and halo atmosphere; use the deeper accessible gold token for text, controls, connection state, and active Hermes work;
+- muted text / hairline — secondary hierarchy and boundaries;
 - error — actionable failure state.
 
 Do not duplicate hexadecimal values here. Change tokens in code and validate affected screenshot states.

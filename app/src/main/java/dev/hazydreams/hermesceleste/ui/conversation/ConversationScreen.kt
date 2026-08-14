@@ -7,13 +7,19 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.WindowInsetsSides
+import androidx.compose.foundation.layout.asPaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -23,10 +29,12 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.remember
@@ -42,13 +50,17 @@ import androidx.compose.ui.unit.sp
 import dev.hazydreams.hermesceleste.TurnState
 import dev.hazydreams.hermesceleste.network.ConversationMessage
 import dev.hazydreams.hermesceleste.network.StoredSession
+import dev.hazydreams.hermesceleste.ui.CelesteBackdrop
 import dev.hazydreams.hermesceleste.ui.CelesteBlue
 import dev.hazydreams.hermesceleste.ui.CelesteCoral
 import dev.hazydreams.hermesceleste.ui.CelesteError
-import dev.hazydreams.hermesceleste.ui.CelesteGold
+import dev.hazydreams.hermesceleste.ui.CelesteGoldText
+import dev.hazydreams.hermesceleste.ui.CelesteHairline
+import dev.hazydreams.hermesceleste.ui.CelesteInk
 import dev.hazydreams.hermesceleste.ui.CelesteMuted
 import dev.hazydreams.hermesceleste.ui.CelestePanel
-import dev.hazydreams.hermesceleste.ui.CelesteBackdrop
+import dev.hazydreams.hermesceleste.ui.CelestePaper
+
 import dev.hazydreams.hermesceleste.ui.StatusMessage
 
 @Composable
@@ -70,53 +82,70 @@ internal fun ConversationScreen(
     val focusManager = LocalFocusManager.current
     val transcriptKeys = remember(messages) { transcriptItemKeys(messages) }
     val visibleMessageCount = messages.size + if (streamingText.isNotBlank()) 1 else 0
+    val safeDrawingInsets = WindowInsets.safeDrawing
+    val headerTopPadding = maxOf(
+        34.dp,
+        safeDrawingInsets.asPaddingValues().calculateTopPadding() + 10.dp,
+    )
     LaunchedEffect(visibleMessageCount, streamingText.length) {
         if (visibleMessageCount > 0) listState.animateScrollToItem(visibleMessageCount - 1)
     }
 
-    CelesteBackdrop {
-        Column(Modifier.fillMaxSize().padding(top = 46.dp)) {
+    CelesteBackdrop(showOrnament = false) {
+        Column(
+            Modifier
+                .fillMaxSize()
+                .windowInsetsPadding(safeDrawingInsets.only(WindowInsetsSides.Horizontal))
+                .padding(top = headerTopPadding),
+        ) {
             Row(
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp),
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 18.dp),
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(14.dp),
             ) {
-                OutlinedButton(onClick = onBack, shape = RoundedCornerShape(14.dp)) { Text("Back") }
-                Column(Modifier.weight(1f)) {
-                    Text(
-                        summary.title.ifBlank { "Conversation" },
-                        fontSize = 20.sp,
-                        fontWeight = FontWeight.SemiBold,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                    Text(
-                        text = when (turnState) {
-                            TurnState.Idle -> "Connected to your shared Hermes session"
-                            TurnState.Running -> "Hermes is responding"
-                            TurnState.Synchronizing -> "Synchronizing conversation"
-                            TurnState.Reconnecting -> "Reconnecting to Hermes"
-                        },
-                        color = when (turnState) {
-                            TurnState.Idle -> CelesteCoral
-                            TurnState.Running -> CelesteGold
-                            TurnState.Synchronizing, TurnState.Reconnecting -> CelesteBlue
-                        },
-                        fontSize = 12.sp,
-                    )
+                TextButton(
+                    onClick = onBack,
+                    contentPadding = PaddingValues(horizontal = 6.dp, vertical = 8.dp),
+                ) {
+                    Text("←  Back", color = CelesteBlue, fontWeight = FontWeight.SemiBold)
                 }
+                Spacer(Modifier.weight(1f))
                 if (turnState == TurnState.Running || turnState == TurnState.Synchronizing) {
                     CircularProgressIndicator(
                         modifier = Modifier.size(18.dp),
-                        strokeWidth = 2.dp,
-                        color = if (turnState == TurnState.Running) CelesteGold else CelesteBlue,
+                        strokeWidth = 1.8.dp,
+                        color = turnStateColor(turnState),
+                    )
+                }
+            }
+            Column(Modifier.fillMaxWidth().padding(horizontal = 24.dp)) {
+                Text(
+                    summary.title.ifBlank { "Conversation" },
+                    style = MaterialTheme.typography.headlineMedium,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Spacer(Modifier.height(6.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    androidx.compose.foundation.layout.Box(
+                        Modifier.size(6.dp).background(turnStateColor(turnState), androidx.compose.foundation.shape.CircleShape),
+                    )
+                    Spacer(Modifier.size(7.dp))
+                    Text(
+                        text = when (turnState) {
+                            TurnState.Idle -> "Connected"
+                            TurnState.Running -> "Responding"
+                            TurnState.Synchronizing -> "Synchronizing"
+                            TurnState.Reconnecting -> "Reconnecting"
+                        },
+                        color = CelesteMuted,
+                        fontSize = 12.sp,
                     )
                 }
             }
 
             if (loadingMessage != null || errorMessage != null) {
                 Column(
-                    modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 10.dp),
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 12.dp),
                     verticalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
                     loadingMessage?.let { StatusMessage(it, CelesteBlue, showSpinner = true) }
@@ -127,8 +156,8 @@ internal fun ConversationScreen(
             LazyColumn(
                 state = listState,
                 modifier = Modifier.weight(1f).fillMaxWidth(),
-                contentPadding = PaddingValues(horizontal = 16.dp, vertical = 18.dp),
-                verticalArrangement = Arrangement.spacedBy(10.dp),
+                contentPadding = PaddingValues(horizontal = 24.dp, vertical = 26.dp),
+                verticalArrangement = Arrangement.spacedBy(25.dp),
             ) {
                 itemsIndexed(
                     items = messages,
@@ -148,11 +177,11 @@ internal fun ConversationScreen(
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .background(CelestePanel.copy(alpha = 0.96f))
-                    .border(1.dp, Color.White.copy(alpha = 0.07f))
+                    .background(CelestePanel)
+                    .border(1.dp, CelesteHairline)
                     .navigationBarsPadding()
                     .imePadding()
-                    .padding(horizontal = 14.dp, vertical = 12.dp),
+                    .padding(horizontal = 16.dp, vertical = 14.dp),
             ) {
                 OutlinedTextField(
                     value = draft,
@@ -167,11 +196,12 @@ internal fun ConversationScreen(
                                 TurnState.Synchronizing -> "Synchronizing…"
                                 TurnState.Reconnecting -> "Keep drafting while Celeste reconnects…"
                             },
+                            color = CelesteMuted,
                         )
                     },
                     minLines = 1,
                     maxLines = 5,
-                    shape = RoundedCornerShape(18.dp),
+                    shape = RoundedCornerShape(22.dp),
                     keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
                     keyboardActions = KeyboardActions(
                         onSend = {
@@ -181,9 +211,14 @@ internal fun ConversationScreen(
                             }
                         },
                     ),
+                    textStyle = MaterialTheme.typography.bodyLarge,
                     colors = OutlinedTextFieldDefaults.colors(
-                        focusedBorderColor = CelesteCoral,
-                        unfocusedBorderColor = Color.White.copy(alpha = 0.14f),
+                        focusedBorderColor = CelesteBlue,
+                        unfocusedBorderColor = CelesteHairline,
+                        focusedContainerColor = CelestePaper,
+                        unfocusedContainerColor = CelestePaper,
+                        disabledContainerColor = CelestePaper,
+                        cursorColor = CelesteBlue,
                     ),
                 )
                 Spacer(Modifier.height(10.dp))
@@ -194,10 +229,10 @@ internal fun ConversationScreen(
                 ) {
                     Text(
                         text = when (turnState) {
-                            TurnState.Idle -> "Shared with Hermes Desktop"
-                            TurnState.Running -> "Streaming live"
-                            TurnState.Synchronizing -> "Refreshing history"
-                            TurnState.Reconnecting -> "Draft kept on this screen"
+                            TurnState.Idle -> ""
+                            TurnState.Running -> "Responding"
+                            TurnState.Synchronizing -> "Synchronizing"
+                            TurnState.Reconnecting -> "Draft saved here"
                         },
                         color = CelesteMuted,
                         fontSize = 11.sp,
@@ -206,13 +241,19 @@ internal fun ConversationScreen(
                     when (turnState) {
                         TurnState.Running -> OutlinedButton(
                             onClick = onInterrupt,
-                            shape = RoundedCornerShape(14.dp),
-                        ) { Text("Stop") }
+                            modifier = Modifier.height(46.dp),
+                            shape = RoundedCornerShape(23.dp),
+                            border = androidx.compose.foundation.BorderStroke(1.dp, CelesteCoral),
+                            colors = ButtonDefaults.outlinedButtonColors(contentColor = CelesteCoral),
+                        ) { Text("Stop", fontWeight = FontWeight.SemiBold) }
 
                         TurnState.Reconnecting -> OutlinedButton(
                             onClick = onReconnect,
-                            shape = RoundedCornerShape(14.dp),
-                        ) { Text("Retry") }
+                            modifier = Modifier.height(46.dp),
+                            shape = RoundedCornerShape(23.dp),
+                            border = androidx.compose.foundation.BorderStroke(1.dp, CelesteBlue),
+                            colors = ButtonDefaults.outlinedButtonColors(contentColor = CelesteBlue),
+                        ) { Text("Retry", fontWeight = FontWeight.SemiBold) }
 
                         else -> Button(
                             onClick = {
@@ -220,15 +261,24 @@ internal fun ConversationScreen(
                                 focusManager.clearFocus()
                             },
                             enabled = draft.isNotBlank() && turnState == TurnState.Idle,
-                            shape = RoundedCornerShape(14.dp),
+                            modifier = Modifier.height(46.dp),
+                            shape = RoundedCornerShape(23.dp),
                             colors = ButtonDefaults.buttonColors(
-                                containerColor = CelesteCoral,
-                                contentColor = Color(0xFF07110D),
+                                containerColor = CelesteInk,
+                                contentColor = CelestePaper,
+                                disabledContainerColor = CelesteHairline,
+                                disabledContentColor = CelesteMuted,
                             ),
-                        ) { Text("Send", fontWeight = FontWeight.Bold) }
+                        ) { Text("Send  →", fontWeight = FontWeight.Bold) }
                     }
                 }
             }
         }
     }
+}
+
+private fun turnStateColor(turnState: TurnState): Color = when (turnState) {
+    TurnState.Idle -> CelesteCoral
+    TurnState.Running -> CelesteGoldText
+    TurnState.Synchronizing, TurnState.Reconnecting -> CelesteBlue
 }
