@@ -262,9 +262,9 @@ class HermesGateway(
         error: Throwable = IOException(reason),
     ) {
         socket = null
+        if (!intentionalClose) mutableState.value = GatewayConnectionState.Disconnected(reason)
         if (!opened.isCompleted) opened.completeExceptionally(error)
         failPending(error)
-        if (!intentionalClose) mutableState.value = GatewayConnectionState.Disconnected(reason)
     }
 
     private fun failPending(error: Throwable) {
