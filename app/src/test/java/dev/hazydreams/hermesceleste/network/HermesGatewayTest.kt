@@ -73,6 +73,22 @@ class HermesGatewayTest {
     }
 
     @Test
+    fun websocketUpgradeAuthenticationRejectionPreservesTypedFailure() = runBlocking {
+        listOf(401, 403).forEach { status ->
+            server.enqueue(MockResponse.Builder().code(status).build())
+            val gateway = gateway()
+
+            val failure = runCatching { gateway.connect() }.exceptionOrNull()
+
+            assertTrue(failure is AuthenticationRejected)
+            assertEquals(
+                GatewayConnectionState.Disconnected("Hermes rejected the dashboard credential."),
+                gateway.state.value,
+            )
+        }
+    }
+
+    @Test
     fun correlatesRpcResponsesAndPublishesStreamEvents() = runBlocking {
         server.enqueue(chatWebSocket())
         val gateway = gateway()
