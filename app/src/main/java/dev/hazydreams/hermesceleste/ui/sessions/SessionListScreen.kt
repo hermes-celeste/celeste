@@ -1,7 +1,5 @@
 package dev.hazydreams.hermesceleste.ui.sessions
 
-import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -14,11 +12,13 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -29,18 +29,22 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import dev.hazydreams.hermesceleste.network.DashboardProfile
 import dev.hazydreams.hermesceleste.network.StoredSession
+import dev.hazydreams.hermesceleste.ui.CelesteBackdrop
 import dev.hazydreams.hermesceleste.ui.CelesteBlue
+
 import dev.hazydreams.hermesceleste.ui.CelesteError
+import dev.hazydreams.hermesceleste.ui.CelesteHairline
+import dev.hazydreams.hermesceleste.ui.CelesteInk
 import dev.hazydreams.hermesceleste.ui.CelesteMuted
 import dev.hazydreams.hermesceleste.ui.CelestePanel
-import dev.hazydreams.hermesceleste.ui.CelesteBackdrop
+
+import dev.hazydreams.hermesceleste.ui.EditorialDivider
 import dev.hazydreams.hermesceleste.ui.StatusMessage
 
 @Composable
@@ -56,26 +60,31 @@ internal fun SessionListScreen(
     onSettings: () -> Unit,
 ) {
     var profileMenuExpanded by remember { mutableStateOf(false) }
-    CelesteBackdrop {
-        Column(Modifier.fillMaxSize().padding(top = 46.dp)) {
+
+    CelesteBackdrop(showOrnament = false) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(top = 44.dp),
+        ) {
             Row(
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(14.dp),
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 28.dp),
+                verticalAlignment = Alignment.Top,
             ) {
                 Column(Modifier.weight(1f)) {
-                    Text("Conversations", fontSize = 26.sp, fontWeight = FontWeight.SemiBold)
-                    Text("${sessions.size} from this Hermes", color = CelesteMuted, fontSize = 13.sp)
+                    Text("Conversations", style = MaterialTheme.typography.headlineLarge)
                 }
                 TextButton(
                     onClick = onSettings,
                     enabled = loadingMessage == null,
+                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 8.dp),
                 ) {
-                    Text("Settings")
+                    Text("Settings", color = CelesteBlue, fontWeight = FontWeight.SemiBold)
                 }
             }
+
             Row(
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 12.dp),
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 28.dp, vertical = 24.dp),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(10.dp),
             ) {
@@ -83,14 +92,20 @@ internal fun SessionListScreen(
                     OutlinedButton(
                         onClick = { profileMenuExpanded = true },
                         enabled = loadingMessage == null,
-                        modifier = Modifier.fillMaxWidth(),
-                        shape = RoundedCornerShape(14.dp),
+                        modifier = Modifier.fillMaxWidth().height(50.dp),
+                        shape = RoundedCornerShape(25.dp),
+                        border = androidx.compose.foundation.BorderStroke(1.dp, CelesteHairline),
+                        colors = ButtonDefaults.outlinedButtonColors(contentColor = CelesteInk),
                     ) {
-                        Text("Profile: ${selectedProfile.replaceFirstChar(Char::uppercase)}")
+                        Text(
+                            "${selectedProfile.replaceFirstChar(Char::uppercase)}  ↓",
+                            style = MaterialTheme.typography.labelLarge,
+                        )
                     }
                     DropdownMenu(
                         expanded = profileMenuExpanded,
                         onDismissRequest = { profileMenuExpanded = false },
+                        containerColor = CelestePanel,
                     ) {
                         profiles.forEach { profile ->
                             DropdownMenuItem(
@@ -107,58 +122,69 @@ internal fun SessionListScreen(
                         }
                     }
                 }
-                Button(
+                OutlinedButton(
                     onClick = onNewConversation,
                     enabled = loadingMessage == null,
-                    shape = RoundedCornerShape(14.dp),
+                    modifier = Modifier.height(50.dp),
+                    shape = RoundedCornerShape(25.dp),
+                    contentPadding = PaddingValues(horizontal = 20.dp),
+                    border = androidx.compose.foundation.BorderStroke(1.dp, CelesteInk),
+                    colors = ButtonDefaults.outlinedButtonColors(contentColor = CelesteInk),
                 ) {
-                    Text("New chat")
+                    Text("New chat  +", fontWeight = FontWeight.SemiBold)
                 }
             }
+
             if (loadingMessage != null || errorMessage != null) {
-                Column(Modifier.padding(horizontal = 20.dp, vertical = 12.dp)) {
+                Column(
+                    modifier = Modifier.padding(horizontal = 28.dp, vertical = 4.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
                     loadingMessage?.let { StatusMessage(it, CelesteBlue, showSpinner = true) }
                     errorMessage?.let { StatusMessage(it, CelesteError) }
                 }
             }
+
             LazyColumn(
-                contentPadding = PaddingValues(horizontal = 20.dp, vertical = 18.dp),
-                verticalArrangement = Arrangement.spacedBy(10.dp),
+                modifier = Modifier.fillMaxWidth(),
+                contentPadding = PaddingValues(start = 28.dp, end = 28.dp, top = 4.dp, bottom = 40.dp),
             ) {
-                items(sessions, key = { it.id }) { session ->
+                itemsIndexed(
+                    items = sessions,
+                    key = { _, session -> session.id },
+                ) { _, session ->
                     Column(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .background(CelestePanel.copy(alpha = 0.94f), RoundedCornerShape(20.dp))
-                            .border(1.dp, Color.White.copy(alpha = 0.07f), RoundedCornerShape(20.dp))
                             .clickable(enabled = loadingMessage == null) { onSessionSelected(session) }
-                            .padding(18.dp),
+                            .padding(vertical = 21.dp),
                     ) {
                         Text(
                             session.title.ifBlank { "Untitled conversation" },
-                            fontSize = 16.sp,
-                            fontWeight = FontWeight.SemiBold,
-                            maxLines = 1,
+                            style = MaterialTheme.typography.headlineMedium,
+                            maxLines = 2,
                             overflow = TextOverflow.Ellipsis,
                         )
                         if (session.preview.isNotBlank()) {
-                            Spacer(Modifier.height(7.dp))
+                            Spacer(Modifier.height(9.dp))
                             Text(
                                 session.preview,
                                 color = CelesteMuted,
-                                fontSize = 13.sp,
-                                lineHeight = 19.sp,
+                                style = MaterialTheme.typography.bodyMedium,
                                 maxLines = 2,
                                 overflow = TextOverflow.Ellipsis,
                             )
                         }
-                        Spacer(Modifier.height(10.dp))
+                        Spacer(Modifier.height(13.dp))
                         Text(
-                            "${session.messageCount} messages  •  ${session.profile}  •  ${session.source.ifBlank { "Hermes" }}",
-                            color = CelesteBlue.copy(alpha = 0.86f),
-                            fontSize = 11.sp,
+                            "${session.messageCount} MESSAGES",
+                            color = CelesteMuted,
+                            fontSize = 10.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            letterSpacing = 0.7.sp,
                         )
                     }
+                    EditorialDivider()
                 }
             }
         }

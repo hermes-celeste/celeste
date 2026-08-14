@@ -13,11 +13,15 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -25,8 +29,11 @@ import dev.hazydreams.hermesceleste.network.ConversationMessage
 import dev.hazydreams.hermesceleste.ui.CelesteBlue
 import dev.hazydreams.hermesceleste.ui.CelesteCoral
 import dev.hazydreams.hermesceleste.ui.CelesteGold
-import dev.hazydreams.hermesceleste.ui.CelestePanel
+import dev.hazydreams.hermesceleste.ui.CelesteHairline
+import dev.hazydreams.hermesceleste.ui.CelesteInk
+import dev.hazydreams.hermesceleste.ui.CelesteMuted
 import dev.hazydreams.hermesceleste.ui.CelestePanelRaised
+import dev.hazydreams.hermesceleste.ui.CelesteSoftBlue
 
 internal const val STREAMING_TRANSCRIPT_KEY = "streaming:assistant"
 
@@ -44,59 +51,104 @@ internal fun transcriptItemKeys(messages: List<ConversationMessage>): List<Strin
 
 @Composable
 internal fun MessageBubble(message: ConversationMessage) {
-    val isUser = message.role == "user"
-    val isAssistant = message.role == "assistant"
+    when (message.role) {
+        "user" -> UserMessage(message)
+        "assistant" -> AssistantMessage(message)
+        else -> ToolMessage(message)
+    }
+}
+
+@Composable
+private fun UserMessage(message: ConversationMessage) {
     Row(
         modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = if (isUser) Arrangement.End else Arrangement.Start,
+        horizontalArrangement = Arrangement.End,
     ) {
         Column(
             modifier = Modifier
-                .fillMaxWidth(if (isUser) 0.88f else 0.94f)
-                .background(
-                    when {
-                        isUser -> CelesteBlue.copy(alpha = 0.16f)
-                        isAssistant -> CelestePanel
-                        else -> CelestePanelRaised.copy(alpha = 0.72f)
-                    },
-                    RoundedCornerShape(18.dp),
-                )
-                .border(
-                    1.dp,
-                    if (message.pending && isAssistant) {
-                        CelesteGold.copy(alpha = 0.34f)
-                    } else {
-                        Color.White.copy(alpha = 0.06f)
-                    },
-                    RoundedCornerShape(18.dp),
-                )
-                .padding(horizontal = 16.dp, vertical = 13.dp),
+                .fillMaxWidth(0.88f)
+                .background(CelesteSoftBlue, RoundedCornerShape(20.dp))
+                .padding(horizontal = 17.dp, vertical = 15.dp),
         ) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(
-                    when (message.role) {
-                        "user" -> "You"
-                        "assistant" -> "Hermes"
-                        "tool" -> message.toolName ?: "Tool"
-                        else -> message.role.replaceFirstChar(Char::uppercase)
-                    },
-                    color = if (isUser) CelesteBlue else CelesteCoral,
-                    fontSize = 11.sp,
-                    fontWeight = FontWeight.Bold,
-                )
-                if (message.pending) {
-                    Spacer(Modifier.size(7.dp))
-                    Box(
-                        Modifier
-                            .size(6.dp)
-                            .background(if (isAssistant) CelesteGold else CelesteBlue, CircleShape),
-                    )
-                }
-            }
+            MessageLabel("You", CelesteBlue, message.pending)
             if (message.text.isNotBlank()) {
-                Spacer(Modifier.height(5.dp))
-                Text(message.text, fontSize = 14.sp, lineHeight = 20.sp)
+                Spacer(Modifier.height(6.dp))
+                Text(
+                    text = message.text,
+                    color = CelesteInk,
+                    style = MaterialTheme.typography.bodyLarge,
+                )
             }
+        }
+    }
+}
+
+@Composable
+private fun AssistantMessage(message: ConversationMessage) {
+    val accent = CelesteCoral
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .drawBehind {
+                drawLine(
+                    color = accent,
+                    start = Offset(0f, 0f),
+                    end = Offset(0f, size.height),
+                    strokeWidth = 2.dp.toPx(),
+                )
+            }
+            .padding(start = 17.dp, end = 8.dp, top = 3.dp, bottom = 3.dp),
+    ) {
+        MessageLabel("Hermes", accent, message.pending)
+        if (message.text.isNotBlank()) {
+            Spacer(Modifier.height(8.dp))
+            Text(
+                text = message.text,
+                color = CelesteInk,
+                style = MaterialTheme.typography.bodyLarge,
+            )
+        }
+    }
+}
+
+@Composable
+private fun ToolMessage(message: ConversationMessage) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(CelestePanelRaised.copy(alpha = 0.72f), RoundedCornerShape(14.dp))
+            .border(1.dp, CelesteHairline, RoundedCornerShape(14.dp))
+            .padding(horizontal = 15.dp, vertical = 13.dp),
+    ) {
+        MessageLabel(
+            message.toolName?.replace('_', ' ') ?: "Tool",
+            CelesteGold,
+            message.pending,
+        )
+        if (message.text.isNotBlank()) {
+            Spacer(Modifier.height(6.dp))
+            Text(
+                text = message.text,
+                color = CelesteMuted,
+                style = MaterialTheme.typography.bodyMedium,
+            )
+        }
+    }
+}
+
+@Composable
+private fun MessageLabel(label: String, color: Color, pending: Boolean) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Text(
+            text = label.uppercase(),
+            color = color,
+            fontSize = 10.sp,
+            fontWeight = FontWeight.Bold,
+            letterSpacing = 1.sp,
+        )
+        if (pending) {
+            Spacer(Modifier.size(7.dp))
+            Box(Modifier.size(6.dp).background(CelesteGold, CircleShape))
         }
     }
 }

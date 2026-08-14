@@ -1,13 +1,15 @@
 package dev.hazydreams.hermesceleste.ui
 
 import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.CircularProgressIndicator
@@ -22,9 +24,12 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.BlurredEdgeTreatment
-import androidx.compose.ui.draw.blur
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -34,8 +39,8 @@ import dev.hazydreams.hermesceleste.ConnectionPhase
 import dev.hazydreams.hermesceleste.ui.conversation.ConversationScreen
 import dev.hazydreams.hermesceleste.ui.gateway.ConnectionLoadingScreen
 import dev.hazydreams.hermesceleste.ui.gateway.ConnectionUnavailableScreen
-import dev.hazydreams.hermesceleste.ui.gateway.GatewaySettingsScreen
 import dev.hazydreams.hermesceleste.ui.gateway.GatewaySettingsActions
+import dev.hazydreams.hermesceleste.ui.gateway.GatewaySettingsScreen
 import dev.hazydreams.hermesceleste.ui.gateway.GatewaySettingsUiState
 import dev.hazydreams.hermesceleste.ui.gateway.SettingsScreen
 import dev.hazydreams.hermesceleste.ui.sessions.SessionListScreen
@@ -158,41 +163,140 @@ private fun GatewaySettingsRoute(
 }
 
 @Composable
-internal fun CelesteBackdrop(content: @Composable BoxScope.() -> Unit) {
+internal fun CelesteBackdrop(
+    showOrnament: Boolean = true,
+    content: @Composable BoxScope.() -> Unit,
+) {
     Box(
-        modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background),
+        modifier = Modifier
+            .fillMaxSize()
+            .background(MaterialTheme.colorScheme.background),
     ) {
-        Box(
-            modifier = Modifier
-                .align(Alignment.TopEnd)
-                .padding(top = 32.dp, end = 4.dp)
-                .size(210.dp)
-                .blur(72.dp, edgeTreatment = BlurredEdgeTreatment.Unbounded)
-                .background(CelesteBlue.copy(alpha = 0.18f), CircleShape),
-        )
-        Box(
-            modifier = Modifier
-                .align(Alignment.BottomStart)
-                .size(180.dp)
-                .blur(64.dp, edgeTreatment = BlurredEdgeTreatment.Unbounded)
-                .background(CelesteCoral.copy(alpha = 0.13f), CircleShape),
-        )
-        CompositionLocalProvider(
-            LocalContentColor provides MaterialTheme.colorScheme.onBackground,
-        ) {
+        Canvas(Modifier.fillMaxSize()) {
+            drawRect(
+                brush = Brush.verticalGradient(
+                    colors = listOf(
+                        CelesteGold.copy(alpha = 0.08f),
+                        CelesteGold.copy(alpha = 0.025f),
+                        Color.Transparent,
+                    ),
+                    startY = 0f,
+                    endY = size.height * 0.38f,
+                ),
+            )
+
+            if (showOrnament) {
+                val haloCenter = Offset(size.width * 0.98f, size.height * 0.055f)
+
+                listOf(
+                    168f to 0.48f,
+                    228f to 0.30f,
+                    292f to 0.18f,
+                ).forEach { (radius, alpha) ->
+                    drawCircle(
+                        color = CelesteGold.copy(alpha = alpha),
+                        radius = radius,
+                        center = haloCenter,
+                        style = Stroke(width = if (radius == 168f) 1.8f else 1f),
+                    )
+                }
+
+                drawArc(
+                    color = CelesteGold.copy(alpha = 0.58f),
+                    startAngle = 116f,
+                    sweepAngle = 54f,
+                    useCenter = false,
+                    topLeft = Offset(haloCenter.x - 168f, haloCenter.y - 168f),
+                    size = Size(336f, 336f),
+                    style = Stroke(width = 2.2f, cap = StrokeCap.Round),
+                )
+
+                val star = Offset(size.width * 0.74f, size.height * 0.14f)
+                drawLine(
+                    color = CelesteGold.copy(alpha = 0.54f),
+                    start = star - Offset(0f, 17f),
+                    end = star + Offset(0f, 17f),
+                    strokeWidth = 1f,
+                    cap = StrokeCap.Round,
+                )
+                drawLine(
+                    color = CelesteGold.copy(alpha = 0.54f),
+                    start = star - Offset(12f, 0f),
+                    end = star + Offset(12f, 0f),
+                    strokeWidth = 1f,
+                    cap = StrokeCap.Round,
+                )
+            }
+        }
+        CompositionLocalProvider(LocalContentColor provides MaterialTheme.colorScheme.onBackground) {
             content()
         }
     }
 }
 
 @Composable
+internal fun CelesteWordmark(
+    trailing: String,
+    modifier: Modifier = Modifier,
+    trailingColor: Color = CelesteMuted,
+) {
+    Row(
+        modifier = modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            text = "HERMES CELESTE",
+            color = CelesteInk,
+            fontSize = 11.sp,
+            fontWeight = FontWeight.Bold,
+            letterSpacing = 1.8.sp,
+        )
+        Text(
+            text = trailing.uppercase(),
+            color = trailingColor,
+            fontSize = 10.sp,
+            fontWeight = FontWeight.SemiBold,
+            letterSpacing = 1.2.sp,
+        )
+    }
+}
+
+@Composable
+internal fun CelesteSectionLabel(text: String, modifier: Modifier = Modifier) {
+    Text(
+        text = text.uppercase(),
+        color = CelesteMuted,
+        style = MaterialTheme.typography.labelMedium,
+        modifier = modifier,
+    )
+}
+
+@Composable
+internal fun EditorialDivider(modifier: Modifier = Modifier) {
+    Box(modifier.fillMaxWidth().height(1.dp).background(CelesteHairline))
+}
+
+@Composable
 internal fun StatusMessage(message: String, color: Color, showSpinner: Boolean = false) {
-    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(9.dp)) {
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(9.dp),
+    ) {
         if (showSpinner) {
-            CircularProgressIndicator(modifier = Modifier.size(14.dp), strokeWidth = 2.dp, color = color)
+            CircularProgressIndicator(
+                modifier = Modifier.size(14.dp),
+                strokeWidth = 1.7.dp,
+                color = color,
+            )
         } else {
-            Box(Modifier.size(8.dp).background(color, CircleShape))
+            Box(Modifier.size(7.dp).background(color, CircleShape))
         }
-        Text(message, color = color, fontSize = 14.sp, fontWeight = FontWeight.Medium)
+        Text(
+            text = message,
+            color = color,
+            style = MaterialTheme.typography.bodyMedium,
+            fontWeight = FontWeight.Medium,
+        )
     }
 }

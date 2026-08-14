@@ -1,6 +1,7 @@
 package dev.hazydreams.hermesceleste.ui.gateway
 
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -8,7 +9,6 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -43,8 +43,10 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -52,13 +54,21 @@ import androidx.compose.ui.unit.sp
 import dev.hazydreams.hermesceleste.ConnectionPhase
 import dev.hazydreams.hermesceleste.connection.SavedAuthMode
 import dev.hazydreams.hermesceleste.network.DashboardProbeResult
+import dev.hazydreams.hermesceleste.ui.CelesteBackdrop
 import dev.hazydreams.hermesceleste.ui.CelesteBlue
 import dev.hazydreams.hermesceleste.ui.CelesteCoral
 import dev.hazydreams.hermesceleste.ui.CelesteError
 import dev.hazydreams.hermesceleste.ui.CelesteGold
+import dev.hazydreams.hermesceleste.ui.CelesteHairline
+import dev.hazydreams.hermesceleste.ui.CelesteInk
 import dev.hazydreams.hermesceleste.ui.CelesteMuted
 import dev.hazydreams.hermesceleste.ui.CelestePanel
-import dev.hazydreams.hermesceleste.ui.CelesteBackdrop
+import dev.hazydreams.hermesceleste.ui.CelestePanelRaised
+import dev.hazydreams.hermesceleste.ui.CelestePaper
+import dev.hazydreams.hermesceleste.ui.CelestePaperRaised
+import dev.hazydreams.hermesceleste.ui.CelesteSectionLabel
+import dev.hazydreams.hermesceleste.ui.CelesteWordmark
+import dev.hazydreams.hermesceleste.ui.EditorialDivider
 import dev.hazydreams.hermesceleste.ui.StatusMessage
 
 internal data class GatewaySettingsUiState(
@@ -89,17 +99,23 @@ internal data class GatewaySettingsActions(
 internal fun ConnectionLoadingScreen() {
     CelesteBackdrop {
         Column(
-            modifier = Modifier.fillMaxSize(),
-            verticalArrangement = Arrangement.Center,
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(horizontal = 28.dp, vertical = 38.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
+            CelesteWordmark(trailing = "PRIVATE", trailingColor = CelesteGold)
+            Spacer(Modifier.weight(1f))
             CelesteHalo()
-            Spacer(Modifier.height(28.dp))
-            CircularProgressIndicator(
-                modifier = Modifier.size(22.dp),
-                strokeWidth = 2.dp,
-                color = CelesteCoral,
+            Spacer(Modifier.height(26.dp))
+            Text(
+                text = "Finding your Hermes",
+                style = MaterialTheme.typography.headlineMedium,
+                textAlign = TextAlign.Center,
             )
+            Spacer(Modifier.height(14.dp))
+            StatusMessage("Restoring your private connection", CelesteBlue, showSpinner = true)
+            Spacer(Modifier.weight(1f))
         }
     }
 }
@@ -114,38 +130,38 @@ internal fun ConnectionUnavailableScreen(
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(horizontal = 28.dp, vertical = 54.dp),
-            verticalArrangement = Arrangement.Center,
-            horizontalAlignment = Alignment.CenterHorizontally,
+                .padding(horizontal = 28.dp, vertical = 38.dp),
         ) {
-            CelesteHalo()
-            Spacer(Modifier.height(28.dp))
+            CelesteWordmark(trailing = "OFFLINE", trailingColor = CelesteError)
+            Spacer(Modifier.weight(0.72f))
             Text(
-                text = "Can’t connect",
-                color = MaterialTheme.colorScheme.onBackground,
-                fontSize = 28.sp,
-                fontWeight = FontWeight.SemiBold,
-                letterSpacing = (-0.5).sp,
-                textAlign = TextAlign.Center,
+                text = "Hermes is\nout of reach.",
+                style = MaterialTheme.typography.displayMedium,
             )
             Spacer(Modifier.height(22.dp))
-            CelesteCard {
-                errorMessage?.let { StatusMessage(it, CelesteError) }
-                if (errorMessage != null) Spacer(Modifier.height(18.dp))
-                CelesteButton(
-                    text = "Retry",
-                    loading = false,
-                    enabled = true,
-                    onClick = onRetry,
-                )
-                Spacer(Modifier.height(6.dp))
-                TextButton(
-                    onClick = onSettings,
-                    modifier = Modifier.fillMaxWidth(),
-                ) {
-                    Text("Gateway settings")
-                }
+            Text(
+                text = "Check the saved address or try again.",
+                color = CelesteMuted,
+                style = MaterialTheme.typography.bodyLarge,
+            )
+            errorMessage?.let {
+                Spacer(Modifier.height(26.dp))
+                StatusMessage(it, CelesteError)
             }
+            Spacer(Modifier.height(34.dp))
+            CelestePrimaryButton(
+                text = "Try again",
+                loading = false,
+                enabled = true,
+                onClick = onRetry,
+            )
+            TextButton(
+                onClick = onSettings,
+                modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+            ) {
+                Text("Review Gateway settings", color = CelesteBlue)
+            }
+            Spacer(Modifier.weight(1f))
         }
     }
 }
@@ -161,42 +177,42 @@ internal fun SettingsScreen(
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(top = 46.dp, start = 20.dp, end = 20.dp),
+                .padding(horizontal = 28.dp, vertical = 38.dp),
         ) {
-            SettingsHeader(title = "Settings", onBack = onBack)
-            Spacer(Modifier.height(30.dp))
-            Text("Connection", color = CelesteMuted, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
-            Spacer(Modifier.height(10.dp))
+            EditorialHeader(title = "Settings", onBack = onBack)
+            Spacer(Modifier.height(44.dp))
+            CelesteSectionLabel("Connection")
+            Spacer(Modifier.height(12.dp))
+            EditorialDivider()
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .background(CelestePanel.copy(alpha = 0.94f), RoundedCornerShape(20.dp))
-                    .border(1.dp, Color.White.copy(alpha = 0.07f), RoundedCornerShape(20.dp))
                     .clickable(onClick = onGateway)
-                    .padding(horizontal = 18.dp, vertical = 17.dp),
+                    .padding(vertical = 20.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Column(Modifier.weight(1f)) {
-                    Text("Gateway", fontSize = 17.sp, fontWeight = FontWeight.SemiBold)
-                    Spacer(Modifier.height(3.dp))
+                    Text("Gateway", style = MaterialTheme.typography.titleLarge)
+                    Spacer(Modifier.height(5.dp))
                     Text(
                         dashboardUrl.ifBlank { "Not configured" },
                         color = CelesteMuted,
-                        fontSize = 13.sp,
+                        style = MaterialTheme.typography.bodyMedium,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                     )
                 }
-                Box(
-                    Modifier
-                        .size(8.dp)
-                        .background(connectionStatusColor(connectionPhase), CircleShape),
+                StatusDot(connectionPhase)
+                Spacer(Modifier.size(8.dp))
+                Text(
+                    connectionStatusLabel(connectionPhase),
+                    color = CelesteMuted,
+                    style = MaterialTheme.typography.bodyMedium,
                 )
-                Spacer(Modifier.size(9.dp))
-                Text(connectionStatusLabel(connectionPhase), color = CelesteMuted, fontSize = 13.sp)
                 Spacer(Modifier.size(10.dp))
-                Text("›", color = CelesteMuted, fontSize = 24.sp)
+                Text("→", color = CelesteInk, fontSize = 18.sp)
             }
+            EditorialDivider()
         }
     }
 }
@@ -215,109 +231,105 @@ internal fun GatewaySettingsScreen(
     val connectionPhase = state.connectionPhase
     val loadingMessage = state.loadingMessage
     val errorMessage = state.errorMessage
-    val onUsernameChange = actions.onUsernameChange
-    val onPasswordChange = actions.onPasswordChange
-    val onSessionTokenChange = actions.onSessionTokenChange
-    val onApplyAddress = actions.onApplyAddress
-    val onConnect = actions.onConnect
-    val onRetry = actions.onRetry
-    val onSignOut = actions.onSignOut
-    val onForgetConnection = actions.onForgetConnection
     val onBack = actions.onBack
     var address by rememberSaveable(dashboardUrl) { mutableStateOf(dashboardUrl) }
     var confirmForgetConnection by remember { mutableStateOf(false) }
     val isConnected = connectionPhase == ConnectionPhase.Connected
     val addressChanged = address.trim().trimEnd('/') != dashboardUrl.trim().trimEnd('/')
     val effectiveProbe = probe?.takeIf { !addressChanged }
+    val initialSetup = onBack == null && dashboardUrl.isBlank()
 
     CelesteBackdrop {
         Column(
             modifier = Modifier
                 .fillMaxSize()
                 .verticalScroll(rememberScrollState())
-                .padding(top = 46.dp, start = 20.dp, end = 20.dp, bottom = 42.dp),
+                .padding(horizontal = 28.dp, vertical = 38.dp),
         ) {
-            if (onBack == null && dashboardUrl.isBlank()) {
-                Column(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                ) {
-                    CelesteHalo()
-                    Spacer(Modifier.height(20.dp))
-                    Text("Hermes Celeste", fontSize = 30.sp, fontWeight = FontWeight.SemiBold)
-                    Spacer(Modifier.height(4.dp))
-                    Text("Your Hermes, carried forward.", color = CelesteMuted, fontSize = 15.sp)
-                }
-                Spacer(Modifier.height(34.dp))
-            } else {
-                SettingsHeader(title = "Gateway", onBack = onBack)
-                Spacer(Modifier.height(26.dp))
-            }
-
-            CelesteCard {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text("Status", color = CelesteMuted, fontSize = 14.sp)
-                    Spacer(Modifier.weight(1f))
-                    Box(
-                        Modifier
-                            .size(8.dp)
-                            .background(connectionStatusColor(connectionPhase), CircleShape),
-                    )
-                    Spacer(Modifier.size(8.dp))
-                    Text(connectionStatusLabel(connectionPhase), fontSize = 14.sp, fontWeight = FontWeight.Medium)
-                }
-                Spacer(Modifier.height(18.dp))
-                CelesteTextField(
-                    value = address,
-                    onValueChange = { address = it },
-                    label = "Dashboard address",
-                    placeholder = "100.x.x.x:9119",
+            if (initialSetup) {
+                CelesteWordmark(trailing = "PRIVATE", trailingColor = CelesteGold)
+                Spacer(Modifier.height(108.dp))
+                Text(
+                    text = "Your Hermes,",
+                    style = MaterialTheme.typography.displayMedium,
                 )
+                Text(
+                    text = "carried forward.",
+                    color = CelesteInk,
+                    fontFamily = FontFamily.Serif,
+                    fontSize = 41.sp,
+                    lineHeight = 44.sp,
+                    letterSpacing = (-1.2).sp,
+                )
+                Spacer(Modifier.height(20.dp))
+                Text(
+                    text = "Continue where you left off.",
+                    color = CelesteMuted,
+                    style = MaterialTheme.typography.bodyLarge,
+                )
+                Spacer(Modifier.height(104.dp))
+            } else {
+                EditorialHeader(title = "Gateway", onBack = onBack)
+                Spacer(Modifier.height(42.dp))
+            }
 
-                if (isConnected && !addressChanged && loadingMessage == null) {
-                    Spacer(Modifier.height(4.dp))
-                    TextButton(
-                        onClick = onRetry,
-                        modifier = Modifier.align(Alignment.End),
-                    ) {
-                        Text("Reconnect")
-                    }
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                CelesteSectionLabel("Dashboard address", Modifier.weight(1f))
+                if (!initialSetup) {
+                    StatusDot(connectionPhase)
+                    Spacer(Modifier.size(7.dp))
+                    Text(
+                        connectionStatusLabel(connectionPhase),
+                        color = CelesteMuted,
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Medium,
+                    )
                 }
             }
+            Spacer(Modifier.height(11.dp))
+            CelesteTextField(
+                value = address,
+                onValueChange = { address = it },
+                placeholder = "hermes.example.net",
+            )
+
 
             if (!isConnected && effectiveProbe != null) {
-                Spacer(Modifier.height(16.dp))
-                CelesteCard {
-                    Text("Authentication", fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
-                    Spacer(Modifier.height(16.dp))
-                    when {
-                        !effectiveProbe.authRequired -> CelesteTextField(
-                            value = sessionToken,
-                            onValueChange = onSessionTokenChange,
-                            label = "Session token",
-                            placeholder = "Optional",
+                Spacer(Modifier.height(30.dp))
+                EditorialDivider()
+                Spacer(Modifier.height(24.dp))
+                CelesteSectionLabel("Authentication")
+                Spacer(Modifier.height(18.dp))
+                when {
+                    !effectiveProbe.authRequired -> CelesteLabeledField(
+                        value = sessionToken,
+                        onValueChange = actions.onSessionTokenChange,
+                        label = "Session token",
+                        placeholder = "Optional",
+                        password = true,
+                    )
+
+                    effectiveProbe.supportsPassword -> {
+                        CelesteLabeledField(
+                            value = username,
+                            onValueChange = actions.onUsernameChange,
+                            label = "Username",
+                            placeholder = "Username",
+                        )
+                        Spacer(Modifier.height(16.dp))
+                        CelesteLabeledField(
+                            value = password,
+                            onValueChange = actions.onPasswordChange,
+                            label = "Password",
+                            placeholder = "Password",
                             password = true,
                         )
-
-                        effectiveProbe.supportsPassword -> {
-                            CelesteTextField(
-                                value = username,
-                                onValueChange = onUsernameChange,
-                                label = "Username",
-                                placeholder = "Username",
-                            )
-                            Spacer(Modifier.height(12.dp))
-                            CelesteTextField(
-                                value = password,
-                                onValueChange = onPasswordChange,
-                                label = "Password",
-                                placeholder = "Password",
-                                password = true,
-                            )
-                        }
-
-                        else -> StatusMessage("Browser sign-in isn’t available in this build.", CelesteError)
                     }
+
+                    else -> StatusMessage("Browser sign-in isn’t available in this build.", CelesteError)
                 }
             } else if (
                 isConnected &&
@@ -325,32 +337,36 @@ internal fun GatewaySettingsScreen(
                 savedAuthMode != null &&
                 savedAuthMode != SavedAuthMode.Open
             ) {
-                Spacer(Modifier.height(16.dp))
-                CelesteCard {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Column(Modifier.weight(1f)) {
-                            Text("Authentication", color = CelesteMuted, fontSize = 13.sp)
-                            Spacer(Modifier.height(3.dp))
-                            Text(
-                                if (savedAuthMode == SavedAuthMode.ProviderSession) {
-                                    username.ifBlank { "Signed in" }
-                                } else {
-                                    "Session token"
-                                },
-                                fontSize = 15.sp,
-                                fontWeight = FontWeight.Medium,
-                            )
-                        }
-                        TextButton(onClick = onSignOut) { Text("Sign out") }
+                Spacer(Modifier.height(30.dp))
+                EditorialDivider()
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(vertical = 18.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column(Modifier.weight(1f)) {
+                        CelesteSectionLabel("Authentication")
+                        Spacer(Modifier.height(6.dp))
+                        Text(
+                            if (savedAuthMode == SavedAuthMode.ProviderSession) {
+                                username.ifBlank { "Signed in" }
+                            } else {
+                                "Session token"
+                            },
+                            style = MaterialTheme.typography.titleMedium,
+                        )
+                    }
+                    TextButton(onClick = actions.onSignOut) {
+                        Text("Sign out", color = CelesteBlue)
                     }
                 }
+                EditorialDivider()
             }
 
             val visibleError = errorMessage.takeUnless {
                 connectionPhase == ConnectionPhase.AuthenticationRequired
             }
             AnimatedVisibility(visibleError != null || loadingMessage != null) {
-                Column(modifier = Modifier.padding(horizontal = 4.dp, vertical = 16.dp)) {
+                Column(modifier = Modifier.padding(vertical = 22.dp)) {
                     loadingMessage?.let { StatusMessage(it, CelesteBlue, showSpinner = true) }
                     if (loadingMessage != null && visibleError != null) Spacer(Modifier.height(10.dp))
                     visibleError?.let { StatusMessage(it, CelesteError) }
@@ -365,10 +381,10 @@ internal fun GatewaySettingsScreen(
             }
             val showPrimaryAction = !isConnected || addressChanged
             if (showPrimaryAction) {
-                Spacer(Modifier.height(4.dp))
-                CelesteButton(
+                Spacer(Modifier.height(if (visibleError == null && loadingMessage == null) 28.dp else 4.dp))
+                CelestePrimaryButton(
                     text = when {
-                        effectiveProbe == null -> "Continue"
+                        effectiveProbe == null -> "Find my Hermes"
                         effectiveProbe.authRequired -> "Sign in"
                         savedAuthMode != null || addressChanged -> "Save & reconnect"
                         else -> "Connect"
@@ -381,74 +397,95 @@ internal fun GatewaySettingsScreen(
                     },
                     onClick = {
                         if (effectiveProbe == null) {
-                            onApplyAddress(address)
+                            actions.onApplyAddress(address)
                         } else {
-                            onConnect()
+                            actions.onConnect()
                         }
                     },
                 )
+            } else if (loadingMessage == null) {
+                Spacer(Modifier.height(20.dp))
+                TextButton(
+                    onClick = actions.onRetry,
+                    modifier = Modifier.align(Alignment.End),
+                    contentPadding = PaddingValues(horizontal = 0.dp, vertical = 8.dp),
+                ) {
+                    Text("Reconnect →", color = CelesteBlue)
+                }
             }
 
             if (connectionPhase == ConnectionPhase.RestoreFailed && loadingMessage == null) {
-                Spacer(Modifier.height(8.dp))
-                TextButton(onClick = onRetry, modifier = Modifier.fillMaxWidth()) {
-                    Text("Retry")
+                TextButton(onClick = actions.onRetry, modifier = Modifier.fillMaxWidth()) {
+                    Text("Try saved connection again", color = CelesteBlue)
                 }
             }
 
             if (savedAuthMode != null) {
-                Spacer(Modifier.height(30.dp))
+                Spacer(Modifier.height(34.dp))
+                EditorialDivider()
                 TextButton(
                     onClick = { confirmForgetConnection = true },
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier.fillMaxWidth().padding(top = 10.dp),
                 ) {
                     Text("Forget connection", color = CelesteError)
                 }
             }
+
+            Spacer(Modifier.height(24.dp))
         }
     }
 
     if (confirmForgetConnection) {
         AlertDialog(
+            containerColor = CelestePanel,
             onDismissRequest = { confirmForgetConnection = false },
-            title = { Text("Forget this connection?") },
-            text = { Text("This removes the dashboard address and saved sign-in from this device.") },
+            title = {
+                Text("Forget this connection?", style = MaterialTheme.typography.headlineMedium)
+            },
+            text = {
+                Text(
+                    "This removes the dashboard address and saved sign-in from this device.",
+                    color = CelesteMuted,
+                )
+            },
             confirmButton = {
                 TextButton(
                     onClick = {
                         confirmForgetConnection = false
-                        onForgetConnection()
+                        actions.onForgetConnection()
                     },
                 ) {
                     Text("Forget", color = CelesteError)
                 }
             },
             dismissButton = {
-                TextButton(onClick = { confirmForgetConnection = false }) { Text("Cancel") }
+                TextButton(onClick = { confirmForgetConnection = false }) {
+                    Text("Cancel", color = CelesteBlue)
+                }
             },
         )
     }
 }
 
 @Composable
-private fun SettingsHeader(title: String, onBack: (() -> Unit)?) {
-    Box(modifier = Modifier.fillMaxWidth()) {
+private fun EditorialHeader(title: String, onBack: (() -> Unit)?) {
+    Column {
         onBack?.let {
             TextButton(
                 onClick = it,
-                contentPadding = PaddingValues(horizontal = 4.dp),
-                modifier = Modifier.align(Alignment.CenterStart),
+                contentPadding = PaddingValues(horizontal = 0.dp, vertical = 8.dp),
             ) {
-                Text("Back")
+                Text("←  Back", color = CelesteBlue, fontWeight = FontWeight.SemiBold)
             }
+            Spacer(Modifier.height(14.dp))
         }
-        Text(
-            title,
-            fontSize = 28.sp,
-            fontWeight = FontWeight.SemiBold,
-            modifier = Modifier.align(Alignment.Center),
-        )
+        Text(title, style = MaterialTheme.typography.displayMedium)
     }
+}
+
+@Composable
+private fun StatusDot(phase: ConnectionPhase) {
+    Box(Modifier.size(7.dp).background(connectionStatusColor(phase), CircleShape))
 }
 
 private fun connectionStatusLabel(phase: ConnectionPhase): String = when (phase) {
@@ -468,14 +505,26 @@ private fun connectionStatusColor(phase: ConnectionPhase): Color = when (phase) 
 }
 
 @Composable
-private fun CelesteCard(content: @Composable ColumnScope.() -> Unit) {
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .background(CelestePanel.copy(alpha = 0.92f), RoundedCornerShape(28.dp))
-            .border(1.dp, Color.White.copy(alpha = 0.08f), RoundedCornerShape(28.dp))
-            .padding(22.dp),
-        content = content,
+private fun CelesteLabeledField(
+    value: String,
+    onValueChange: (String) -> Unit,
+    label: String,
+    placeholder: String,
+    password: Boolean = false,
+) {
+    Text(
+        text = label.uppercase(),
+        color = CelesteMuted,
+        fontSize = 10.sp,
+        fontWeight = FontWeight.SemiBold,
+        letterSpacing = 1.1.sp,
+    )
+    Spacer(Modifier.height(9.dp))
+    CelesteTextField(
+        value = value,
+        onValueChange = onValueChange,
+        placeholder = placeholder,
+        password = password,
     )
 }
 
@@ -483,7 +532,6 @@ private fun CelesteCard(content: @Composable ColumnScope.() -> Unit) {
 private fun CelesteTextField(
     value: String,
     onValueChange: (String) -> Unit,
-    label: String,
     placeholder: String,
     password: Boolean = false,
 ) {
@@ -491,21 +539,23 @@ private fun CelesteTextField(
         value = value,
         onValueChange = onValueChange,
         modifier = Modifier.fillMaxWidth(),
-        label = { Text(label) },
-        placeholder = { Text(placeholder) },
-        visualTransformation = if (password) PasswordVisualTransformation() else androidx.compose.ui.text.input.VisualTransformation.None,
+        placeholder = { Text(placeholder, color = CelesteMuted) },
+        visualTransformation = if (password) PasswordVisualTransformation() else VisualTransformation.None,
         singleLine = true,
-        shape = RoundedCornerShape(16.dp),
+        shape = RoundedCornerShape(15.dp),
+        textStyle = MaterialTheme.typography.bodyLarge,
         colors = OutlinedTextFieldDefaults.colors(
-            focusedBorderColor = CelesteCoral,
-            unfocusedBorderColor = Color.White.copy(alpha = 0.16f),
-            focusedLabelColor = CelesteCoral,
+            focusedBorderColor = CelesteBlue,
+            unfocusedBorderColor = CelesteHairline,
+            focusedContainerColor = CelestePanel,
+            unfocusedContainerColor = CelestePanel,
+            cursorColor = CelesteBlue,
         ),
     )
 }
 
 @Composable
-private fun CelesteButton(
+private fun CelestePrimaryButton(
     text: String,
     loading: Boolean,
     enabled: Boolean,
@@ -514,63 +564,61 @@ private fun CelesteButton(
     Button(
         onClick = onClick,
         enabled = enabled && !loading,
-        modifier = Modifier.fillMaxWidth().height(52.dp),
-        shape = RoundedCornerShape(16.dp),
-        colors = ButtonDefaults.buttonColors(containerColor = CelesteCoral, contentColor = Color(0xFF07110D)),
+        modifier = Modifier.fillMaxWidth().height(60.dp),
+        shape = RoundedCornerShape(30.dp),
+        border = BorderStroke(1.dp, if (enabled) CelesteInk else CelesteHairline),
+        contentPadding = PaddingValues(horizontal = 22.dp),
+        colors = ButtonDefaults.buttonColors(
+            containerColor = CelestePaperRaised,
+            contentColor = CelesteInk,
+            disabledContainerColor = CelestePanelRaised,
+            disabledContentColor = CelesteMuted,
+        ),
     ) {
+        Text(text, fontSize = 16.sp, fontWeight = FontWeight.Medium)
+        Spacer(Modifier.weight(1f))
         if (loading) {
-            CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp, color = Color(0xFF07110D))
+            CircularProgressIndicator(
+                modifier = Modifier.size(18.dp),
+                strokeWidth = 1.8.dp,
+                color = CelesteInk,
+            )
         } else {
-            Text(text, fontWeight = FontWeight.Bold)
+            Text("→", color = if (enabled) CelesteInk else CelesteMuted, fontSize = 19.sp)
         }
     }
 }
 
 @Composable
 private fun CelesteHalo() {
-    Canvas(modifier = Modifier.size(104.dp)) {
+    Canvas(modifier = Modifier.size(108.dp)) {
         val center = Offset(size.width / 2f, size.height / 2f)
         val radius = size.minDimension * 0.39f
         drawCircle(
-            color = CelesteBlue.copy(alpha = 0.34f),
+            color = CelesteGold.copy(alpha = 0.24f),
             radius = radius,
             center = center,
-            style = Stroke(width = 2f),
+            style = Stroke(width = 1.2.dp.toPx()),
         )
         drawCircle(
-            color = Color.White.copy(alpha = 0.09f),
-            radius = radius * 0.76f,
+            color = CelesteGold.copy(alpha = 0.10f),
+            radius = radius * 0.72f,
             center = center,
-            style = Stroke(width = 1.5f),
+            style = Stroke(width = 0.8.dp.toPx()),
         )
         drawArc(
-            color = CelesteCoral,
+            color = CelesteGold,
             startAngle = 132f,
             sweepAngle = 76f,
             useCenter = false,
             topLeft = Offset(center.x - radius, center.y - radius),
             size = Size(radius * 2f, radius * 2f),
-            style = Stroke(width = 5f, cap = StrokeCap.Round),
+            style = Stroke(width = 3.2.dp.toPx(), cap = StrokeCap.Round),
         )
         drawCircle(
             color = CelesteGold,
-            radius = 4.5f,
+            radius = 3.5.dp.toPx(),
             center = Offset(center.x + radius * 0.72f, center.y - radius * 0.52f),
-        )
-    }
-}
-
-@Composable
-private fun ConnectionResult(result: DashboardProbeResult) {
-    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        StatusMessage("Hermes dashboard found", CelesteCoral)
-        Text(
-            buildString {
-                result.version?.let { append("Hermes $it  •  ") }
-                append(if (result.authRequired) "Sign-in protected" else "Direct or session-token access")
-            },
-            color = CelesteMuted,
-            fontSize = 13.sp,
         )
     }
 }
