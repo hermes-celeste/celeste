@@ -185,8 +185,13 @@ internal fun SessionListScreen(
                             )
                         }
                         Spacer(Modifier.height(13.dp))
+                        val metadata = if (profiles.size > 1) {
+                            "${session.profile.uppercase()}  ·  ${session.messageCount} MESSAGES"
+                        } else {
+                            "${session.messageCount} MESSAGES"
+                        }
                         Text(
-                            "${session.messageCount} MESSAGES",
+                            metadata,
                             color = CelesteMuted,
                             fontSize = 10.sp,
                             fontWeight = FontWeight.SemiBold,

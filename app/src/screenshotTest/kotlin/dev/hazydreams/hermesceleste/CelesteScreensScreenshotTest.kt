@@ -295,10 +295,12 @@ fun ComposingPreviewScreenshot() {
 fun StreamingPreviewScreenshot() {
     HermesCelesteTheme {
         PreviewConversation(
-            messages = previewMessages + ConversationMessage(
-                role = "user",
-                text = "Build it with reconnection that cannot duplicate my prompt.",
-                id = "preview-user-2",
+            messages = listOf(
+                ConversationMessage(
+                    role = "user",
+                    text = "Build it with reconnection that cannot duplicate my prompt.",
+                    id = "preview-user-2",
+                ),
             ),
             streamingText = "The socket now stays deliberately thin. A lifecycle-aware session controller owns retries, refreshes its one-use ticket, resumes the authoritative history, and then",
             turnState = TurnState.Running,
@@ -312,7 +314,7 @@ fun StreamingPreviewScreenshot() {
 fun CompletedPreviewScreenshot() {
     HermesCelesteTheme {
         PreviewConversation(
-            messages = previewMessages + listOf(
+            messages = listOf(
                 ConversationMessage(
                     role = "user",
                     text = "Build it with reconnection that cannot duplicate my prompt.",
