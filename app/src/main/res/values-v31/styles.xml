@@ -7,7 +7,7 @@
         <item name="android:navigationBarColor">#FFFEFA</item>
         <item name="android:windowLightStatusBar">true</item>
         <item name="android:windowLightNavigationBar">true</item>
-        <item name="android:colorAccent">#C49A4A</item>
+        <item name="android:colorAccent">#8A651F</item>
         <item name="android:forceDarkAllowed">false</item>
         <item name="android:windowActionModeOverlay">true</item>
         <item name="android:windowSplashScreenBackground">#FFFEFA</item>

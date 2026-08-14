@@ -29,7 +29,7 @@ Do not introduce visual-system codenames or revive rejected branding in source, 
 - ivory / white — page background and raised controls;
 - ink — text, primary outlines, and strongest contrast;
 - panel / raised panel — quiet grouping and transcript differentiation;
-- gold — divine atmosphere, connection state, and active Hermes work;
+- gold — luminous decoration and halo atmosphere; use the deeper accessible gold token for text, controls, connection state, and active Hermes work;
 - muted text / hairline — secondary hierarchy and boundaries;
 - error — actionable failure state.
 

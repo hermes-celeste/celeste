@@ -186,18 +186,19 @@ internal fun CelesteBackdrop(
             )
 
             if (showOrnament) {
-                val haloCenter = Offset(size.width * 0.98f, size.height * 0.055f)
+                val haloCenter = Offset(size.width - 8.dp.toPx(), 46.dp.toPx())
+                val innerHaloRadius = 64.dp.toPx()
 
                 listOf(
-                    168f to 0.48f,
-                    228f to 0.30f,
-                    292f to 0.18f,
-                ).forEach { (radius, alpha) ->
+                    Triple(innerHaloRadius, 0.48f, 0.7.dp.toPx()),
+                    Triple(87.dp.toPx(), 0.30f, 0.45.dp.toPx()),
+                    Triple(111.dp.toPx(), 0.18f, 0.45.dp.toPx()),
+                ).forEach { (radius, alpha, strokeWidth) ->
                     drawCircle(
                         color = CelesteGold.copy(alpha = alpha),
                         radius = radius,
                         center = haloCenter,
-                        style = Stroke(width = if (radius == 168f) 1.8f else 1f),
+                        style = Stroke(width = strokeWidth),
                     )
                 }
 
@@ -206,24 +207,27 @@ internal fun CelesteBackdrop(
                     startAngle = 116f,
                     sweepAngle = 54f,
                     useCenter = false,
-                    topLeft = Offset(haloCenter.x - 168f, haloCenter.y - 168f),
-                    size = Size(336f, 336f),
-                    style = Stroke(width = 2.2f, cap = StrokeCap.Round),
+                    topLeft = Offset(
+                        haloCenter.x - innerHaloRadius,
+                        haloCenter.y - innerHaloRadius,
+                    ),
+                    size = Size(innerHaloRadius * 2f, innerHaloRadius * 2f),
+                    style = Stroke(width = 0.85.dp.toPx(), cap = StrokeCap.Round),
                 )
 
-                val star = Offset(size.width * 0.74f, size.height * 0.14f)
+                val star = Offset(size.width - 101.dp.toPx(), 118.dp.toPx())
                 drawLine(
                     color = CelesteGold.copy(alpha = 0.54f),
-                    start = star - Offset(0f, 17f),
-                    end = star + Offset(0f, 17f),
-                    strokeWidth = 1f,
+                    start = star - Offset(0f, 6.5.dp.toPx()),
+                    end = star + Offset(0f, 6.5.dp.toPx()),
+                    strokeWidth = 0.5.dp.toPx(),
                     cap = StrokeCap.Round,
                 )
                 drawLine(
                     color = CelesteGold.copy(alpha = 0.54f),
-                    start = star - Offset(12f, 0f),
-                    end = star + Offset(12f, 0f),
-                    strokeWidth = 1f,
+                    start = star - Offset(4.5.dp.toPx(), 0f),
+                    end = star + Offset(4.5.dp.toPx(), 0f),
+                    strokeWidth = 0.5.dp.toPx(),
                     cap = StrokeCap.Round,
                 )
             }

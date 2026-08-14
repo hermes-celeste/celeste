@@ -28,7 +28,7 @@ import androidx.compose.ui.unit.sp
 import dev.hazydreams.hermesceleste.network.ConversationMessage
 import dev.hazydreams.hermesceleste.ui.CelesteBlue
 import dev.hazydreams.hermesceleste.ui.CelesteCoral
-import dev.hazydreams.hermesceleste.ui.CelesteGold
+import dev.hazydreams.hermesceleste.ui.CelesteGoldText
 import dev.hazydreams.hermesceleste.ui.CelesteHairline
 import dev.hazydreams.hermesceleste.ui.CelesteInk
 import dev.hazydreams.hermesceleste.ui.CelesteMuted
@@ -122,7 +122,7 @@ private fun ToolMessage(message: ConversationMessage) {
     ) {
         MessageLabel(
             message.toolName?.replace('_', ' ') ?: "Tool",
-            CelesteGold,
+            CelesteGoldText,
             message.pending,
         )
         if (message.text.isNotBlank()) {
@@ -148,7 +148,7 @@ private fun MessageLabel(label: String, color: Color, pending: Boolean) {
         )
         if (pending) {
             Spacer(Modifier.size(7.dp))
-            Box(Modifier.size(6.dp).background(CelesteGold, CircleShape))
+            Box(Modifier.size(6.dp).background(CelesteGoldText, CircleShape))
         }
     }
 }

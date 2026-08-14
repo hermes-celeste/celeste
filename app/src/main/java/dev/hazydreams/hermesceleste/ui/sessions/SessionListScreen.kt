@@ -29,6 +29,9 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -79,7 +82,7 @@ internal fun SessionListScreen(
                     enabled = loadingMessage == null,
                     contentPadding = PaddingValues(horizontal = 8.dp, vertical = 8.dp),
                 ) {
-                    Text("Settings", color = CelesteBlue, fontWeight = FontWeight.SemiBold)
+                    Text("Settings", fontWeight = FontWeight.SemiBold)
                 }
             }
 
@@ -92,7 +95,13 @@ internal fun SessionListScreen(
                     OutlinedButton(
                         onClick = { profileMenuExpanded = true },
                         enabled = loadingMessage == null,
-                        modifier = Modifier.fillMaxWidth().height(50.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(50.dp)
+                            .semantics {
+                                contentDescription = "Profile: ${selectedProfile.replaceFirstChar(Char::uppercase)}"
+                                stateDescription = if (profileMenuExpanded) "Expanded" else "Collapsed"
+                            },
                         shape = RoundedCornerShape(25.dp),
                         border = androidx.compose.foundation.BorderStroke(1.dp, CelesteHairline),
                         colors = ButtonDefaults.outlinedButtonColors(contentColor = CelesteInk),

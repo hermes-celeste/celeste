@@ -48,7 +48,7 @@ import dev.hazydreams.hermesceleste.ui.CelesteBackdrop
 import dev.hazydreams.hermesceleste.ui.CelesteBlue
 import dev.hazydreams.hermesceleste.ui.CelesteCoral
 import dev.hazydreams.hermesceleste.ui.CelesteError
-import dev.hazydreams.hermesceleste.ui.CelesteGold
+import dev.hazydreams.hermesceleste.ui.CelesteGoldText
 import dev.hazydreams.hermesceleste.ui.CelesteHairline
 import dev.hazydreams.hermesceleste.ui.CelesteInk
 import dev.hazydreams.hermesceleste.ui.CelesteMuted
@@ -263,6 +263,6 @@ internal fun ConversationScreen(
 
 private fun turnStateColor(turnState: TurnState): Color = when (turnState) {
     TurnState.Idle -> CelesteCoral
-    TurnState.Running -> CelesteGold
+    TurnState.Running -> CelesteGoldText
     TurnState.Synchronizing, TurnState.Reconnecting -> CelesteBlue
 }

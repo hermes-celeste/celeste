@@ -43,6 +43,8 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -59,6 +61,7 @@ import dev.hazydreams.hermesceleste.ui.CelesteBlue
 import dev.hazydreams.hermesceleste.ui.CelesteCoral
 import dev.hazydreams.hermesceleste.ui.CelesteError
 import dev.hazydreams.hermesceleste.ui.CelesteGold
+import dev.hazydreams.hermesceleste.ui.CelesteGoldText
 import dev.hazydreams.hermesceleste.ui.CelesteHairline
 import dev.hazydreams.hermesceleste.ui.CelesteInk
 import dev.hazydreams.hermesceleste.ui.CelesteMuted
@@ -104,7 +107,7 @@ internal fun ConnectionLoadingScreen() {
                 .padding(horizontal = 28.dp, vertical = 38.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
-            CelesteWordmark(trailing = "PRIVATE", trailingColor = CelesteGold)
+            CelesteWordmark(trailing = "PRIVATE", trailingColor = CelesteGoldText)
             Spacer(Modifier.weight(1f))
             CelesteHalo()
             Spacer(Modifier.height(26.dp))
@@ -247,7 +250,7 @@ internal fun GatewaySettingsScreen(
                 .padding(horizontal = 28.dp, vertical = 38.dp),
         ) {
             if (initialSetup) {
-                CelesteWordmark(trailing = "PRIVATE", trailingColor = CelesteGold)
+                CelesteWordmark(trailing = "PRIVATE", trailingColor = CelesteGoldText)
                 Spacer(Modifier.height(108.dp))
                 Text(
                     text = "Your Hermes,",
@@ -293,7 +296,8 @@ internal fun GatewaySettingsScreen(
             CelesteTextField(
                 value = address,
                 onValueChange = { address = it },
-                placeholder = "hermes.example.net",
+                placeholder = "https://hermes.example.net",
+                semanticLabel = "Dashboard address",
             )
 
 
@@ -498,9 +502,9 @@ private fun connectionStatusLabel(phase: ConnectionPhase): String = when (phase)
 
 private fun connectionStatusColor(phase: ConnectionPhase): Color = when (phase) {
     ConnectionPhase.Connected -> CelesteCoral
-    ConnectionPhase.CheckingSavedConnection, ConnectionPhase.Restoring -> CelesteGold
+    ConnectionPhase.CheckingSavedConnection, ConnectionPhase.Restoring -> CelesteGoldText
     ConnectionPhase.RestoreFailed -> CelesteError
-    ConnectionPhase.AuthenticationRequired -> CelesteGold
+    ConnectionPhase.AuthenticationRequired -> CelesteGoldText
     ConnectionPhase.ManualSetup -> CelesteMuted
 }
 
@@ -524,6 +528,7 @@ private fun CelesteLabeledField(
         value = value,
         onValueChange = onValueChange,
         placeholder = placeholder,
+        semanticLabel = label,
         password = password,
     )
 }
@@ -533,12 +538,15 @@ private fun CelesteTextField(
     value: String,
     onValueChange: (String) -> Unit,
     placeholder: String,
+    semanticLabel: String,
     password: Boolean = false,
 ) {
     OutlinedTextField(
         value = value,
         onValueChange = onValueChange,
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier
+            .fillMaxWidth()
+            .semantics { contentDescription = semanticLabel },
         placeholder = { Text(placeholder, color = CelesteMuted) },
         visualTransformation = if (password) PasswordVisualTransformation() else VisualTransformation.None,
         singleLine = true,
