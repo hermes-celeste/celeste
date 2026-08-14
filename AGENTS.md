@@ -51,12 +51,9 @@ scripts/celeste-env ./gradlew --no-daemon lintDebug
 
 # Validate accepted Compose references
 scripts/celeste-env ./gradlew --no-daemon validateDebugScreenshotTest
-
-# Packaging or device milestone only
-scripts/celeste-env ./gradlew --no-daemon assembleDebug
 ```
 
-Choose checks by change boundary; see [`docs/testing.md`](docs/testing.md). Always finish with `git diff --check`.
+GitHub Actions owns APK assembly and test-build signing; do not create distributable APKs locally. Choose checks by change boundary; see [`docs/testing.md`](docs/testing.md). Always finish with `git diff --check`.
 
 ## Critical rules
 

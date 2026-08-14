@@ -14,6 +14,8 @@ import okhttp3.WebSocket
 import okhttp3.WebSocketListener
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -122,6 +124,132 @@ class DashboardClientTest {
         assertTrue(login.body?.utf8().orEmpty().contains("\"username\":\"test-user\""))
         assertEquals("hermes_session_at=access", ticket.headers["Cookie"])
         assertEquals("single-use-ticket", upgrade.url.queryParameter("ticket"))
+    }
+
+    @Test
+    fun exportsAndRestoresOnlyOriginBoundHermesSessionCookies() = runTest {
+        server.enqueue(
+            MockResponse.Builder()
+                .code(200)
+                .addHeader("Set-Cookie", "hermes_session_at=synthetic-access; Path=/; Max-Age=900; HttpOnly")
+                .addHeader("Set-Cookie", "hermes_session_rt=synthetic-refresh; Path=/; Max-Age=86400; HttpOnly")
+                .addHeader("Set-Cookie", "hermes_session_pkce=must-not-persist; Path=/; Max-Age=600; HttpOnly")
+                .body("""{"ok":true,"next":"/"}""")
+                .build(),
+        )
+        server.enqueue(MockResponse.Builder().code(200).body("""{"profiles":[]}""").build())
+        val baseUrl = server.url("/").toString().trimEnd('/')
+        val signedIn = DashboardClient()
+        signedIn.passwordLogin(baseUrl, "password", "test-user", "synthetic-password")
+
+        val material = requireNotNull(signedIn.exportAuthentication(baseUrl))
+        val restored = DashboardClient()
+
+        assertEquals("[REDACTED]", material.toString())
+        assertTrue(restored.restoreAuthentication(baseUrl, material))
+        assertTrue(!restored.restoreAuthentication("https://other.example.net", material))
+        assertTrue(restored.restoreAuthentication(baseUrl, material))
+        restored.listProfiles(baseUrl, GatewayCredential.CookieSession)
+
+        server.takeRequest()
+        val profiles = server.takeRequest()
+        val cookieHeader = profiles.headers["Cookie"].orEmpty()
+        assertTrue(cookieHeader.contains("hermes_session_at=synthetic-access"))
+        assertTrue(cookieHeader.contains("hermes_session_rt=synthetic-refresh"))
+        assertTrue(!cookieHeader.contains("hermes_session_pkce"))
+    }
+
+    @Test
+    fun providerHintAloneCannotRestoreAuthentication() = runTest {
+        server.enqueue(
+            MockResponse.Builder()
+                .code(200)
+                .addHeader("Set-Cookie", "hermes_session_provider=password; Path=/; Max-Age=86400; HttpOnly")
+                .body("""{"ok":true,"next":"/"}""")
+                .build(),
+        )
+        val baseUrl = server.url("/").toString().trimEnd('/')
+        val signedIn = DashboardClient()
+        signedIn.passwordLogin(baseUrl, "password", "test-user", "synthetic-password")
+        val material = requireNotNull(signedIn.exportAuthentication(baseUrl))
+
+        assertFalse(DashboardClient().restoreAuthentication(baseUrl, material))
+        assertEquals("StaticToken([REDACTED])", GatewayCredential.StaticToken("synthetic-token").toString())
+    }
+
+    @Test
+    fun newPasswordLoginReplacesObsoleteCookieAuthentication() = runTest {
+        server.enqueue(
+            MockResponse.Builder()
+                .code(200)
+                .addHeader("Set-Cookie", "hermes_session_at=obsolete; Path=/; Max-Age=900; HttpOnly")
+                .body("""{"ok":true,"next":"/"}""")
+                .build(),
+        )
+        server.enqueue(
+            MockResponse.Builder()
+                .code(200)
+                .addHeader("Set-Cookie", "hermes_session_at=current; Path=/; Max-Age=900; HttpOnly")
+                .body("""{"ok":true,"next":"/"}""")
+                .build(),
+        )
+        server.enqueue(MockResponse.Builder().code(200).body("""{"profiles":[]}""").build())
+        val baseUrl = server.url("/").toString().trimEnd('/')
+        val client = DashboardClient()
+
+        client.passwordLogin(baseUrl, "password", "old-user", "synthetic-password")
+        client.passwordLogin(baseUrl, "password", "new-user", "synthetic-password")
+        client.listProfiles(baseUrl, GatewayCredential.CookieSession)
+
+        server.takeRequest()
+        val replacementLogin = server.takeRequest()
+        val profiles = server.takeRequest()
+        assertEquals(null, replacementLogin.headers["Cookie"])
+        assertEquals("hermes_session_at=current", profiles.headers["Cookie"])
+    }
+
+    @Test
+    fun classifiesAuthenticationRejectionAndRateLimiting() {
+        val client = DashboardClient()
+        val baseUrl = server.url("/").toString().trimEnd('/')
+        server.enqueue(MockResponse.Builder().code(401).body("unauthorized").build())
+
+        assertThrows(AuthenticationRejected::class.java) {
+            runBlocking { client.passwordLogin(baseUrl, "password", "test-user", "synthetic-password") }
+        }
+
+        server.enqueue(MockResponse.Builder().code(429).body("slow down").build())
+        assertThrows(RateLimited::class.java) {
+            runBlocking { client.passwordLogin(baseUrl, "password", "test-user", "synthetic-password") }
+        }
+    }
+
+    @Test
+    fun logoutAcceptsHermesRedirectAndClearsThePrivateCookieJar() = runTest {
+        server.enqueue(
+            MockResponse.Builder()
+                .code(200)
+                .addHeader("Set-Cookie", "hermes_session_at=access; Path=/; HttpOnly")
+                .body("""{"ok":true,"next":"/"}""")
+                .build(),
+        )
+        server.enqueue(MockResponse.Builder().code(302).addHeader("Location", "/login").build())
+        server.enqueue(MockResponse.Builder().code(200).body("""{"profiles":[]}""").build())
+        val client = DashboardClient()
+        val baseUrl = server.url("/").toString().trimEnd('/')
+
+        client.passwordLogin(baseUrl, "password", "test-user", "synthetic-password")
+        client.logout(baseUrl)
+        client.clearAuthentication()
+        client.listProfiles(baseUrl, GatewayCredential.CookieSession)
+
+        server.takeRequest()
+        val logout = server.takeRequest()
+        val profiles = server.takeRequest()
+        assertEquals("/auth/logout", logout.url.encodedPath)
+        assertEquals("POST", logout.method)
+        assertEquals("hermes_session_at=access", logout.headers["Cookie"])
+        assertEquals(null, profiles.headers["Cookie"])
     }
 
     @Test

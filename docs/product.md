@@ -26,12 +26,11 @@ The Android name includes Hermes so the installed app is easy to find. It does n
 
 ## Current functional boundary
 
-Celeste can discover a dashboard, authenticate with a supported password provider or an ephemeral session token, list profiles and sessions, create and resume conversations, send prompts, stream responses and tools, interrupt turns, and reconcile after reconnecting.
+Celeste can discover a dashboard, authenticate with a supported password provider or session token, manage the connection directly under **Settings → Gateway**, remember every successful supported connection with Android Keystore-backed encryption, automatically restore the conversation list without choosing a conversation, explicitly sign out or forget the connection, create and resume conversations, send prompts, stream responses and tools, interrupt turns, and reconcile after reconnecting.
 
 The following surfaces are not implemented yet:
 
 - browser/OAuth sign-in;
-- Android Keystore-backed connection persistence;
 - rich Markdown and attachments;
 - approvals and clarifications;
 - profile management;

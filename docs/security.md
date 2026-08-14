@@ -17,17 +17,23 @@ Require HTTPS for public hosts. Plain HTTP is limited by `DashboardUrlPolicy` to
 Supported credential forms are:
 
 - no credential for open loopback development;
-- an ephemeral machine session token;
+- a machine session token;
 - a provider-authenticated cookie session that mints one-use WebSocket tickets.
 
-Passwords, static tokens, cookies, and WebSocket tickets are currently process-memory only. Clear password and token fields from UI state after connection. Do not place credentials in:
+Passwords and WebSocket tickets are process-memory only. Passwords are never persisted; successful provider login persists only the Hermes access, refresh, and provider cookies needed to restore the authenticated session. Static tokens and those session cookies may be remembered as encrypted reusable authentication material. Clear password and token fields from UI state after every connection attempt. Do not place credentials in:
 
 - Compose saved state or `rememberSaveable`;
-- `Bundle`, DataStore, SharedPreferences, databases, or files;
+- `Bundle`, ordinary DataStore/SharedPreferences, databases, or plaintext files;
 - logs, crash messages, analytics, clipboard helpers, fixtures, screenshots, or documentation;
 - command history or committed environment files.
 
-When connection persistence is implemented, store only the minimum recoverable secret using Android Keystore-backed encryption. Define expiry, logout/revocation, device-lock behavior, migration, and deletion before shipping persistence.
+`AndroidConnectionStore` keeps the normalized endpoint, authentication mode, provider, and optional username in a private descriptor preference. Reusable authentication is AES-GCM encrypted with a non-exportable Android Keystore key that requires the device to be unlocked. Ciphertext lives in `noBackupFilesDir`; additional authenticated data binds it to the application ID, format version, exact normalized endpoint including path prefix, and authentication mode. There is no plaintext or weak-storage fallback.
+
+Restored provider cookies must be unexpired Hermes session cookies for the exact saved host and a path matching the normalized endpoint. PKCE and unrelated cookies are never exported. Definitive 401/403 rejection deletes reusable authentication and pauses later automatic attempts; offline, timeout, 429, malformed response, and server failures retain the encrypted material for explicit Retry.
+
+Provider access and refresh cookies can rotate. After a successful cold restore and when the app moves to the background, Celeste re-encrypts the latest cookie-jar state through serialized store access. Sign out and Forget connection invalidate the active connection generation before cleanup so a late refresh write cannot recreate deleted authentication material.
+
+`Sign out` makes a best-effort `/auth/logout` request, clears the in-memory cookie jar, deletes encrypted authentication material and its Keystore key, and retains only safe prefill metadata. `Forget connection` additionally deletes the descriptor. Neither action depends on the server being reachable before local cleanup can complete.
 
 ## One-use WebSocket tickets
 
@@ -37,7 +43,7 @@ WebSocket tokens and tickets appear in URL query parameters by protocol design. 
 
 ## Private application data
 
-The manifest disables backup, and `backup_rules.xml` plus `data_extraction_rules.xml` exclude application root data from cloud backup and device transfer. Those root exclusions do not automatically describe future database or shared-preference storage. When persistence is added, exclude every actual credential-bearing domain and path explicitly.
+The manifest disables backup. `backup_rules.xml` and `data_extraction_rules.xml` additionally exclude every application-data domain plus the named `celeste_connection.xml` descriptor from cloud backup and device transfer. Encrypted authentication material is under `noBackupFilesDir`. Keep the named exclusion and broad defense-in-depth exclusions aligned with any storage change.
 
 Password fields are visually masked, but the app does not currently set `FLAG_SECURE`. Masking does not provide storage encryption, screenshot blocking, clipboard protection, or recording protection. Do not use real credentials in review screenshots or recordings.
 

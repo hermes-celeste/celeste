@@ -97,10 +97,17 @@ sealed interface GatewayCredential {
     data object None : GatewayCredential
 
     /** Loopback/insecure dashboard credential. Never persisted or logged. */
-    data class StaticToken(val value: String) : GatewayCredential
+    class StaticToken(val value: String) : GatewayCredential {
+        override fun toString(): String = "StaticToken([REDACTED])"
+    }
 
     /** Password/OAuth session represented by the client's private cookie jar. */
     data object CookieSession : GatewayCredential
+}
+
+@JvmInline
+value class AuthenticationMaterial(val value: String) {
+    override fun toString(): String = "[REDACTED]"
 }
 
 interface DashboardService {
@@ -124,8 +131,29 @@ interface DashboardService {
         credential: GatewayCredential,
     ): List<DashboardProfile>
 
+    suspend fun logout(baseUrl: String) = Unit
+
+    fun exportAuthentication(baseUrl: String): AuthenticationMaterial? = null
+
+    fun restoreAuthentication(baseUrl: String, material: AuthenticationMaterial): Boolean = false
+
+    fun clearAuthentication() = Unit
+
     fun createGateway(baseUrl: String, credential: GatewayCredential): GatewayConnection
 }
+
+sealed class DashboardFailure(
+    message: String,
+    cause: Throwable? = null,
+) : IOException(message, cause)
+
+class AuthenticationRejected(message: String) : DashboardFailure(message)
+
+class RateLimited(message: String) : DashboardFailure(message)
+
+class TransportUnavailable(message: String, cause: Throwable? = null) : DashboardFailure(message, cause)
+
+class InvalidDashboardResponse(message: String, cause: Throwable? = null) : DashboardFailure(message, cause)
 
 private class DashboardCookieJar : CookieJar {
     private val cookies = mutableListOf<Cookie>()
@@ -144,6 +172,93 @@ private class DashboardCookieJar : CookieJar {
     override fun loadForRequest(url: HttpUrl): List<Cookie> {
         cookies.removeAll { it.expiresAt <= System.currentTimeMillis() }
         return cookies.filter { it.matches(url) }
+    }
+
+    @Synchronized
+    fun clear() {
+        cookies.clear()
+    }
+
+    @Synchronized
+    fun authenticatedCookies(url: HttpUrl): List<Cookie> {
+        cookies.removeAll { it.expiresAt <= System.currentTimeMillis() }
+        return cookies.filter { cookie ->
+            cookie.matches(url) && cookie.name in HERMES_SESSION_COOKIE_NAMES
+        }
+    }
+
+    @Synchronized
+    fun replaceAuthenticatedCookies(url: HttpUrl, restored: List<Cookie>): Boolean {
+        val now = System.currentTimeMillis()
+        if (restored.none { it.name in HERMES_CREDENTIAL_COOKIE_NAMES } || restored.any { cookie ->
+                cookie.name !in HERMES_SESSION_COOKIE_NAMES ||
+                    cookie.domain != url.host ||
+                    cookie.expiresAt <= now ||
+                    !cookie.matches(url)
+            }
+        ) {
+            return false
+        }
+        cookies.clear()
+        cookies += restored
+        return true
+    }
+
+    private companion object {
+        val HERMES_CREDENTIAL_COOKIE_NAMES = setOf(
+            "hermes_session_at",
+            "hermes_session_rt",
+            "__Secure-hermes_session_at",
+            "__Secure-hermes_session_rt",
+            "__Host-hermes_session_at",
+            "__Host-hermes_session_rt",
+        )
+        val HERMES_SESSION_COOKIE_NAMES = setOf(
+            *HERMES_CREDENTIAL_COOKIE_NAMES.toTypedArray(),
+            "hermes_session_provider",
+            "__Secure-hermes_session_provider",
+            "__Host-hermes_session_provider",
+        )
+    }
+}
+
+@Serializable
+private data class PersistedDashboardCookie(
+    val name: String,
+    val value: String,
+    val expiresAt: Long,
+    val domain: String,
+    val path: String,
+    val secure: Boolean,
+    val httpOnly: Boolean,
+    val hostOnly: Boolean,
+) {
+    override fun toString(): String =
+        "PersistedDashboardCookie(name=$name, value=[REDACTED], domain=$domain, path=$path)"
+
+    fun toCookie(): Cookie = Cookie.Builder()
+        .name(name)
+        .value(value)
+        .expiresAt(expiresAt)
+        .apply {
+            if (hostOnly) hostOnlyDomain(domain) else domain(domain)
+            path(path)
+            if (secure) secure()
+            if (httpOnly) httpOnly()
+        }
+        .build()
+
+    companion object {
+        fun from(cookie: Cookie) = PersistedDashboardCookie(
+            name = cookie.name,
+            value = cookie.value,
+            expiresAt = cookie.expiresAt,
+            domain = cookie.domain,
+            path = cookie.path,
+            secure = cookie.secure,
+            httpOnly = cookie.httpOnly,
+            hostOnly = cookie.hostOnly,
+        )
     }
 }
 
@@ -187,6 +302,7 @@ class DashboardClient(
     ) = withContext(Dispatchers.IO) {
         require(username.isNotBlank()) { "Enter your username." }
         require(password.isNotEmpty()) { "Enter your password." }
+        clearAuthentication()
         val body = json.encodeToString(
             PasswordLoginBody(
                 provider = provider,
@@ -252,6 +368,45 @@ class DashboardClient(
         }.distinctBy(DashboardProfile::name)
         if (profiles.any(DashboardProfile::isDefault)) profiles
         else listOf(DashboardProfile(name = "default", isDefault = true)) + profiles
+    }
+
+    override suspend fun logout(baseUrl: String) = withContext(Dispatchers.IO) {
+        val normalizedBaseUrl = DashboardUrlPolicy.normalize(baseUrl)
+        val request = Request.Builder()
+            .url("$normalizedBaseUrl/auth/logout")
+            .post(ByteArray(0).toRequestBody(null))
+            .build()
+        try {
+            httpClient.newCall(request).execute().use { response ->
+                if (response.code !in 200..399) throw failureFor(response.code, "Hermes sign-out")
+            }
+        } catch (error: DashboardFailure) {
+            throw error
+        } catch (error: IOException) {
+            throw TransportUnavailable("Could not reach Hermes to sign out.", error)
+        }
+    }
+
+    override fun exportAuthentication(baseUrl: String): AuthenticationMaterial? {
+        val jar = cookieJar as? DashboardCookieJar ?: return null
+        val url = runCatching { DashboardUrlPolicy.normalize(baseUrl).toHttpUrl() }.getOrNull() ?: return null
+        val cookies = jar.authenticatedCookies(url)
+        if (cookies.isEmpty()) return null
+        return AuthenticationMaterial(json.encodeToString(cookies.map(PersistedDashboardCookie::from)))
+    }
+
+    override fun restoreAuthentication(baseUrl: String, material: AuthenticationMaterial): Boolean {
+        val jar = cookieJar as? DashboardCookieJar ?: return false
+        jar.clear()
+        val url = runCatching { DashboardUrlPolicy.normalize(baseUrl).toHttpUrl() }.getOrNull() ?: return false
+        val cookies = runCatching {
+            json.decodeFromString<List<PersistedDashboardCookie>>(material.value).map { it.toCookie() }
+        }.getOrNull() ?: return false
+        return jar.replaceAuthenticatedCookies(url, cookies)
+    }
+
+    override fun clearAuthentication() {
+        (cookieJar as? DashboardCookieJar)?.clear()
     }
 
     override fun createGateway(baseUrl: String, credential: GatewayCredential): GatewayConnection =
@@ -320,20 +475,24 @@ class DashboardClient(
             ?: throw IOException("Hermes did not return a WebSocket ticket.")
     }
 
-    private fun executeJson(request: Request, operation: String) =
+    private fun executeJson(request: Request, operation: String) = try {
         httpClient.newCall(request).execute().use { response ->
-            if (!response.isSuccessful) {
-                val label = when (response.code) {
-                    401, 403 -> "$operation needs sign-in."
-                    429 -> "$operation was rate-limited. Try again shortly."
-                    else -> "$operation returned HTTP ${response.code}."
-                }
-                throw IOException(label)
-            }
+            if (!response.isSuccessful) throw failureFor(response.code, operation)
             val body = response.body.string()
             runCatching { json.parseToJsonElement(body) }
-                .getOrElse { throw IOException("$operation returned an unreadable response.") }
+                .getOrElse { throw InvalidDashboardResponse("$operation returned an unreadable response.", it) }
         }
+    } catch (error: DashboardFailure) {
+        throw error
+    } catch (error: IOException) {
+        throw TransportUnavailable("Could not reach Hermes for $operation.", error)
+    }
+
+    private fun failureFor(code: Int, operation: String): DashboardFailure = when (code) {
+        401, 403 -> AuthenticationRejected("$operation needs sign-in.")
+        429 -> RateLimited("$operation was rate-limited. Try again shortly.")
+        else -> TransportUnavailable("$operation returned HTTP $code.")
+    }
 
     private suspend fun requestSessionList(wsUrl: String, limit: Int): List<StoredSession> =
         suspendCancellableCoroutine { continuation ->
@@ -384,11 +543,12 @@ class DashboardClient(
                 }
 
                 override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
-                    val message = when (response?.code) {
-                        401, 403 -> "Hermes rejected the dashboard credential."
-                        else -> "Could not open the Hermes session connection."
+                    val error = when (response?.code) {
+                        401, 403 -> AuthenticationRejected("Hermes rejected the dashboard credential.")
+                        429 -> RateLimited("Hermes rate-limited the dashboard connection.")
+                        else -> TransportUnavailable("Could not open the Hermes session connection.", t)
                     }
-                    fail(IOException(message, t))
+                    fail(error)
                 }
 
                 override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
@@ -476,11 +636,12 @@ class DashboardClient(
             }
 
             override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
-                val message = when (response?.code) {
-                    401, 403 -> "Hermes rejected the dashboard credential."
-                    else -> "Could not open the Hermes conversation."
+                val error = when (response?.code) {
+                    401, 403 -> AuthenticationRejected("Hermes rejected the dashboard credential.")
+                    429 -> RateLimited("Hermes rate-limited the dashboard connection.")
+                    else -> TransportUnavailable("Could not open the Hermes conversation.", t)
                 }
-                fail(IOException(message, t))
+                fail(error)
             }
 
             override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
