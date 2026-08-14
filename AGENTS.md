@@ -60,7 +60,7 @@ GitHub Actions owns APK assembly and test-build signing; do not create distribut
 - The current official Hermes server and Desktop implementation is protocol authority. Check it before changing routes, payloads, events, or lifecycle behavior; see [`docs/hermes-protocol.md`](docs/hermes-protocol.md).
 - The Hermes dashboard owns profiles, sessions, messages, and capabilities. Do not create a second mobile session store or synchronization layer; see [`docs/architecture.md`](docs/architecture.md).
 - Keep transport, authentication, protocol models, and session state independent of Compose.
-- Never log, commit, fixture, screenshot, or persist credentials or private conversation data; see [`docs/security.md`](docs/security.md).
+- Never log, commit, fixture, or screenshot credentials or private conversation data. Persist only supported reusable authentication through the Keystore-backed connection store; raw passwords and private conversation data remain memory-only. See [`docs/security.md`](docs/security.md).
 - The source repository is public. Do not publish releases, sign distributable builds, create store infrastructure, or expose credentials/private user data; see [`docs/development.md`](docs/development.md) and [`docs/security.md`](docs/security.md).
 - Build the application UI with Kotlin and Jetpack Compose. Do not introduce a WebView UI.
 - Do not accept a visual change by updating screenshot references without project-owner review; see [`docs/testing.md`](docs/testing.md).
