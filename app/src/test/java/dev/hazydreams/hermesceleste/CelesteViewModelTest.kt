@@ -165,8 +165,31 @@ class CelesteViewModelTest {
         assertEquals(connectsBeforeRejection + 1, gateway.connectCount)
         assertEquals(ConnectionPhase.AuthenticationRequired, viewModel.state.value.connectionPhase)
         assertNull(viewModel.state.value.activeSummary)
+        assertEquals("https://hermes.test", viewModel.state.value.dashboardUrl)
+        assertEquals("celeste", viewModel.state.value.username)
         assertNull(store.load()?.secret)
         assertFalse(store.load()?.descriptor?.autoLoginEnabled ?: true)
+
+        advanceUntilIdle()
+        assertEquals(connectsBeforeRejection + 1, gateway.connectCount)
+    }
+
+    @Test
+    fun profileCatalogFailureDoesNotBecomeAConnectedDefaultProfile() = runTest {
+        val dashboard = FakeDashboard(FakeGateway()).apply {
+            profileFailure = AuthenticationRejected("Hermes rejected profile access.")
+        }
+        val viewModel = CelesteViewModel(dashboard = dashboard)
+        advanceUntilIdle()
+
+        viewModel.updateDashboardUrl("http://hermes.test:9119")
+        viewModel.findDashboard()
+        viewModel.loadSessions()
+        advanceUntilIdle()
+
+        assertEquals(ConnectionPhase.ManualSetup, viewModel.state.value.connectionPhase)
+        assertNull(viewModel.state.value.sessions)
+        assertEquals("Hermes rejected profile access.", viewModel.state.value.errorMessage)
     }
 
     @Test
@@ -261,6 +284,8 @@ class CelesteViewModelTest {
         private val gateway: FakeGateway,
         private val authRequired: Boolean = false,
     ) : DashboardService {
+        var profileFailure: Throwable? = null
+
         val session = StoredSession(
             id = "stored-42",
             title = "Shared conversation",
@@ -298,10 +323,13 @@ class CelesteViewModelTest {
         override suspend fun listProfiles(
             baseUrl: String,
             credential: GatewayCredential,
-        ): List<DashboardProfile> = listOf(
-            DashboardProfile(name = "default", isDefault = true),
-            DashboardProfile(name = "work"),
-        )
+        ): List<DashboardProfile> {
+            profileFailure?.let { throw it }
+            return listOf(
+                DashboardProfile(name = "default", isDefault = true),
+                DashboardProfile(name = "work"),
+            )
+        }
 
         override fun exportAuthentication(baseUrl: String): AuthenticationMaterial? =
             if (authRequired) AuthenticationMaterial("synthetic-session-cookies") else null

@@ -36,6 +36,8 @@ Transport security and sensitive data rules live in [`security.md`](security.md)
 
 Static-token profile requests use `X-Hermes-Session-Token`. Cookie-authenticated requests use the client’s private cookie jar. Celeste may Keystore-encrypt unexpired Hermes access, refresh, and provider cookies for the exact normalized endpoint; it never persists PKCE cookies, one-use WebSocket tickets, or passwords.
 
+Current Hermes exposes `GET /api/profiles`. A `404` from that route alone is treated as compatibility with an older single-profile dashboard and yields the `default` profile. Authentication rejection, rate limiting, other HTTP or transport failures, and malformed profile responses remain failures.
+
 The shared HTTP client does not follow redirects. Reverse proxies must expose the expected routes directly under the normalized base path.
 
 ## WebSocket admission

@@ -4,8 +4,10 @@
 
 Celeste is currently a single-module Android application:
 
-- `MainActivity.kt` owns top-level Compose routing and screen composition.
+- `MainActivity.kt` owns Activity setup, ViewModel wiring, and lifecycle forwarding.
 - `CelesteViewModel.kt` owns application/session state, turn reduction, lifecycle recovery, and user actions.
+- `ui/CelesteRoutes.kt` owns top-level destination selection and the shared screen backdrop.
+- `ui/gateway/`, `ui/sessions/`, and `ui/conversation/` own their existing screen areas; transcript row identity and rendering stay with conversation UI.
 - `network/DashboardClient.kt` owns dashboard HTTP operations, authentication setup, profile/session discovery, and gateway construction.
 - `network/HermesGateway.kt` is a thin persistent JSON-RPC transport.
 - `network/GatewaySessionApi.kt` owns typed session RPC requests and response decoding.
@@ -96,4 +98,4 @@ Regression coverage for these invariants belongs in `CelesteViewModelTest` and `
 
 ## Growth rule
 
-Split files when an ownership boundary becomes real. Likely future seams include screen packages, transcript rendering, and capability-specific protocol adapters. Preserve the layer direction: Compose → application state → dashboard/protocol → transport, with connection persistence injected into application state.
+Split files when an ownership boundary becomes real. A capability-specific protocol adapter is a likely future seam if the current dashboard client boundary becomes obstructive. Preserve the layer direction: Compose → application state → dashboard/protocol → transport, with connection persistence injected into application state.

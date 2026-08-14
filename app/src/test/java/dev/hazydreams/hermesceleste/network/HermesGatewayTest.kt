@@ -134,6 +134,26 @@ class HermesGatewayTest {
     }
 
     @Test
+    fun canonicalMessageDecoderHandlesContentAndToolAliases() {
+        val messages = decodeGatewayMessages(
+            Json.parseToJsonElement(
+                """[
+                    {"row_id":41,"role":"user","content":"Run the check"},
+                    {"role":"assistant","text":"Checking"},
+                    {"role":"tool","tool_name":"terminal","context":"Repeated output"},
+                    {"role":"tool","name":"terminal","context":"Repeated output"},
+                    {"id":"final","role":"assistant","content":"Done"}
+                ]""".trimIndent(),
+            ).jsonArray,
+        )
+
+        assertEquals(listOf("user", "assistant", "tool", "tool", "assistant"), messages.map { it.role })
+        assertEquals(listOf("Run the check", "Checking", "Repeated output", "Repeated output", "Done"), messages.map { it.text })
+        assertEquals(listOf(null, null, "terminal", "terminal", null), messages.map { it.toolName })
+        assertEquals(listOf("row-41", "resume-1", "resume-2", "resume-3", "final"), messages.map { it.id })
+    }
+
+    @Test
     fun resumedHistoryIgnoresMalformedAndBlankMessageIdentities() {
         val messages = decodeGatewayMessages(
             Json.parseToJsonElement(
