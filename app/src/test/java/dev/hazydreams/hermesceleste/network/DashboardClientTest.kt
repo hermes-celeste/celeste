@@ -77,6 +77,17 @@ class DashboardClientTest {
     }
 
     @Test
+    fun malformedStatusResponseIsNotClassifiedAsAuthenticationRejection() = runTest {
+        server.enqueue(MockResponse.Builder().code(200).body("[]").build())
+
+        val error = runCatching {
+            DashboardClient().probe(server.url("/").toString())
+        }.exceptionOrNull()
+
+        assertTrue(error is InvalidDashboardResponse)
+    }
+
+    @Test
     fun listsTheDashboardStoredSessionsOverJsonRpc() = runBlocking {
         server.enqueue(sessionListWebSocket())
 
@@ -157,6 +168,55 @@ class DashboardClientTest {
         assertTrue(cookieHeader.contains("hermes_session_at=synthetic-access"))
         assertTrue(cookieHeader.contains("hermes_session_rt=synthetic-refresh"))
         assertTrue(!cookieHeader.contains("hermes_session_pkce"))
+    }
+
+    @Test
+    fun remembersCookiesScopedBelowADashboardPathPrefix() = runTest {
+        server.enqueue(
+            MockResponse.Builder()
+                .code(200)
+                .addHeader(
+                    "Set-Cookie",
+                    "hermes_session_rt=prefix-refresh; Path=/prefix/; Max-Age=86400; HttpOnly",
+                )
+                .body("""{"ok":true,"next":"/prefix/"}""")
+                .build(),
+        )
+        server.enqueue(MockResponse.Builder().code(200).body("""{"profiles":[]}""").build())
+        val baseUrl = server.url("/prefix").toString().trimEnd('/')
+        val signedIn = DashboardClient()
+        signedIn.passwordLogin(baseUrl, "password", "test-user", "synthetic-password")
+
+        val material = requireNotNull(signedIn.exportAuthentication(baseUrl))
+        val restored = DashboardClient()
+        assertTrue(restored.restoreAuthentication(baseUrl, material))
+        restored.listProfiles(baseUrl, GatewayCredential.CookieSession)
+
+        server.takeRequest()
+        val profiles = server.takeRequest()
+        assertEquals("/prefix/api/profiles", profiles.url.encodedPath)
+        assertEquals("hermes_session_rt=prefix-refresh", profiles.headers["Cookie"])
+    }
+
+    @Test
+    fun restoresValidRefreshCookieAfterAccessCookieExpiry() = runTest {
+        val now = System.currentTimeMillis()
+        val host = server.url("/").host
+        val material = AuthenticationMaterial(
+            """[
+                {"name":"hermes_session_at","value":"expired-access","expiresAt":${now - 1},"domain":"$host","path":"/","secure":false,"httpOnly":true,"hostOnly":true},
+                {"name":"hermes_session_rt","value":"valid-refresh","expiresAt":${now + 60_000},"domain":"$host","path":"/","secure":false,"httpOnly":true,"hostOnly":true}
+            ]""".trimIndent(),
+        )
+        server.enqueue(MockResponse.Builder().code(200).body("""{"profiles":[]}""").build())
+        val baseUrl = server.url("/").toString().trimEnd('/')
+        val restored = DashboardClient()
+
+        assertTrue(restored.restoreAuthentication(baseUrl, material))
+        restored.listProfiles(baseUrl, GatewayCredential.CookieSession)
+
+        val profiles = server.takeRequest()
+        assertEquals("hermes_session_rt=valid-refresh", profiles.headers["Cookie"])
     }
 
     @Test

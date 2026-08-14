@@ -488,7 +488,7 @@ internal class CelesteViewModel(
             dashboard.clearAuthentication()
             credential = null
             currentDescriptor = null
-            if (error is AuthenticationRejected || error is IllegalArgumentException) {
+            if (error is AuthenticationRejected) {
                 connectionStoreMutex.withLock {
                     runCatching { connectionStore.clearSecret() }
                 }

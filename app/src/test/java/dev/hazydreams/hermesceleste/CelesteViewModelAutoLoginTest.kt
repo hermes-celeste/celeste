@@ -15,6 +15,7 @@ import dev.hazydreams.hermesceleste.network.GatewayConnection
 import dev.hazydreams.hermesceleste.network.GatewayConnectionState
 import dev.hazydreams.hermesceleste.network.GatewayCredential
 import dev.hazydreams.hermesceleste.network.GatewayEvent
+import dev.hazydreams.hermesceleste.network.InvalidDashboardResponse
 import dev.hazydreams.hermesceleste.network.StoredSession
 import dev.hazydreams.hermesceleste.network.TransportUnavailable
 import kotlinx.coroutines.Dispatchers
@@ -189,6 +190,30 @@ class CelesteViewModelAutoLoginTest {
 
         assertEquals(ConnectionPhase.Connected, viewModel.state.value.connectionPhase)
         assertEquals(2, dashboard.probeCalls)
+    }
+
+    @Test
+    fun malformedDashboardResponseKeepsReusableAuthenticationForRetry() = runTest {
+        val descriptor = SavedConnectionDescriptor(
+            baseUrl = "https://hermes.example.net",
+            authMode = SavedAuthMode.ProviderSession,
+            provider = "password",
+            username = "celeste",
+            expectsSecret = true,
+        )
+        val store = InMemoryConnectionStore(
+            StoredConnection(descriptor, ReusableSecret("synthetic-session-cookies")),
+        )
+        val dashboard = AutoLoginDashboard(passwordProbe).apply {
+            probeFailure = InvalidDashboardResponse("Malformed response.")
+        }
+
+        val viewModel = CelesteViewModel(dashboard = dashboard, connectionStore = store)
+        advanceUntilIdle()
+
+        assertEquals(ConnectionPhase.RestoreFailed, viewModel.state.value.connectionPhase)
+        assertEquals("synthetic-session-cookies", store.load()?.secret?.value)
+        assertTrue(store.load()?.descriptor?.autoLoginEnabled == true)
     }
 
     @Test

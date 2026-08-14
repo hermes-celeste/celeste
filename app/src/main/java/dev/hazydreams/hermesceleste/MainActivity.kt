@@ -390,18 +390,11 @@ internal fun GatewaySettingsScreen(
     onBack: (() -> Unit)?,
 ) {
     var address by rememberSaveable(dashboardUrl) { mutableStateOf(dashboardUrl) }
-    var connectAfterProbe by remember { mutableStateOf(false) }
     var confirmForgetConnection by remember { mutableStateOf(false) }
     val isConnected = connectionPhase == ConnectionPhase.Connected
     val addressChanged = address.trim().trimEnd('/') != dashboardUrl.trim().trimEnd('/')
     val effectiveProbe = probe?.takeIf { !addressChanged }
 
-    LaunchedEffect(effectiveProbe, loadingMessage, connectAfterProbe) {
-        val result = effectiveProbe ?: return@LaunchedEffect
-        if (!connectAfterProbe || loadingMessage != null) return@LaunchedEffect
-        connectAfterProbe = false
-        if (!result.authRequired) onConnect()
-    }
 
     CelesteBackdrop {
         Column(
@@ -541,7 +534,8 @@ internal fun GatewaySettingsScreen(
                 Spacer(Modifier.height(4.dp))
                 CelesteButton(
                     text = when {
-                        effectiveProbe?.authRequired == true -> "Sign in"
+                        effectiveProbe == null -> "Continue"
+                        effectiveProbe.authRequired -> "Sign in"
                         savedAuthMode != null || addressChanged -> "Save & reconnect"
                         else -> "Connect"
                     },
@@ -553,7 +547,6 @@ internal fun GatewaySettingsScreen(
                     },
                     onClick = {
                         if (effectiveProbe == null) {
-                            connectAfterProbe = true
                             onApplyAddress(address)
                         } else {
                             onConnect()

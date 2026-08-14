@@ -128,6 +128,39 @@ fun PasswordConnectPreviewScreenshot() {
 }
 
 @PreviewTest
+@Preview(name = "13 · Session token", widthDp = 390, heightDp = 844, showBackground = true)
+@Composable
+fun SessionTokenGatewayPreviewScreenshot() {
+    HermesCelesteTheme {
+        GatewaySettingsScreen(
+            dashboardUrl = "http://100.64.0.12:9119",
+            probe = DashboardProbeResult(
+                baseUrl = "http://100.64.0.12:9119",
+                authRequired = false,
+                providers = emptyList(),
+                version = "0.20.0",
+            ),
+            savedAuthMode = null,
+            username = "",
+            onUsernameChange = {},
+            password = "",
+            onPasswordChange = {},
+            sessionToken = "",
+            onSessionTokenChange = {},
+            connectionPhase = ConnectionPhase.ManualSetup,
+            loadingMessage = null,
+            errorMessage = null,
+            onApplyAddress = {},
+            onConnect = {},
+            onRetry = {},
+            onSignOut = {},
+            onForgetConnection = {},
+            onBack = null,
+        )
+    }
+}
+
+@PreviewTest
 @Preview(name = "09 · Settings", widthDp = 390, heightDp = 844, showBackground = true)
 @Composable
 fun SettingsPreviewScreenshot() {

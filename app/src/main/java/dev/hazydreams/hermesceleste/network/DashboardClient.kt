@@ -190,17 +190,17 @@ private class DashboardCookieJar : CookieJar {
     @Synchronized
     fun replaceAuthenticatedCookies(url: HttpUrl, restored: List<Cookie>): Boolean {
         val now = System.currentTimeMillis()
-        if (restored.none { it.name in HERMES_CREDENTIAL_COOKIE_NAMES } || restored.any { cookie ->
+        val usable = restored.filter { it.expiresAt > now }
+        if (usable.none { it.name in HERMES_CREDENTIAL_COOKIE_NAMES } || usable.any { cookie ->
                 cookie.name !in HERMES_SESSION_COOKIE_NAMES ||
                     cookie.domain != url.host ||
-                    cookie.expiresAt <= now ||
                     !cookie.matches(url)
             }
         ) {
             return false
         }
         cookies.clear()
-        cookies += restored
+        cookies += usable
         return true
     }
 
@@ -283,7 +283,9 @@ class DashboardClient(
                 .get()
                 .build(),
             "Hermes status",
-        ).jsonObject
+        ) as? JsonObject ?: throw InvalidDashboardResponse(
+            "Hermes status returned an unexpected response.",
+        )
         val authRequired = status["auth_required"]?.jsonPrimitive?.booleanOrNull ?: false
         val providers = if (authRequired) fetchProviders(baseUrl) else emptyList()
         DashboardProbeResult(
@@ -389,7 +391,7 @@ class DashboardClient(
 
     override fun exportAuthentication(baseUrl: String): AuthenticationMaterial? {
         val jar = cookieJar as? DashboardCookieJar ?: return null
-        val url = runCatching { DashboardUrlPolicy.normalize(baseUrl).toHttpUrl() }.getOrNull() ?: return null
+        val url = authenticationScopeUrl(baseUrl) ?: return null
         val cookies = jar.authenticatedCookies(url)
         if (cookies.isEmpty()) return null
         return AuthenticationMaterial(json.encodeToString(cookies.map(PersistedDashboardCookie::from)))
@@ -398,7 +400,7 @@ class DashboardClient(
     override fun restoreAuthentication(baseUrl: String, material: AuthenticationMaterial): Boolean {
         val jar = cookieJar as? DashboardCookieJar ?: return false
         jar.clear()
-        val url = runCatching { DashboardUrlPolicy.normalize(baseUrl).toHttpUrl() }.getOrNull() ?: return false
+        val url = authenticationScopeUrl(baseUrl) ?: return false
         val cookies = runCatching {
             json.decodeFromString<List<PersistedDashboardCookie>>(material.value).map { it.toCookie() }
         }.getOrNull() ?: return false
@@ -408,6 +410,10 @@ class DashboardClient(
     override fun clearAuthentication() {
         (cookieJar as? DashboardCookieJar)?.clear()
     }
+
+    private fun authenticationScopeUrl(baseUrl: String): HttpUrl? = runCatching {
+        "${DashboardUrlPolicy.normalize(baseUrl)}/api/status".toHttpUrl()
+    }.getOrNull()
 
     override fun createGateway(baseUrl: String, credential: GatewayCredential): GatewayConnection =
         HermesGateway(
