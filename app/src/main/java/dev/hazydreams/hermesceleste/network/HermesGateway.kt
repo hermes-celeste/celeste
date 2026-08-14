@@ -156,7 +156,11 @@ class HermesGateway(
                     401, 403 -> "Hermes rejected the dashboard credential."
                     else -> t.message ?: "The Hermes connection failed."
                 }
-                handleDisconnect(reason, opened, t)
+                val error = when (response?.code) {
+                    401, 403 -> AuthenticationRejected(reason)
+                    else -> IOException(reason, t)
+                }
+                handleDisconnect(reason, opened, error)
             }
         }
 
@@ -255,13 +259,12 @@ class HermesGateway(
     private fun handleDisconnect(
         reason: String,
         opened: CompletableDeferred<Unit>,
-        cause: Throwable? = null,
+        error: Throwable = IOException(reason),
     ) {
         socket = null
-        val error = IOException(reason, cause)
+        if (!intentionalClose) mutableState.value = GatewayConnectionState.Disconnected(reason)
         if (!opened.isCompleted) opened.completeExceptionally(error)
         failPending(error)
-        if (!intentionalClose) mutableState.value = GatewayConnectionState.Disconnected(reason)
     }
 
     private fun failPending(error: Throwable) {

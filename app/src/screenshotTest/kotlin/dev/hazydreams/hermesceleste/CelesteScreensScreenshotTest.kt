@@ -3,6 +3,7 @@ package dev.hazydreams.hermesceleste
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.tooling.preview.Preview
 import com.android.tools.screenshot.PreviewTest
+import dev.hazydreams.hermesceleste.connection.SavedAuthMode
 import dev.hazydreams.hermesceleste.network.AuthProvider
 import dev.hazydreams.hermesceleste.network.ConversationMessage
 import dev.hazydreams.hermesceleste.network.DashboardProbeResult
@@ -66,24 +67,29 @@ private val previewMessages = listOf(
 )
 
 @PreviewTest
-@Preview(name = "01 · Connect", widthDp = 390, heightDp = 844, showBackground = true)
+@Preview(name = "01 · Gateway setup", widthDp = 390, heightDp = 844, showBackground = true)
 @Composable
-fun ConnectPreviewScreenshot() {
+fun GatewaySetupPreviewScreenshot() {
     HermesCelesteTheme {
-        ConnectScreen(
-            dashboardUrl = "100.101.22.9:9119",
-            onDashboardUrlChange = {},
+        GatewaySettingsScreen(
+            dashboardUrl = "",
             probe = null,
+            savedAuthMode = null,
             username = "",
             onUsernameChange = {},
             password = "",
             onPasswordChange = {},
             sessionToken = "",
             onSessionTokenChange = {},
+            connectionPhase = ConnectionPhase.ManualSetup,
             loadingMessage = null,
             errorMessage = null,
-            onProbe = {},
-            onLoadSessions = {},
+            onApplyAddress = {},
+            onConnect = {},
+            onRetry = {},
+            onSignOut = {},
+            onForgetConnection = {},
+            onBack = null,
         )
     }
 }
@@ -93,25 +99,132 @@ fun ConnectPreviewScreenshot() {
 @Composable
 fun PasswordConnectPreviewScreenshot() {
     HermesCelesteTheme {
-        ConnectScreen(
+        GatewaySettingsScreen(
             dashboardUrl = "https://hermes.example.net",
-            onDashboardUrlChange = {},
             probe = DashboardProbeResult(
                 baseUrl = "https://hermes.example.net",
                 authRequired = true,
                 providers = listOf(AuthProvider("password", "Password", supportsPassword = true)),
                 version = "0.20.0",
             ),
+            savedAuthMode = SavedAuthMode.ProviderSession,
             username = "celeste",
             onUsernameChange = {},
             password = "preview-only",
             onPasswordChange = {},
             sessionToken = "",
             onSessionTokenChange = {},
+            connectionPhase = ConnectionPhase.AuthenticationRequired,
+            loadingMessage = null,
+            errorMessage = "Sign in required.",
+            onApplyAddress = {},
+            onConnect = {},
+            onRetry = {},
+            onSignOut = {},
+            onForgetConnection = {},
+            onBack = {},
+        )
+    }
+}
+
+@PreviewTest
+@Preview(name = "13 · Session token", widthDp = 390, heightDp = 844, showBackground = true)
+@Composable
+fun SessionTokenGatewayPreviewScreenshot() {
+    HermesCelesteTheme {
+        GatewaySettingsScreen(
+            dashboardUrl = "http://100.64.0.12:9119",
+            probe = DashboardProbeResult(
+                baseUrl = "http://100.64.0.12:9119",
+                authRequired = false,
+                providers = emptyList(),
+                version = "0.20.0",
+            ),
+            savedAuthMode = null,
+            username = "",
+            onUsernameChange = {},
+            password = "",
+            onPasswordChange = {},
+            sessionToken = "",
+            onSessionTokenChange = {},
+            connectionPhase = ConnectionPhase.ManualSetup,
             loadingMessage = null,
             errorMessage = null,
-            onProbe = {},
-            onLoadSessions = {},
+            onApplyAddress = {},
+            onConnect = {},
+            onRetry = {},
+            onSignOut = {},
+            onForgetConnection = {},
+            onBack = null,
+        )
+    }
+}
+
+@PreviewTest
+@Preview(name = "09 · Settings", widthDp = 390, heightDp = 844, showBackground = true)
+@Composable
+fun SettingsPreviewScreenshot() {
+    HermesCelesteTheme {
+        SettingsScreen(
+            dashboardUrl = "https://hermes.example.net",
+            connectionPhase = ConnectionPhase.Connected,
+            onBack = {},
+            onGateway = {},
+        )
+    }
+}
+
+@PreviewTest
+@Preview(name = "10 · Connected gateway", widthDp = 390, heightDp = 844, showBackground = true)
+@Composable
+fun ConnectedGatewayPreviewScreenshot() {
+    HermesCelesteTheme {
+        GatewaySettingsScreen(
+            dashboardUrl = "https://hermes.example.net",
+            probe = DashboardProbeResult(
+                baseUrl = "https://hermes.example.net",
+                authRequired = true,
+                providers = listOf(AuthProvider("password", "Password", supportsPassword = true)),
+                version = "0.20.0",
+            ),
+            savedAuthMode = SavedAuthMode.ProviderSession,
+            username = "celeste",
+            onUsernameChange = {},
+            password = "",
+            onPasswordChange = {},
+            sessionToken = "",
+            onSessionTokenChange = {},
+            connectionPhase = ConnectionPhase.Connected,
+            loadingMessage = null,
+            errorMessage = null,
+            onApplyAddress = {},
+            onConnect = {},
+            onRetry = {},
+            onSignOut = {},
+            onForgetConnection = {},
+            onBack = {},
+        )
+    }
+}
+
+@PreviewTest
+@Preview(name = "11 · Restoring connection", widthDp = 390, heightDp = 844, showBackground = true)
+@Composable
+fun RestoringConnectionPreviewScreenshot() {
+    HermesCelesteTheme {
+        ConnectionLoadingScreen()
+    }
+}
+
+@PreviewTest
+@Preview(name = "12 · Gateway unavailable", widthDp = 390, heightDp = 844, showBackground = true)
+@Composable
+fun RestoreFailedPreviewScreenshot() {
+    HermesCelesteTheme {
+        ConnectionUnavailableScreen(
+            errorMessage = "Could not reach Hermes.",
+            onRetry = {},
+            onSettings = {},
         )
     }
 }
@@ -130,10 +243,10 @@ fun SessionListPreviewScreenshot() {
             selectedProfile = "work",
             loadingMessage = null,
             errorMessage = null,
-            onBack = {},
             onProfileSelected = {},
             onNewConversation = {},
             onSessionSelected = {},
+            onSettings = {},
         )
     }
 }

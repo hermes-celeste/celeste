@@ -10,8 +10,8 @@ Match verification to what changed:
 | Kotlin state or protocol logic | Focused unit test during iteration, then `testDebugUnitTest` |
 | URL, authentication, HTTP, or WebSocket behavior | MockWebServer/gateway regression plus `testDebugUnitTest`; use the live contract when server admission or shape changed |
 | Compose layout, copy, color, or interaction state | Relevant unit checks plus host screenshot review and `validateDebugScreenshotTest` |
-| Manifest, resources, launcher, packaging, or install behavior | `lintDebug assembleDebug`; device verification when behavior crosses onto Android |
-| Release milestone | Unit tests, lint, screenshots, APK assembly, and meaningful real-device flows |
+| Manifest, resources, launcher, packaging, or install behavior | Local `lintDebug`, GitHub Actions packaging, and device verification when behavior crosses onto Android |
+| Release milestone | Local unit tests, lint, screenshots, a successful GitHub-built APK, and meaningful real-device flows |
 
 Always run `git diff --check`. Disclose any changed runtime surface that was not exercised.
 
@@ -21,8 +21,10 @@ Tests live under `app/src/test`.
 
 - `DashboardUrlPolicyTest` owns URL normalization and cleartext admission.
 - `DashboardClientTest` owns HTTP/authentication and short WebSocket operations.
+- `ConnectionStoreTest` owns bootstrap decisions, secret redaction, Sign out versus Forget semantics, and ciphertext endpoint binding.
+- `BackupExclusionTest` owns named descriptor exclusions across legacy backup, cloud backup, and device transfer rules.
 - `HermesGatewayTest` owns readiness, request correlation, events, endpoint refresh, and disconnect behavior.
-- `CelesteViewModelTest` owns session creation/resume, event reduction, interruption, reconnect, and no-resend invariants.
+- `CelesteViewModelTest` owns session creation/resume, event reduction, interruption, reconnect, and no-resend invariants; `CelesteViewModelAutoLoginTest` owns cold restore, typed recovery, remembered login, and cleanup transitions.
 - `LiveHermesDashboardTest` is the opt-in real-server contract.
 
 Add a regression at the lowest layer that owns the failure. Cross-layer lifecycle invariants belong in the ViewModel tests even when a socket symptom exposed them.
@@ -37,7 +39,7 @@ scripts/celeste-env ./gradlew --no-daemon testDebugUnitTest
 
 ## Host-rendered Compose screenshots
 
-Screenshot scenarios live in `app/src/screenshotTest`; accepted PNGs live in `app/src/screenshotTestDebug/reference`. The current matrix covers connection, password sign-in, conversation listing, a blank new conversation, composing, streaming, completion, and reconnection.
+The screenshot scenarios live in `app/src/screenshotTest`; accepted PNGs live in `app/src/screenshotTestDebug/reference`. The current matrix covers Gateway setup, password sign-in, Settings and connected Gateway management, saved-connection restoration and recovery, conversation listing, a blank new conversation, composing, streaming, completion, and reconnection.
 
 Validate accepted references:
 
@@ -73,11 +75,10 @@ The test lists and resumes a real stored session. It skips when the URL is absen
 
 ## APK and device cadence
 
-Do not build or install an APK for every Kotlin iteration. Use host tests per change and update-install on a real device at meaningful user-facing milestones, preserving app data:
+Do not assemble distributable APKs locally. Use host tests per change; GitHub Actions verifies packaging on pull requests and produces the consistently signed test APK only from successful `main` runs. At meaningful user-facing milestones, download that GitHub artifact and update-install it on a real device while preserving app data:
 
 ```bash
-scripts/celeste-env ./gradlew --no-daemon lintDebug assembleDebug
-scripts/celeste-env adb install -r app/build/outputs/apk/debug/app-debug.apk
+scripts/celeste-env adb install -r /path/to/Hermes-Celeste-latest.apk
 ```
 
 Use a real device for Android-only behavior such as lifecycle transitions, IME/insets, system back, permissions, network changes, launcher assets, and performance. Record the flows and device conditions exercised rather than reporting “tested on device” without specifics.

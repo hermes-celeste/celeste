@@ -25,4 +25,4 @@ Celeste is in early development. The native chat flow is functional; OAuth sign-
 scripts/celeste-env ./gradlew --no-daemon testDebugUnitTest lintDebug
 ```
 
-Build a debug APK with `scripts/celeste-env ./gradlew --no-daemon assembleDebug`.
+GitHub Actions verifies APK assembly on pull requests and publishes the current test APK from successful `main` builds. Local development uses unit tests, lint, and screenshot validation rather than distributable APK assembly.
