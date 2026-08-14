@@ -2,6 +2,10 @@ package dev.hazydreams.hermesceleste
 
 import java.io.IOException
 
+import dev.hazydreams.hermesceleste.connection.InMemoryConnectionStore
+import dev.hazydreams.hermesceleste.network.AuthenticationMaterial
+import dev.hazydreams.hermesceleste.network.AuthenticationRejected
+import dev.hazydreams.hermesceleste.network.AuthProvider
 import dev.hazydreams.hermesceleste.network.ConversationMessage
 import dev.hazydreams.hermesceleste.network.DashboardProbeResult
 import dev.hazydreams.hermesceleste.network.DashboardProfile
@@ -31,6 +35,7 @@ import kotlinx.serialization.json.put
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -132,6 +137,39 @@ class CelesteViewModelTest {
     }
 
     @Test
+    fun revokedProviderSessionStopsReconnectAndDeletesReusableAuthentication() = runTest {
+        val gateway = FakeGateway()
+        val dashboard = FakeDashboard(gateway, authRequired = true)
+        val store = InMemoryConnectionStore()
+        val viewModel = CelesteViewModel(
+            dashboard = dashboard,
+            connectionStore = store,
+            reconnectDelayMillis = { _, _ -> 0L },
+        )
+        advanceUntilIdle()
+        viewModel.updateDashboardUrl("https://hermes.test")
+        viewModel.findDashboard()
+        advanceUntilIdle()
+        viewModel.updateUsername("celeste")
+        viewModel.updatePassword("synthetic-password")
+        viewModel.loadSessions()
+        advanceUntilIdle()
+        viewModel.openSession(dashboard.session)
+        advanceUntilIdle()
+        val connectsBeforeRejection = gateway.connectCount
+
+        gateway.connectFailure = AuthenticationRejected("Hermes rejected the saved session.")
+        gateway.disconnect("session expired")
+        advanceUntilIdle()
+
+        assertEquals(connectsBeforeRejection + 1, gateway.connectCount)
+        assertEquals(ConnectionPhase.AuthenticationRequired, viewModel.state.value.connectionPhase)
+        assertNull(viewModel.state.value.activeSummary)
+        assertNull(store.load()?.secret)
+        assertFalse(store.load()?.descriptor?.autoLoginEnabled ?: true)
+    }
+
+    @Test
     fun foregroundHealthCheckReplacesAStaleSocketAndResumes() = runTest {
         val gateway = FakeGateway()
         val viewModel = openConversation(gateway)
@@ -219,7 +257,10 @@ class CelesteViewModelTest {
         return viewModel
     }
 
-    private class FakeDashboard(private val gateway: FakeGateway) : DashboardService {
+    private class FakeDashboard(
+        private val gateway: FakeGateway,
+        private val authRequired: Boolean = false,
+    ) : DashboardService {
         val session = StoredSession(
             id = "stored-42",
             title = "Shared conversation",
@@ -232,8 +273,12 @@ class CelesteViewModelTest {
         override suspend fun probe(rawBaseUrl: String): DashboardProbeResult =
             DashboardProbeResult(
                 baseUrl = rawBaseUrl,
-                authRequired = false,
-                providers = emptyList(),
+                authRequired = authRequired,
+                providers = if (authRequired) {
+                    listOf(AuthProvider("password", "Password", supportsPassword = true))
+                } else {
+                    emptyList()
+                },
                 version = "test",
             )
 
@@ -258,6 +303,9 @@ class CelesteViewModelTest {
             DashboardProfile(name = "work"),
         )
 
+        override fun exportAuthentication(baseUrl: String): AuthenticationMaterial? =
+            if (authRequired) AuthenticationMaterial("synthetic-session-cookies") else null
+
         override fun createGateway(
             baseUrl: String,
             credential: GatewayCredential,
@@ -275,10 +323,12 @@ class CelesteViewModelTest {
         var connectCount = 0
         var createCount = 0
         var failHealthCheck = false
+        var connectFailure: Throwable? = null
         var resumePayload: JsonObject = resumePayload(messages = emptyList(), running = false)
 
         override suspend fun connect() {
             connectCount += 1
+            connectFailure?.let { throw it }
             mutableState.value = GatewayConnectionState.Connected
         }
 

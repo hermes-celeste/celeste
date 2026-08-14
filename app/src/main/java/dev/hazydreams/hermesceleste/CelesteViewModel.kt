@@ -1090,10 +1090,28 @@ internal class CelesteViewModel(
                     reconnectJob = null
                     return@launch
                 }
+                val failure = result.exceptionOrNull()
+                if (failure is AuthenticationRejected) {
+                    val descriptor = currentDescriptor
+                    reconnectJob = null
+                    closeGateway()
+                    credential = null
+                    currentDescriptor = null
+                    dashboard.clearAuthentication()
+                    connectionStoreMutex.withLock {
+                        runCatching { connectionStore.clearSecret() }
+                    }
+                    mutableState.value = manualState(
+                        descriptor = descriptor,
+                        phase = ConnectionPhase.AuthenticationRequired,
+                        errorMessage = "Saved sign-in is no longer valid. Sign in again.",
+                    )
+                    return@launch
+                }
                 reconnectAttempts += 1
                 mutableState.value = mutableState.value.copy(
                     turnState = TurnState.Reconnecting,
-                    errorMessage = result.exceptionOrNull()?.message ?: "Reconnecting to Hermes…",
+                    errorMessage = failure?.message ?: "Reconnecting to Hermes…",
                 )
             }
             reconnectJob = null
