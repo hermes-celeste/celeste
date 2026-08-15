@@ -2,6 +2,7 @@ package dev.hazydreams.hermesceleste
 
 import java.io.IOException
 
+import dev.hazydreams.hermesceleste.connection.ConnectionStore
 import dev.hazydreams.hermesceleste.connection.InMemoryConnectionStore
 import dev.hazydreams.hermesceleste.connection.ReusableSecret
 import dev.hazydreams.hermesceleste.connection.SavedAuthMode
@@ -23,6 +24,7 @@ import dev.hazydreams.hermesceleste.network.StoredSession
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
@@ -33,6 +35,7 @@ import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
@@ -111,6 +114,56 @@ class CelesteViewModelTest {
         assertTrue(gateway.methods.contains("session.interrupt"))
         assertEquals(TurnState.Idle, viewModel.state.value.turnState)
         assertEquals("Partial work", viewModel.state.value.messages.last().text)
+        viewModel.leaveConversation()
+    }
+
+    @Test
+    fun errorCompletionRetainsAuthoritativePartialAssistantContent() = runTest {
+        val gateway = FakeGateway()
+        val viewModel = openConversation(gateway)
+
+        viewModel.updateDraft("Keep the partial response")
+        viewModel.sendMessage()
+        gateway.emit("message.start")
+        gateway.emit("message.delta", """{"text":"streamed prefix"}""")
+        gateway.emit(
+            "message.complete",
+            """{"content":"authoritative partial response","status":"error"}""",
+        )
+        advanceUntilIdle()
+
+        assertEquals(TurnState.Idle, viewModel.state.value.turnState)
+        assertEquals("authoritative partial response", viewModel.state.value.messages.last().text)
+        assertEquals(UiNoticeCategory.ServerTurnFailure, viewModel.state.value.notice?.category)
+        viewModel.leaveConversation()
+    }
+
+    @Test
+    fun interruptFailureStillReconcilesBeforeProjectingRecovery() = runTest {
+        val gateway = FakeGateway()
+        val viewModel = openConversation(gateway)
+        viewModel.updateDraft("Stop this turn")
+        viewModel.sendMessage()
+        gateway.emit("message.start")
+        gateway.emit("message.delta", """{"text":"safe partial"}""")
+        advanceUntilIdle()
+
+        gateway.interruptFailure = IOException("interrupt delivery failed")
+        gateway.resumePayload = resumePayload(
+            messages = listOf(
+                ConversationMessage(role = "user", text = "Stop this turn", id = "server-user"),
+                ConversationMessage(role = "assistant", text = "authoritative partial", id = "server-assistant"),
+            ),
+            running = false,
+        )
+        viewModel.interrupt()
+        advanceUntilIdle()
+
+        assertEquals(1, gateway.methods.count { it == "session.interrupt" })
+        assertEquals(2, gateway.methods.count { it == "session.resume" })
+        assertEquals(TurnState.Idle, viewModel.state.value.turnState)
+        assertEquals("authoritative partial", viewModel.state.value.messages.last().text)
+        assertNull(viewModel.state.value.notice)
         viewModel.leaveConversation()
     }
 
@@ -269,6 +322,30 @@ class CelesteViewModelTest {
     }
 
     @Test
+    fun staleAuthenticationCannotPublishAfterBackgroundStoreWait() = runTest {
+        val clearGate = CompletableDeferred<Unit>()
+        val store = BlockingClearConnectionStore(clearGate)
+        val dashboard = FakeDashboard(FakeGateway()).apply {
+            sessionFailure = AuthenticationRejected("synthetic auth rejection")
+        }
+        val viewModel = CelesteViewModel(dashboard = dashboard, connectionStore = store)
+        advanceUntilIdle()
+        viewModel.updateDashboardUrl("http://hermes.test:9119")
+        viewModel.findDashboard()
+        advanceUntilIdle()
+        viewModel.loadSessions()
+        store.clearEntered.await()
+
+        viewModel.onBackground()
+        clearGate.complete(Unit)
+        advanceUntilIdle()
+
+        assertTrue(viewModel.state.value.connectionPhase != ConnectionPhase.AuthenticationRequired)
+        assertNull(viewModel.state.value.notice)
+    }
+
+
+    @Test
     fun foregroundHealthCheckReplacesAStaleSocketAndResumes() = runTest {
         val gateway = FakeGateway()
         val viewModel = openConversation(gateway)
@@ -307,6 +384,129 @@ class CelesteViewModelTest {
         assertEquals("after foreground", viewModel.state.value.streamingText)
         viewModel.leaveConversation()
     }
+
+    @Test
+    fun backgroundDuringRestoreIsCanceledAndForegroundRetriesWithNoGateway() = runTest {
+        val descriptor = SavedConnectionDescriptor(
+            baseUrl = "http://hermes.test:9119",
+            authMode = SavedAuthMode.Open,
+            expectsSecret = false,
+        )
+        val probeGate = CompletableDeferred<Unit>()
+        val dashboard = FakeDashboard(FakeGateway()).apply {
+            this.probeGate = probeGate
+            probeEntered = CompletableDeferred()
+        }
+        val viewModel = CelesteViewModel(
+            dashboard = dashboard,
+            connectionStore = InMemoryConnectionStore(StoredConnection(descriptor, null)),
+        )
+        dashboard.probeEntered?.await()
+
+        viewModel.onBackground()
+        runCurrent()
+        viewModel.onForeground()
+        runCurrent()
+
+        assertTrue(dashboard.probeCalls >= 2)
+        probeGate.complete(Unit)
+        advanceUntilIdle()
+
+        assertEquals(ConnectionPhase.Connected, viewModel.state.value.connectionPhase)
+        assertNull(viewModel.state.value.activeSummary)
+    }
+
+    @Test
+    fun backgroundDuringProbeIsCanceledAndForegroundRetriesTheProbe() = runTest {
+        val probeGate = CompletableDeferred<Unit>()
+        val dashboard = FakeDashboard(FakeGateway()).apply {
+            this.probeGate = probeGate
+            probeEntered = CompletableDeferred()
+        }
+        val viewModel = CelesteViewModel(dashboard = dashboard)
+        advanceUntilIdle()
+        viewModel.updateDashboardUrl("http://hermes.test:9119")
+        viewModel.findDashboard()
+        dashboard.probeEntered?.await()
+
+        viewModel.onBackground()
+        runCurrent()
+        viewModel.onForeground()
+        runCurrent()
+
+        assertTrue(dashboard.probeCalls >= 2)
+        probeGate.complete(Unit)
+        advanceUntilIdle()
+
+        assertEquals(ConnectionPhase.ManualSetup, viewModel.state.value.connectionPhase)
+        assertNotNull(viewModel.state.value.probe)
+        assertNull(viewModel.state.value.loadingMessage)
+    }
+
+    @Test
+    fun backgroundDuringSessionListIsCanceledAndForegroundReloadsSessions() = runTest {
+        val dashboard = FakeDashboard(FakeGateway())
+        val viewModel = CelesteViewModel(dashboard = dashboard)
+        advanceUntilIdle()
+        viewModel.updateDashboardUrl("http://hermes.test:9119")
+        viewModel.findDashboard()
+        advanceUntilIdle()
+
+        val sessionsGate = CompletableDeferred<Unit>()
+        dashboard.sessionsGate = sessionsGate
+        dashboard.sessionsEntered = CompletableDeferred()
+        viewModel.loadSessions()
+        dashboard.sessionsEntered?.await()
+
+        viewModel.onBackground()
+        runCurrent()
+        viewModel.onForeground()
+        runCurrent()
+
+        assertTrue(dashboard.sessionCalls >= 2)
+        sessionsGate.complete(Unit)
+        advanceUntilIdle()
+
+        assertEquals(ConnectionPhase.Connected, viewModel.state.value.connectionPhase)
+        assertNotNull(viewModel.state.value.sessions)
+        assertNull(viewModel.state.value.loadingMessage)
+    }
+
+    @Test
+    fun backgroundDuringCreateBeforeSessionClosesGatewayAndForegroundCreatesAgain() = runTest {
+        val gateway = FakeGateway()
+        val dashboard = FakeDashboard(gateway)
+        val viewModel = CelesteViewModel(dashboard = dashboard)
+        viewModel.updateDashboardUrl("http://hermes.test:9119")
+        viewModel.findDashboard()
+        viewModel.loadSessions()
+        advanceUntilIdle()
+
+        val createGate = CompletableDeferred<Unit>()
+        gateway.createGate = createGate
+        gateway.createEntered = CompletableDeferred()
+        viewModel.createNewConversation()
+        gateway.createEntered?.await()
+
+        viewModel.onBackground()
+        runCurrent()
+        assertTrue(gateway.closeCount > 0)
+
+        val secondCreateEntered = CompletableDeferred<Unit>()
+        gateway.createEntered = secondCreateEntered
+        viewModel.onForeground()
+        runCurrent()
+        secondCreateEntered.await()
+        createGate.complete(Unit)
+        advanceUntilIdle()
+
+        assertEquals(2, gateway.methods.count { it == "session.create" })
+        assertNotNull(viewModel.state.value.activeSummary)
+        assertEquals(TurnState.Idle, viewModel.state.value.turnState)
+        assertNull(viewModel.state.value.notice)
+        viewModel.leaveConversation()
+    }
+
 
     @Test
     fun cancelledReconciliationReleasesItsGlobalGateForForegroundRecovery() = runTest {
@@ -593,12 +793,40 @@ class CelesteViewModelTest {
         return viewModel
     }
 
+    private class BlockingClearConnectionStore(
+        private val clearGate: CompletableDeferred<Unit>,
+    ) : ConnectionStore {
+        val clearEntered = CompletableDeferred<Unit>()
+
+        override suspend fun load(): StoredConnection? = null
+
+        override suspend fun replace(
+            descriptor: SavedConnectionDescriptor,
+            secret: ReusableSecret?,
+        ) = Unit
+
+        override suspend fun clearSecret() {
+            withContext(NonCancellable) {
+                clearEntered.complete(Unit)
+                clearGate.await()
+            }
+        }
+
+        override suspend fun forget() = Unit
+    }
+
     private class FakeDashboard(
         private val gateway: FakeGateway,
         private val authRequired: Boolean = false,
     ) : DashboardService {
         var profileFailure: Throwable? = null
         var sessionFailure: Throwable? = null
+        var probeGate: CompletableDeferred<Unit>? = null
+        var probeEntered: CompletableDeferred<Unit>? = null
+        var sessionsGate: CompletableDeferred<Unit>? = null
+        var sessionsEntered: CompletableDeferred<Unit>? = null
+        var probeCalls = 0
+        var sessionCalls = 0
         var profileCatalog = listOf(
             DashboardProfile(name = "default", isDefault = true),
             DashboardProfile(name = "work"),
@@ -613,8 +841,11 @@ class CelesteViewModelTest {
             source = "desktop",
         )
 
-        override suspend fun probe(rawBaseUrl: String): DashboardProbeResult =
-            DashboardProbeResult(
+        override suspend fun probe(rawBaseUrl: String): DashboardProbeResult {
+            probeCalls += 1
+            probeEntered?.complete(Unit)
+            probeGate?.await()
+            return DashboardProbeResult(
                 baseUrl = rawBaseUrl,
                 authRequired = authRequired,
                 providers = if (authRequired) {
@@ -624,6 +855,7 @@ class CelesteViewModelTest {
                 },
                 version = "test",
             )
+        }
 
         override suspend fun passwordLogin(
             baseUrl: String,
@@ -637,6 +869,9 @@ class CelesteViewModelTest {
             credential: GatewayCredential,
             limit: Int,
         ): List<StoredSession> {
+            sessionCalls += 1
+            sessionsEntered?.complete(Unit)
+            sessionsGate?.await()
             sessionFailure?.let { throw it }
             return listOf(session)
         }
@@ -671,6 +906,9 @@ class CelesteViewModelTest {
         var failHealthCheck = false
         var connectFailure: Throwable? = null
         var promptFailure: Throwable? = null
+        var interruptFailure: Throwable? = null
+        var createGate: CompletableDeferred<Unit>? = null
+        var createEntered: CompletableDeferred<Unit>? = null
         var resumePayload: JsonObject = resumePayload(messages = emptyList(), running = false)
         val resumePayloads = mutableListOf<JsonObject>()
         val resumeGates = mutableListOf<CompletableDeferred<Unit>>()
@@ -716,6 +954,8 @@ class CelesteViewModelTest {
                 }
                 "session.create" -> {
                     createCount += 1
+                    createEntered?.complete(Unit)
+                    createGate?.await()
                     buildJsonObject {
                         put("session_id", "runtime-new-$createCount")
                         put("stored_session_id", "stored-new-$createCount")
@@ -736,7 +976,13 @@ class CelesteViewModelTest {
                     }
                     buildJsonObject { put("status", "streaming") }
                 }
-                "session.interrupt" -> buildJsonObject { put("status", "interrupting") }
+                "session.interrupt" -> {
+                    interruptFailure?.let { failure ->
+                        interruptFailure = null
+                        throw failure
+                    }
+                    buildJsonObject { put("status", "interrupting") }
+                }
                 else -> buildJsonObject {}
             }
         }

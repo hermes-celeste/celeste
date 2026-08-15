@@ -76,6 +76,14 @@ internal enum class CelesteOperation {
     GatewayObserver,
 }
 
+private enum class ForegroundRecovery {
+    RestoreSavedConnection,
+    ProbeDashboard,
+    LoadSessions,
+    OpenSession,
+    CreateSession,
+}
+
 /**
  * Application ownership is stricter than a gateway object check. A token
  * carries every identity that can change while a suspend function is away.
@@ -167,6 +175,7 @@ internal class CelesteViewModel(
     private var turnGeneration = 0L
     private var stoppedTurnGeneration: Long? = null
     private val bufferedEvents = mutableListOf<GatewayEvent>()
+    private var pendingForegroundRecovery: ForegroundRecovery? = null
 
     init {
         restoreSavedConnection()
@@ -233,6 +242,7 @@ internal class CelesteViewModel(
 
     private fun invalidateContext() {
         contextGeneration += 1
+        pendingForegroundRecovery = null
         cancelOwnedOperations()
     }
 
@@ -280,9 +290,13 @@ internal class CelesteViewModel(
             CelesteOperation.Reconnect,
             CelesteOperation.GatewayObserver,
         ).forEach { operation ->
-            ownedJobs.remove(operation)?.cancel()
-            activeOperations.remove(operation)
+            cancelOwnedOperation(operation)
         }
+    }
+
+    private fun cancelOwnedOperation(operation: CelesteOperation) {
+        ownedJobs.remove(operation)?.cancel()
+        activeOperations.remove(operation)
     }
 
     private fun launchOwned(
@@ -559,7 +573,9 @@ internal class CelesteViewModel(
                 val persistenceError = try {
                     awaitCurrent(token) {
                         connectionStoreMutex.withLock {
-                            if (!isCurrentConnectionAttempt(attempt)) throw SupersededOperationCancellation()
+                            if (!isCurrentConnectionAttempt(attempt) || !isCurrent(token)) {
+                                throw SupersededOperationCancellation()
+                            }
                             connectionStore.replace(descriptor, reusableSecret)
                         }
                     }
@@ -588,21 +604,28 @@ internal class CelesteViewModel(
                 throw error
             } catch (error: Throwable) {
                 if (!isCurrentConnectionAttempt(attempt) || !isCurrent(token)) return@launchOwned
-                dashboard.clearAuthentication()
-                credential = null
                 if (isAuthenticationFailure(error)) {
-                    currentAuthMode = null
-                    connectionStoreMutex.withLock {
-                        if (isCurrent(token)) {
-                            try {
+                    val clearError = try {
+                        awaitCurrent(token) {
+                            connectionStoreMutex.withLock {
+                                if (!isCurrent(token)) throw SupersededOperationCancellation()
                                 connectionStore.clearSecret()
-                            } catch (clearError: CancellationException) {
-                                throw clearError
-                            } catch (clearError: Throwable) {
-                                recordFailure(token, clearError, "clear_rejected_auth", UiNoticeScope.Connection)
                             }
                         }
+                        null
+                    } catch (clearError: CancellationException) {
+                        throw clearError
+                    } catch (clearError: Throwable) {
+                        clearError
                     }
+                    if (!isCurrentConnectionAttempt(attempt) || !isCurrent(token)) return@launchOwned
+                    dashboard.clearAuthentication()
+                    credential = null
+                    currentAuthMode = null
+                    clearError?.let {
+                        recordFailure(token, it, "clear_rejected_auth", UiNoticeScope.Connection)
+                    }
+                    if (!isCurrentConnectionAttempt(attempt) || !isCurrent(token)) return@launchOwned
                     mutableState.value = mutableState.value.copy(
                         connectionPhase = ConnectionPhase.AuthenticationRequired,
                         notice = UiNotice.authentication(),
@@ -610,6 +633,8 @@ internal class CelesteViewModel(
                         sessionToken = "",
                     )
                 } else {
+                    dashboard.clearAuthentication()
+                    credential = null
                     publishFailure(token, error, "load_sessions", UiNoticeScope.Connection)
                     mutableState.value = mutableState.value.copy(
                         password = "",
@@ -685,7 +710,10 @@ internal class CelesteViewModel(
         connectionJob = launchOwned(CelesteOperation.Connection, token) {
             val clearError = try {
                 awaitCurrent(token) {
-                    connectionStoreMutex.withLock { connectionStore.clearSecret() }
+                    connectionStoreMutex.withLock {
+                        if (!isCurrent(token)) throw SupersededOperationCancellation()
+                        connectionStore.clearSecret()
+                    }
                 }
                 null
             } catch (error: CancellationException) {
@@ -740,7 +768,10 @@ internal class CelesteViewModel(
         connectionJob = launchOwned(CelesteOperation.Connection, token) {
             val error = try {
                 awaitCurrent(token) {
-                    connectionStoreMutex.withLock { connectionStore.forget() }
+                    connectionStoreMutex.withLock {
+                        if (!isCurrent(token)) throw SupersededOperationCancellation()
+                        connectionStore.forget()
+                    }
                 }
                 null
             } catch (error: CancellationException) {
@@ -872,7 +903,7 @@ internal class CelesteViewModel(
                     try {
                         awaitCurrent(token) {
                             connectionStoreMutex.withLock {
-                                if (!isCurrentConnectionAttempt(attempt)) {
+                                if (!isCurrentConnectionAttempt(attempt) || !isCurrent(token)) {
                                     throw SupersededOperationCancellation()
                                 }
                                 connectionStore.replace(descriptor, ReusableSecret(refreshed.value))
@@ -888,6 +919,7 @@ internal class CelesteViewModel(
             } else {
                 null
             }
+            if (!isCurrentConnectionAttempt(attempt) || !isCurrent(token)) return
             credential = loaded.credential
             currentDescriptor = descriptor
             currentOrigin = normalizedOrigin(probe.baseUrl)
@@ -913,13 +945,18 @@ internal class CelesteViewModel(
         } catch (error: Throwable) {
             if (!isCurrentConnectionAttempt(attempt) || !isCurrent(token)) return
             if (isAuthenticationFailure(error)) {
+                awaitCurrent(token) {
+                    connectionStoreMutex.withLock {
+                        if (!isCurrent(token)) throw SupersededOperationCancellation()
+                        connectionStore.clearSecret()
+                    }
+                }
+                if (!isCurrentConnectionAttempt(attempt) || !isCurrent(token)) return
                 credential = null
                 currentDescriptor = null
                 dashboard.clearAuthentication()
-                awaitCurrent(token) {
-                    connectionStoreMutex.withLock { connectionStore.clearSecret() }
-                }
                 currentAuthMode = null
+                if (!isCurrentConnectionAttempt(attempt) || !isCurrent(token)) return
                 mutableState.value = manualState(
                     descriptor = descriptor,
                     phase = ConnectionPhase.AuthenticationRequired,
@@ -964,19 +1001,23 @@ internal class CelesteViewModel(
         val safeBaseUrl = descriptor?.baseUrl ?: probe?.baseUrl ?: snapshot.dashboardUrl
         val safeUsername = descriptor?.username ?: snapshot.username
         val safeProbe = probe ?: snapshot.probe
+        if (token == null) {
+            connectionStoreMutex.withLock { connectionStore.clearSecret() }
+        } else {
+            if (!isCurrent(token)) return
+            awaitCurrent(token) {
+                connectionStoreMutex.withLock {
+                    if (!isCurrent(token)) throw SupersededOperationCancellation()
+                    connectionStore.clearSecret()
+                }
+            }
+            if (!isCurrent(token)) return
+        }
         credential = null
         currentDescriptor = null
         dashboard.clearAuthentication()
-        if (token == null || isCurrent(token)) {
-            if (token == null) {
-                connectionStoreMutex.withLock { connectionStore.clearSecret() }
-            } else {
-                awaitCurrent(token) {
-                    connectionStoreMutex.withLock { connectionStore.clearSecret() }
-                }
-            }
-        }
         currentAuthMode = null
+        if (token != null && !isCurrent(token)) return
         mutableState.value = manualState(
             descriptor = descriptor,
             phase = ConnectionPhase.AuthenticationRequired,
@@ -1324,6 +1365,73 @@ internal class CelesteViewModel(
         }
     }
 
+    private suspend fun publishInterruptRecoveryFailure(
+        activeGateway: GatewayConnection,
+        token: OperationToken,
+        error: Throwable,
+        operation: String,
+    ) {
+        if (!isCurrent(token)) return
+        if (isAuthenticationFailure(error)) {
+            val descriptor = currentDescriptor
+            invalidateReusableAuthentication(
+                descriptor = descriptor,
+                probe = mutableState.value.probe,
+                token = token,
+            )
+            closeGateway()
+            return
+        }
+        val failureNotice = projectUiNotice(error, UiNoticeScope.Turn)
+        publishFailure(token, error, operation, UiNoticeScope.Turn)
+        if (!isCurrent(token)) return
+        mutableState.value = mutableState.value.copy(
+            turnState = TurnState.Reconnecting,
+            notice = failureNotice ?: UiNotice.reconnecting(),
+        )
+        activeGateway.close()
+        scheduleReconnect(
+            wasRunning = true,
+            immediate = true,
+            initialNotice = failureNotice,
+        )
+    }
+
+    private suspend fun reconcileAfterInterruptFailure(
+        activeGateway: GatewayConnection,
+        storedId: String,
+        token: OperationToken,
+        error: Throwable,
+    ) {
+        if (!isCurrent(token)) return
+        if (isAuthenticationFailure(error)) {
+            publishInterruptRecoveryFailure(activeGateway, token, error, "interrupt")
+            return
+        }
+        recordFailure(token, error, "interrupt", UiNoticeScope.Turn)
+        try {
+            reconcile(activeGateway, storedId, token)
+            if (!isCurrent(token)) return
+            mutableState.value = mutableState.value.copy(notice = null)
+        } catch (reconcileError: kotlinx.coroutines.TimeoutCancellationException) {
+            publishInterruptRecoveryFailure(
+                activeGateway,
+                token,
+                reconcileError,
+                "reconcile_after_interrupt",
+            )
+        } catch (reconcileError: CancellationException) {
+            throw reconcileError
+        } catch (reconcileError: Throwable) {
+            publishInterruptRecoveryFailure(
+                activeGateway,
+                token,
+                reconcileError,
+                "reconcile_after_interrupt",
+            )
+        }
+    }
+
     fun interrupt() {
         val activeGateway = gateway ?: return
         val runtimeId = currentRuntimeSessionId ?: return
@@ -1349,29 +1457,13 @@ internal class CelesteViewModel(
                 awaitCurrent(token) { activeGateway.interruptSession(runtimeId) }
                 reconcile(activeGateway, storedId, token)
                 if (!isCurrent(token)) return@launchOwned
-                mutableState.value = mutableState.value.copy(turnState = TurnState.Idle, notice = null)
+                mutableState.value = mutableState.value.copy(notice = null)
             } catch (error: kotlinx.coroutines.TimeoutCancellationException) {
-                if (!isCurrent(token)) return@launchOwned
-                publishFailure(token, error, "interrupt", UiNoticeScope.Turn)
-                mutableState.value = mutableState.value.copy(turnState = TurnState.Idle)
+                reconcileAfterInterruptFailure(activeGateway, storedId, token, error)
             } catch (error: CancellationException) {
                 throw error
             } catch (error: Throwable) {
-                if (!isCurrent(token)) return@launchOwned
-                if (isAuthenticationFailure(error)) {
-                    val descriptor = currentDescriptor
-                    invalidateReusableAuthentication(
-                        descriptor = descriptor,
-                        probe = mutableState.value.probe,
-                        token = token,
-                    )
-                    closeGateway()
-                    return@launchOwned
-                }
-                publishFailure(token, error, "interrupt", UiNoticeScope.Turn)
-                mutableState.value = mutableState.value.copy(
-                    turnState = TurnState.Idle,
-                )
+                reconcileAfterInterruptFailure(activeGateway, storedId, token, error)
             }
         }
     }
@@ -1386,22 +1478,73 @@ internal class CelesteViewModel(
         scheduleReconnect(wasRunning = mutableState.value.turnState == TurnState.Running, immediate = true)
     }
 
+    private fun foregroundRecoveryFor(state: CelesteUiState): ForegroundRecovery? {
+        if (activeOperations[CelesteOperation.Connection] != null) {
+            when {
+                state.connectionPhase == ConnectionPhase.CheckingSavedConnection ||
+                    state.connectionPhase == ConnectionPhase.Restoring ->
+                    return ForegroundRecovery.RestoreSavedConnection
+                state.loadingMessage == "Finding Hermes…" -> return ForegroundRecovery.ProbeDashboard
+                state.loadingMessage == "Loading your conversations…" && state.probe != null ->
+                    return ForegroundRecovery.LoadSessions
+            }
+        }
+        if (activeOperations[CelesteOperation.OpenSession] != null) {
+            return ForegroundRecovery.OpenSession
+        }
+        if (activeOperations[CelesteOperation.CreateSession] != null) {
+            return ForegroundRecovery.CreateSession
+        }
+        return when {
+            state.connectionPhase == ConnectionPhase.CheckingSavedConnection ||
+                state.connectionPhase == ConnectionPhase.Restoring ->
+                ForegroundRecovery.RestoreSavedConnection
+            state.loadingMessage == "Finding Hermes…" -> ForegroundRecovery.ProbeDashboard
+            state.loadingMessage == "Loading your conversations…" && state.probe != null ->
+                ForegroundRecovery.LoadSessions
+            state.loadingMessage?.startsWith("Opening ") == true && state.activeSummary != null ->
+                ForegroundRecovery.OpenSession
+            state.loadingMessage?.startsWith("Starting a new ") == true && state.probe != null ->
+                ForegroundRecovery.CreateSession
+            else -> null
+        }
+    }
+
+    private fun recoverWithoutGateway(recovery: ForegroundRecovery) {
+        when (recovery) {
+            ForegroundRecovery.RestoreSavedConnection -> restoreSavedConnection()
+            ForegroundRecovery.ProbeDashboard -> findDashboard()
+            ForegroundRecovery.LoadSessions -> if (mutableState.value.probe != null) loadSessions()
+            ForegroundRecovery.OpenSession -> mutableState.value.activeSummary?.let(::openSession)
+            ForegroundRecovery.CreateSession -> {
+                if (mutableState.value.probe != null && credential != null) createNewConversation()
+            }
+        }
+    }
+
     fun onBackground() {
+        val stateAtBackground = mutableState.value
+        val recovery = foregroundRecoveryFor(stateAtBackground)
+        if (recovery != null) pendingForegroundRecovery = recovery
         lifecycleGeneration += 1
         detachGatewayObservers()
+        cancelOwnedOperation(CelesteOperation.Connection)
+        connectionJob = null
         listOf(
             CelesteOperation.Foreground,
             CelesteOperation.Reconnect,
             CelesteOperation.Reconcile,
-        ).forEach { operation ->
-            ownedJobs.remove(operation)?.cancel()
-            activeOperations.remove(operation)
-        }
+            CelesteOperation.OpenSession,
+            CelesteOperation.CreateSession,
+        ).forEach { operation -> cancelOwnedOperation(operation) }
         reconnectJob?.cancel()
         reconnectJob = null
         foregroundCheckJob?.cancel()
         foregroundCheckJob = null
         invalidateReconciliation()
+        if (recovery == ForegroundRecovery.OpenSession || recovery == ForegroundRecovery.CreateSession) {
+            closeGateway()
+        }
         val descriptor = currentDescriptor ?: return
         if (descriptor.authMode != SavedAuthMode.ProviderSession) return
         if (credential != GatewayCredential.CookieSession) return
@@ -1416,7 +1559,10 @@ internal class CelesteViewModel(
             try {
                 awaitCurrent(token) {
                     connectionStoreMutex.withLock {
-                        if (credential != GatewayCredential.CookieSession || currentDescriptor != descriptor) {
+                        if (!isCurrent(token) ||
+                            credential != GatewayCredential.CookieSession ||
+                            currentDescriptor != descriptor
+                        ) {
                             throw SupersededOperationCancellation()
                         }
                         connectionStore.replace(descriptor, ReusableSecret(refreshed.value))
@@ -1431,7 +1577,14 @@ internal class CelesteViewModel(
     }
 
     fun onForeground() {
-        val activeGateway = gateway ?: return
+        val recovery = pendingForegroundRecovery ?: foregroundRecoveryFor(mutableState.value)
+        val activeGateway = gateway
+        if (activeGateway == null) {
+            pendingForegroundRecovery = null
+            recovery?.let(::recoverWithoutGateway)
+            return
+        }
+        pendingForegroundRecovery = null
         // ON_STOP invalidates the old collector token. Rebase both collectors
         // before health recovery so a healthy socket does not remain silent.
         observeGateway(activeGateway)
@@ -1653,7 +1806,7 @@ internal class CelesteViewModel(
                     ?: event.payload.string("rendered")
                     ?: ""
                 finalizeAssistant(
-                    suppliedContent = if (status == "error") "" else content,
+                    suppliedContent = content,
                     keepRunning = false,
                 )
                 mutableState.value = mutableState.value.copy(
