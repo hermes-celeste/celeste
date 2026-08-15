@@ -79,6 +79,19 @@ internal fun activityItemKeys(items: List<ActivityItem>): List<String> {
     }
 }
 
+/**
+ * Tracks phase announcements per rendered card. Repeated progress updates and
+ * recompositions must not make TalkBack repeat the same lifecycle state.
+ */
+internal class ActivityPhaseAnnouncementTracker {
+    private val announced = mutableSetOf<String>()
+
+    fun consume(itemKey: String, phase: String): Boolean {
+        if (itemKey.isBlank() || phase.isBlank()) return false
+        return announced.add("$itemKey|$phase")
+    }
+}
+
 @Composable
 internal fun AgentActivityPanel(
     projection: AgentActivityProjection,
@@ -93,6 +106,7 @@ internal fun AgentActivityPanel(
     val activityScopeKey = "${projection.originKey}|${projection.profile}|${projection.storedSessionId}"
     var expandedItemKey by remember(activityScopeKey) { mutableStateOf<String?>(null) }
     val keys = remember(projection.items) { activityItemKeys(projection.items) }
+    val announcementTracker = remember(activityScopeKey) { ActivityPhaseAnnouncementTracker() }
     val hasReasoningCapability =
         projection.capability == ActivityCapabilityState.ToolAndServerReasoning ||
             projection.serverReasoningAllowed == true
@@ -221,6 +235,10 @@ internal fun AgentActivityPanel(
                             ActivityCard(
                                 item = item,
                                 expanded = expandedItemKey == keys[index],
+                                announcePhase = announcementTracker.consume(
+                                    itemKey = keys[index],
+                                    phase = activityPhaseAnnouncementToken(item),
+                                ),
                                 onToggle = {
                                     expandedItemKey = if (expandedItemKey == keys[index]) {
                                         null
@@ -241,6 +259,7 @@ internal fun AgentActivityPanel(
 private fun ActivityCard(
     item: ActivityItem,
     expanded: Boolean,
+    announcePhase: Boolean,
     onToggle: () -> Unit,
 ) {
     val summary = activitySummary(item)
@@ -259,8 +278,8 @@ private fun ActivityCard(
             .padding(horizontal = 13.dp, vertical = 11.dp),
     ) {
         when (item) {
-            is ToolActivity -> ToolCardHeader(item, expanded)
-            is ServerReasoningActivity -> ReasoningCardHeader(item, expanded)
+            is ToolActivity -> ToolCardHeader(item, expanded, announcePhase)
+            is ServerReasoningActivity -> ReasoningCardHeader(item, expanded, announcePhase)
         }
         if (!expanded) {
             Spacer(Modifier.height(4.dp))
@@ -282,7 +301,7 @@ private fun ActivityCard(
 }
 
 @Composable
-private fun ToolCardHeader(item: ToolActivity, expanded: Boolean) {
+private fun ToolCardHeader(item: ToolActivity, expanded: Boolean, announcePhase: Boolean) {
     Row(verticalAlignment = Alignment.CenterVertically) {
         Text(
             text = "Tool",
@@ -306,7 +325,7 @@ private fun ToolCardHeader(item: ToolActivity, expanded: Boolean) {
             fontWeight = FontWeight.SemiBold,
             modifier = Modifier.semantics {
                 contentDescription = "Tool, ${activityAnnouncementPhase(item.phase)}"
-                liveRegion = LiveRegionMode.Polite
+                if (announcePhase) liveRegion = LiveRegionMode.Polite
             },
         )
         Spacer(Modifier.size(7.dp))
@@ -322,7 +341,11 @@ private fun ToolCardHeader(item: ToolActivity, expanded: Boolean) {
 }
 
 @Composable
-private fun ReasoningCardHeader(item: ServerReasoningActivity, expanded: Boolean) {
+private fun ReasoningCardHeader(
+    item: ServerReasoningActivity,
+    expanded: Boolean,
+    announcePhase: Boolean,
+) {
     Row(verticalAlignment = Alignment.CenterVertically) {
         Text(
             text = item.serverLabel ?: "Server-provided reasoning",
@@ -338,7 +361,7 @@ private fun ReasoningCardHeader(item: ServerReasoningActivity, expanded: Boolean
             fontWeight = FontWeight.SemiBold,
             modifier = Modifier.semantics {
                 contentDescription = "Server-provided reasoning, ${reasoningAnnouncementPhase(item.phase)}"
-                liveRegion = LiveRegionMode.Polite
+                if (announcePhase) liveRegion = LiveRegionMode.Polite
             },
         )
         Spacer(Modifier.size(7.dp))
@@ -436,6 +459,11 @@ internal fun reasoningAnnouncementPhase(phase: ReasoningPhase): String = when (p
     ReasoningPhase.Streaming -> "streaming"
     ReasoningPhase.Complete -> "complete"
     ReasoningPhase.Unavailable -> "unavailable"
+}
+
+private fun activityPhaseAnnouncementToken(item: ActivityItem): String = when (item) {
+    is ToolActivity -> "tool:${activityAnnouncementPhase(item.phase)}"
+    is ServerReasoningActivity -> "reasoning:${reasoningAnnouncementPhase(item.phase)}"
 }
 
 internal fun activityDetailContentDescription(label: String): String =

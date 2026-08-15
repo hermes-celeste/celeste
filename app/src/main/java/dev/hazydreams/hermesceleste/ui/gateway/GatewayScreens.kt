@@ -74,6 +74,7 @@ import dev.hazydreams.hermesceleste.ui.CelesteSectionLabel
 import dev.hazydreams.hermesceleste.ui.CelesteWordmark
 import dev.hazydreams.hermesceleste.ui.EditorialDivider
 import dev.hazydreams.hermesceleste.ui.StatusMessage
+import dev.hazydreams.hermesceleste.ui.UiNoticeMessage
 
 internal data class GatewaySettingsUiState(
     val dashboardUrl: String,
@@ -97,6 +98,7 @@ internal data class GatewaySettingsActions(
     val onSignOut: () -> Unit,
     val onForgetConnection: () -> Unit,
     val onBack: (() -> Unit)?,
+    val onSignIn: () -> Unit = {},
 )
 
 @Composable
@@ -129,6 +131,7 @@ internal fun ConnectionUnavailableScreen(
     notice: UiNotice?,
     onRetry: () -> Unit,
     onSettings: () -> Unit,
+    onSignIn: () -> Unit = {},
 ) {
     CelesteBackdrop {
         Column(
@@ -150,7 +153,11 @@ internal fun ConnectionUnavailableScreen(
             )
             notice?.let {
                 Spacer(Modifier.height(26.dp))
-                StatusMessage(it.message, CelesteError)
+                UiNoticeMessage(
+                    notice = it,
+                    onRetry = onRetry,
+                    onSignIn = onSignIn,
+                )
             }
             Spacer(Modifier.height(34.dp))
             CelestePrimaryButton(
@@ -374,7 +381,13 @@ internal fun GatewaySettingsScreen(
                 Column(modifier = Modifier.padding(vertical = 22.dp)) {
                     loadingMessage?.let { StatusMessage(it, CelesteBlue, showSpinner = true) }
                     if (loadingMessage != null && visibleNotice != null) Spacer(Modifier.height(10.dp))
-                    visibleNotice?.let { StatusMessage(it.message, CelesteError) }
+                    visibleNotice?.let {
+                        UiNoticeMessage(
+                            notice = it,
+                            onRetry = actions.onRetry,
+                            onSignIn = actions.onSignIn,
+                        )
+                    }
                 }
             }
 

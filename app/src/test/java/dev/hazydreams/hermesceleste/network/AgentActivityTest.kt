@@ -185,6 +185,49 @@ class AgentActivityTest {
     }
 
     @Test
+    fun explicitShowReasoningFalseSuppressesVerboseSummaryAndDelta() {
+        val projection = initialActivityProjection(
+            originKey = "https://hermes.test",
+            profile = "default",
+            storedSessionId = "stored-42",
+            runtimeSessionId = "runtime-7",
+        )
+        val summary = reduceActivityEvent(
+            projection,
+            event(
+                type = "reasoning.available",
+                sessionId = "runtime-7",
+                payload = buildJsonObject {
+                    put("text", "<hidden-summary>")
+                    put("show_reasoning", false)
+                    put("verbose", true)
+                },
+            ),
+            now = now,
+        )
+        val delta = reduceActivityEvent(
+            projection,
+            event(
+                type = "reasoning.delta",
+                sessionId = "runtime-7",
+                payload = buildJsonObject {
+                    put("text", "<hidden-delta>")
+                    put("show_reasoning", false)
+                    put("verbose", true)
+                },
+            ),
+            now = now,
+        )
+
+        assertEquals(projection, summary)
+        assertEquals(projection, delta)
+        assertTrue(summary.items.isEmpty())
+        assertTrue(delta.items.isEmpty())
+        assertEquals(ActivityCapabilityState.Unknown, summary.capability)
+        assertEquals(ActivityCapabilityState.Unknown, delta.capability)
+    }
+
+    @Test
     fun snapshotDecoderKeepsToolDetailsAndServerReasoningAsDifferentItems() {
         val items = decodeGatewayActivity(
             Json.parseToJsonElement(

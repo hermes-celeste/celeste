@@ -30,6 +30,7 @@ import dev.hazydreams.hermesceleste.network.ActivityPresentationState
 import dev.hazydreams.hermesceleste.network.ActivitySource
 import dev.hazydreams.hermesceleste.network.AgentActivityProjection
 import dev.hazydreams.hermesceleste.network.ConversationMessage
+import dev.hazydreams.hermesceleste.network.CorrelationQuality
 import dev.hazydreams.hermesceleste.network.ToolActivity
 import dev.hazydreams.hermesceleste.network.safeToolName
 import dev.hazydreams.hermesceleste.ui.CelesteBlue
@@ -107,9 +108,17 @@ private fun projectedToolsCorrelateToMessages(
                     tool.output?.text == detail
             }
         }
+        val legacyNameOnlyMatches = named.filter { (_, tool) ->
+            tool.correlation == CorrelationQuality.LegacyName &&
+                tool.callId == null &&
+                tool.input == null &&
+                tool.progress == null &&
+                tool.output == null
+        }
         val match = when {
             identityMatches.size == 1 -> identityMatches.single()
             detailMatches.size == 1 -> detailMatches.single()
+            legacyNameOnlyMatches.size == 1 -> legacyNameOnlyMatches.single()
             detail != null -> return@all false
             named.size == 1 -> named.single()
             else -> return@all false

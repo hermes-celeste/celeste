@@ -1,5 +1,7 @@
 package dev.hazydreams.hermesceleste
 
+import androidx.lifecycle.ViewModelStore
+import androidx.lifecycle.viewModelScope
 import java.io.IOException
 
 import dev.hazydreams.hermesceleste.connection.InMemoryConnectionStore
@@ -27,10 +29,12 @@ import dev.hazydreams.hermesceleste.network.ToolPhase
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.advanceUntilIdle
@@ -38,6 +42,8 @@ import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
+import kotlinx.coroutines.joinAll
+import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
@@ -55,15 +61,30 @@ import org.junit.Test
 @OptIn(ExperimentalCoroutinesApi::class)
 class CelesteViewModelTest {
     private val mainDispatcher = UnconfinedTestDispatcher()
+    private lateinit var viewModelStore: ViewModelStore
+    private val trackedViewModels = mutableListOf<CelesteViewModel>()
+    private var viewModelKey = 0
 
     @Before
     fun setUp() {
         Dispatchers.setMain(mainDispatcher)
+        viewModelStore = ViewModelStore()
+        trackedViewModels.clear()
+        viewModelKey = 0
     }
 
     @After
     fun tearDown() {
+        val scopeJobs = trackedViewModels.mapNotNull { it.viewModelScope.coroutineContext[Job] }
+        viewModelStore.clear()
+        runBlocking { scopeJobs.joinAll() }
+        mainDispatcher.scheduler.advanceUntilIdle()
         Dispatchers.resetMain()
+    }
+
+    private fun track(viewModel: CelesteViewModel) {
+        viewModelStore.put("celeste-view-model-${viewModelKey++}", viewModel)
+        trackedViewModels += viewModel
     }
 
     @Test
@@ -82,6 +103,9 @@ class CelesteViewModelTest {
 
         advanceTimeBy(100L)
         runCurrent()
+        viewModel.state.first {
+            it.agentActivity?.presentation == ActivityPresentationState.Unavailable
+        }
 
         assertEquals(
             ActivityPresentationState.Unavailable,
@@ -102,11 +126,11 @@ class CelesteViewModelTest {
 
         gateway.emit(
             "reasoning.delta",
-            """{"text":"<reasoning-one>","verbose":true}""",
+            """{"text":"<server-summary-one>","verbose":true}""",
         )
         gateway.emit(
             "reasoning.delta",
-            """{"text":"<reasoning-two>","verbose":true}""",
+            """{"text":"<server-summary-two>","verbose":true}""",
         )
         runCurrent()
         assertTrue(
@@ -117,12 +141,45 @@ class CelesteViewModelTest {
         advanceTimeBy(100L)
         runCurrent()
 
-        val reasoning = viewModel.state.value.agentActivity?.items
-            ?.filterIsInstance<ServerReasoningActivity>()
-            ?.single()
-        assertEquals("<reasoning-one><reasoning-two>", reasoning?.text?.text)
+        viewModel.state.first { state ->
+            state.agentActivity?.items
+                ?.filterIsInstance<ServerReasoningActivity>()
+                ?.size == 1
+        }
+
+        val reasoning = viewModel.state.value.agentActivity?.items.orEmpty()
+            .filterIsInstance<ServerReasoningActivity>()
+            .single()
+        assertEquals("<server-summary-one><server-summary-two>", reasoning.text.text)
         assertEquals(1, viewModel.state.value.agentActivity?.items
             ?.filterIsInstance<ServerReasoningActivity>()?.size)
+        viewModel.leaveConversation()
+    }
+
+    @Test
+    fun showReasoningFalseSuppressesVerboseDeltaBeforeCoalescing() = runTest {
+        val gateway = FakeGateway()
+        val viewModel = openConversation(
+            gateway = gateway,
+            reasoningCoalescingWindowMillis = 100L,
+        )
+        runCurrent()
+
+        gateway.emit(
+            "reasoning.delta",
+            """{"text":"<hidden-delta>","show_reasoning":false,"verbose":true}""",
+        )
+        advanceTimeBy(100L)
+        runCurrent()
+
+        assertTrue(
+            viewModel.state.value.agentActivity?.items.orEmpty()
+                .none { it is ServerReasoningActivity },
+        )
+        assertEquals(
+            ActivityCapabilityState.Unknown,
+            viewModel.state.value.agentActivity?.capability,
+        )
         viewModel.leaveConversation()
     }
 
@@ -145,6 +202,12 @@ class CelesteViewModelTest {
             """{"name":"terminal","tool_call_id":"call-1","output":"<tool-output>"}""",
         )
         advanceUntilIdle()
+        viewModel.state.first { state ->
+            val activity = state.agentActivity ?: return@first false
+            activity.items.size == 2 &&
+                activity.items.filterIsInstance<ToolActivity>().singleOrNull()?.phase == ToolPhase.Completed &&
+                activity.items.filterIsInstance<ServerReasoningActivity>().size == 1
+        }
 
         val activity = requireNotNull(viewModel.state.value.agentActivity)
         assertEquals(2, activity.items.size)
@@ -194,6 +257,10 @@ class CelesteViewModelTest {
             """{"content":"<server-summary>\n<assistant-content>","status":"complete"}""",
         )
         advanceUntilIdle()
+        viewModel.state.first { state ->
+            state.messages.any { it.role == "assistant" && it.text == "<assistant-content>" } &&
+                state.agentActivity?.items?.filterIsInstance<ServerReasoningActivity>()?.size == 1
+        }
 
         val state = viewModel.state.value
         assertEquals("<assistant-content>", state.messages.single { it.role == "assistant" }.text)
@@ -211,12 +278,18 @@ class CelesteViewModelTest {
     @Test
     fun reconnectRestoresActivityProjectionAndFallsBackWhenSnapshotIsEmpty() = runTest {
         val gateway = FakeGateway()
-        val viewModel = openConversation(gateway)
+        val viewModel = openConversation(
+            gateway = gateway,
+            activityDiscoveryTimeoutMillis = 100L,
+        )
         gateway.emit(
             "tool.start",
             """{"name":"terminal","tool_call_id":"call-1"}""",
         )
         advanceUntilIdle()
+        viewModel.state.first {
+            it.agentActivity?.presentation == ActivityPresentationState.Running
+        }
         assertEquals(
             dev.hazydreams.hermesceleste.network.ActivityPresentationState.Running,
             viewModel.state.value.agentActivity?.presentation,
@@ -227,7 +300,17 @@ class CelesteViewModelTest {
             running = false,
         )
         gateway.disconnect("reconnect for activity")
-        advanceUntilIdle()
+        gateway.resumeRequests.first { it >= 2 }
+        viewModel.state.first { state ->
+            state.agentActivity?.presentation == ActivityPresentationState.Discovering &&
+                state.turnState == TurnState.Idle
+        }
+        advanceTimeBy(100L)
+        runCurrent()
+        viewModel.state.first { state ->
+            state.agentActivity?.presentation == ActivityPresentationState.Unavailable &&
+                state.turnState == TurnState.Idle
+        }
 
         assertEquals(
             ActivityPresentationState.Unavailable,
@@ -258,6 +341,12 @@ class CelesteViewModelTest {
             }.toString(),
         )
         advanceUntilIdle()
+        viewModel.state.first { state ->
+            state.messages.any {
+                it.role == "assistant" &&
+                    it.text == "<assistant-before>\n<assistant-after>"
+            } && state.agentActivity?.items?.filterIsInstance<ServerReasoningActivity>()?.size == 1
+        }
 
         val state = viewModel.state.value
         assertEquals(
@@ -290,6 +379,11 @@ class CelesteViewModelTest {
             """{"content":"<server-summary>\n<assistant-content>","status":"complete"}""",
         )
         advanceUntilIdle()
+        viewModel.state.first { state ->
+            state.messages.filter { it.role == "assistant" }.map { it.text } ==
+                listOf("<assistant-content>") &&
+                state.agentActivity?.items?.filterIsInstance<ServerReasoningActivity>()?.size == 1
+        }
 
         assertEquals(
             listOf("<assistant-content>"),
@@ -319,6 +413,13 @@ class CelesteViewModelTest {
         gateway.emit("message.complete", """{"content":"Hello continued","status":"complete"}""")
         gateway.emit("message.complete", """{"content":"Hello continued","status":"complete"}""")
         advanceUntilIdle()
+        viewModel.state.first { state ->
+            state.turnState == TurnState.Idle &&
+                state.streamingText.isEmpty() &&
+                state.messages.map { it.role } == listOf("user", "assistant") &&
+                state.messages.singleOrNull { it.role == "assistant" }?.text == "Hello continued" &&
+                state.messages.singleOrNull { it.role == "user" }?.pending == false
+        }
 
         val state = viewModel.state.value
         assertEquals(TurnState.Idle, state.turnState)
@@ -338,7 +439,10 @@ class CelesteViewModelTest {
         viewModel.sendMessage()
         gateway.emit("message.start")
         gateway.emit("message.delta", """{"text":"Partial work"}""")
-        advanceUntilIdle()
+        viewModel.state.first { state ->
+            state.turnState == TurnState.Running &&
+                state.streamingText == "Partial work"
+        }
 
         gateway.resumePayload = resumePayload(
             messages = listOf(
@@ -348,12 +452,17 @@ class CelesteViewModelTest {
             running = false,
         )
         viewModel.interrupt()
-        advanceUntilIdle()
+        gateway.interruptRequests.first { it >= 1 }
+        viewModel.state.first { state ->
+            state.turnState == TurnState.Idle &&
+                state.messages.lastOrNull()?.text == "Partial work"
+        }
 
         assertTrue(gateway.methods.contains("session.interrupt"))
         assertEquals(TurnState.Idle, viewModel.state.value.turnState)
         assertEquals("Partial work", viewModel.state.value.messages.last().text)
         viewModel.leaveConversation()
+        advanceUntilIdle()
     }
 
     @Test
@@ -375,6 +484,13 @@ class CelesteViewModelTest {
         )
         gateway.disconnect("dashboard restarted")
         advanceUntilIdle()
+
+        viewModel.state.first { state ->
+            state.messages.map(ConversationMessage::text) ==
+                listOf("Do this once", "Finished exactly once") &&
+                state.streamingText.isEmpty() &&
+                state.turnState == TurnState.Idle
+        }
 
         val state = viewModel.state.value
         assertEquals(2, gateway.connectCount)
@@ -411,7 +527,10 @@ class CelesteViewModelTest {
         firstResume.complete(resumePayload(messages = emptyList(), running = true))
         runCurrent()
 
-        assertEquals("buffered-after-snapshot", viewModel.state.value.streamingText)
+        viewModel.state.first { state ->
+            state.streamingText == "buffered-after-snapshot"
+        }
+        gateway.resumeRequests.first { it >= 3 }
         assertEquals(3, gateway.resumeRequestCount)
 
         secondResume.complete(
@@ -424,12 +543,20 @@ class CelesteViewModelTest {
         )
         advanceUntilIdle()
 
+        viewModel.state.first { state ->
+            state.messages.map(ConversationMessage::text) ==
+                listOf("new-authoritative-state") &&
+                state.streamingText.isEmpty() &&
+                state.turnState == TurnState.Idle
+        }
+
         assertEquals(
             listOf("new-authoritative-state"),
             viewModel.state.value.messages.map(ConversationMessage::text),
         )
         assertEquals("", viewModel.state.value.streamingText)
         viewModel.leaveConversation()
+        advanceUntilIdle()
     }
 
     @Test
@@ -439,19 +566,22 @@ class CelesteViewModelTest {
         val viewModel = CelesteViewModel(
             dashboard = dashboard,
             reconnectDelayMillis = { _, _ -> 0L },
-        )
+        ).also(::track)
         viewModel.updateDashboardUrl("http://hermes.test:9119")
         viewModel.findDashboard()
         viewModel.loadSessions()
         viewModel.openSession(dashboard.session)
-        advanceUntilIdle()
+        viewModel.state.first {
+            it.agentActivity?.runtimeSessionId?.isNotBlank() == true &&
+                it.loadingMessage == null
+        }
 
         val oldResume = CompletableDeferred<JsonObject>()
         oldGateway.resumeGates += oldResume
         oldGateway.failPrompt = true
         viewModel.updateDraft("This must not leak")
         viewModel.sendMessage()
-        runCurrent()
+        oldGateway.resumeRequests.first { it >= 2 }
         assertEquals(2, oldGateway.resumeRequestCount)
 
         val newGateway = FakeGateway()
@@ -474,7 +604,11 @@ class CelesteViewModelTest {
                 running = false,
             ),
         )
-        advanceUntilIdle()
+        viewModel.state.first { state ->
+            state.activeSummary?.id == "stored-new" &&
+                state.messages.map(ConversationMessage::text) == listOf("selected-session") &&
+                state.agentActivity?.presentation == ActivityPresentationState.Unavailable
+        }
 
         assertEquals("stored-new", viewModel.state.value.activeSummary?.id)
         assertEquals(
@@ -493,7 +627,7 @@ class CelesteViewModelTest {
             dashboard = dashboard,
             connectionStore = store,
             reconnectDelayMillis = { _, _ -> 0L },
-        )
+        ).also(::track)
         advanceUntilIdle()
         viewModel.updateDashboardUrl("https://hermes.test")
         viewModel.findDashboard()
@@ -527,7 +661,7 @@ class CelesteViewModelTest {
         val dashboard = FakeDashboard(FakeGateway()).apply {
             profileFailure = AuthenticationRejected("Hermes rejected profile access.")
         }
-        val viewModel = CelesteViewModel(dashboard = dashboard)
+        val viewModel = CelesteViewModel(dashboard = dashboard).also(::track)
         advanceUntilIdle()
 
         viewModel.updateDashboardUrl("http://hermes.test:9119")
@@ -549,6 +683,10 @@ class CelesteViewModelTest {
 
         viewModel.onForeground()
         advanceUntilIdle()
+        viewModel.state.first { state ->
+            state.turnState == TurnState.Idle &&
+                state.agentActivity?.presentation == ActivityPresentationState.Unavailable
+        }
 
         assertEquals(2, gateway.connectCount)
         assertEquals(1, gateway.methods.count { it == "session.list" })
@@ -564,7 +702,7 @@ class CelesteViewModelTest {
         val viewModel = CelesteViewModel(
             dashboard = dashboard,
             reconnectDelayMillis = { _, _ -> 0L },
-        )
+        ).also(::track)
         viewModel.updateDashboardUrl("http://hermes.test:9119")
         viewModel.findDashboard()
         viewModel.loadSessions()
@@ -613,7 +751,7 @@ class CelesteViewModelTest {
         val viewModel = CelesteViewModel(
             dashboard = dashboard,
             reconnectDelayMillis = { _, _ -> 0L },
-        )
+        ).also(::track)
         advanceUntilIdle()
         viewModel.updateDashboardUrl("http://hermes.test:9119")
         viewModel.findDashboard()
@@ -685,12 +823,12 @@ class CelesteViewModelTest {
         viewModel.sendMessage()
         advanceUntilIdle()
         gateway.emit("message.start")
-        runCurrent()
+        viewModel.state.first { it.turnState == TurnState.Running }
 
         val interruptGate = CompletableDeferred<Unit>()
         gateway.interruptGates += interruptGate
         viewModel.interrupt()
-        runCurrent()
+        gateway.interruptRequests.first { it >= 1 }
         assertEquals(1, gateway.methods.count { it == "session.interrupt" })
 
         viewModel.leaveConversation()
@@ -737,7 +875,7 @@ class CelesteViewModelTest {
             dashboard = dashboard,
             reconnectDelayMillis = { _, _ -> 0L },
             activityDisclosurePreferences = preferences,
-        )
+        ).also(::track)
         advanceUntilIdle()
         viewModel.updateDashboardUrl("http://hermes.test:9119")
         viewModel.findDashboard()
@@ -792,6 +930,10 @@ class CelesteViewModelTest {
             """{"status":"complete","failure_reason":"Synthetic failure detail"}""",
         )
         advanceUntilIdle()
+        viewModel.state.first { state ->
+            state.turnState == TurnState.Idle &&
+                state.notice?.category == UiNoticeCategory.ServerTurnFailure
+        }
 
         assertEquals(TurnState.Idle, viewModel.state.value.turnState)
         assertEquals(UiNoticeCategory.ServerTurnFailure, viewModel.state.value.notice?.category)
@@ -809,6 +951,13 @@ class CelesteViewModelTest {
         )
         gateway.emit("message.complete", """{"status":"complete"}""")
         advanceUntilIdle()
+        viewModel.state.first { state ->
+            state.agentActivity?.items.orEmpty()
+                .filterIsInstance<ToolActivity>()
+                .singleOrNull()
+                ?.phase == ToolPhase.Interrupted &&
+                state.turnState == TurnState.Idle
+        }
 
         assertEquals(
             ToolPhase.Interrupted,
@@ -835,11 +984,16 @@ class CelesteViewModelTest {
             activityDisclosurePreferences = activityDisclosurePreferences,
             activityDiscoveryTimeoutMillis = activityDiscoveryTimeoutMillis,
             reasoningCoalescingWindowMillis = reasoningCoalescingWindowMillis,
-        )
+        ).also(::track)
         viewModel.updateDashboardUrl("http://hermes.test:9119")
         viewModel.findDashboard()
         viewModel.loadSessions()
         viewModel.openSession(dashboard.session)
+        viewModel.state.first {
+            it.agentActivity?.runtimeSessionId?.isNotBlank() == true &&
+                it.loadingMessage == null
+        }
+        gateway.eventSubscribers.first { it > 0 }
         return viewModel
     }
 
@@ -940,6 +1094,7 @@ class CelesteViewModelTest {
         private val mutableEvents = MutableSharedFlow<GatewayEvent>(extraBufferCapacity = 32)
         override val state: StateFlow<GatewayConnectionState> = mutableState
         override val events: SharedFlow<GatewayEvent> = mutableEvents
+        val eventSubscribers: StateFlow<Int> = mutableEvents.subscriptionCount
 
         val methods = mutableListOf<String>()
         val requests = mutableListOf<Pair<String, JsonObject>>()
@@ -955,6 +1110,10 @@ class CelesteViewModelTest {
         val interruptGates = mutableListOf<CompletableDeferred<Unit>>()
         val resumeGates = mutableListOf<CompletableDeferred<JsonObject>>()
         var resumeRequestCount = 0
+        private val mutableResumeRequests = MutableStateFlow(0)
+        val resumeRequests: StateFlow<Int> = mutableResumeRequests
+        private val mutableInterruptRequests = MutableStateFlow(0)
+        val interruptRequests: StateFlow<Int> = mutableInterruptRequests
 
         override suspend fun connect() {
             connectCount += 1
@@ -973,6 +1132,7 @@ class CelesteViewModelTest {
             return when (method) {
                 "session.resume" -> {
                     resumeRequestCount += 1
+                    mutableResumeRequests.value = resumeRequestCount
                     if (resumeGates.isEmpty()) resumePayload else resumeGates.removeAt(0).await()
                 }
                 "session.create" -> {
@@ -1000,6 +1160,7 @@ class CelesteViewModelTest {
                     buildJsonObject { put("status", "streaming") }
                 }
                 "session.interrupt" -> {
+                    mutableInterruptRequests.value += 1
                     if (interruptGates.isNotEmpty()) interruptGates.removeAt(0).await()
                     buildJsonObject { put("status", "interrupting") }
                 }

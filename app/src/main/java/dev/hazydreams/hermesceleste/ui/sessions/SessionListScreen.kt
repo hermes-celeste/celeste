@@ -41,15 +41,13 @@ import dev.hazydreams.hermesceleste.network.DashboardProfile
 import dev.hazydreams.hermesceleste.network.StoredSession
 import dev.hazydreams.hermesceleste.ui.CelesteBackdrop
 import dev.hazydreams.hermesceleste.ui.CelesteBlue
-
-import dev.hazydreams.hermesceleste.ui.CelesteError
 import dev.hazydreams.hermesceleste.ui.CelesteHairline
 import dev.hazydreams.hermesceleste.ui.CelesteInk
 import dev.hazydreams.hermesceleste.ui.CelesteMuted
 import dev.hazydreams.hermesceleste.ui.CelestePanel
-
 import dev.hazydreams.hermesceleste.ui.EditorialDivider
 import dev.hazydreams.hermesceleste.ui.StatusMessage
+import dev.hazydreams.hermesceleste.ui.UiNoticeMessage
 
 @Composable
 internal fun SessionListScreen(
@@ -62,6 +60,8 @@ internal fun SessionListScreen(
     onNewConversation: () -> Unit,
     onSessionSelected: (StoredSession) -> Unit,
     onSettings: () -> Unit,
+    onRetry: () -> Unit = {},
+    onSignIn: () -> Unit = {},
 ) {
     var profileMenuExpanded by remember { mutableStateOf(false) }
 
@@ -151,7 +151,13 @@ internal fun SessionListScreen(
                     verticalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
                     loadingMessage?.let { StatusMessage(it, CelesteBlue, showSpinner = true) }
-                    notice?.let { StatusMessage(it.message, CelesteError) }
+                    notice?.let {
+                        UiNoticeMessage(
+                            notice = it,
+                            onRetry = onRetry,
+                            onSignIn = onSignIn,
+                        )
+                    }
                 }
             }
 

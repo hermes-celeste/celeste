@@ -4,6 +4,7 @@ import dev.hazydreams.hermesceleste.network.ReasoningPhase
 import dev.hazydreams.hermesceleste.network.ToolPhase
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class AgentActivityCardsTest {
@@ -29,5 +30,17 @@ class AgentActivityCardsTest {
 
         assertEquals("Displayed output, selectable displayed detail", description)
         assertFalse(description.contains("<private-detail>"))
+    }
+
+    @Test
+    fun activityPhaseAnnouncementsAreEmittedOncePerCardAndDisplayedPhase() {
+        val tracker = ActivityPhaseAnnouncementTracker()
+
+        assertTrue(tracker.consume("activity-ui:tool-1", "tool:running"))
+        assertFalse(tracker.consume("activity-ui:tool-1", "tool:running"))
+        assertTrue(tracker.consume("activity-ui:tool-1", "tool:completed"))
+        assertFalse(tracker.consume("activity-ui:tool-1", "tool:completed"))
+        assertTrue(tracker.consume("activity-ui:tool-2", "tool:running"))
+        assertFalse(tracker.consume("", "tool:running"))
     }
 }

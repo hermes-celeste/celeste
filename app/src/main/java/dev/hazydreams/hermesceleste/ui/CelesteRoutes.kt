@@ -93,8 +93,12 @@ internal fun CelesteRoutes(ui: CelesteUiState, viewModel: CelesteViewModel) {
                     onSend = viewModel::sendMessage,
                     onInterrupt = viewModel::interrupt,
                     onReconnect = viewModel::reconnectNow,
-                    onReasoningDisclosureChange = viewModel::setActivityReasoningDisclosureEnabled,
                     onBack = viewModel::leaveConversation,
+                    onSignIn = {
+                        viewModel.signOut()
+                        destination = CelesteDestination.Gateway
+                    },
+                    onReasoningDisclosureChange = viewModel::setActivityReasoningDisclosureEnabled,
                 )
             }
 
@@ -108,6 +112,11 @@ internal fun CelesteRoutes(ui: CelesteUiState, viewModel: CelesteViewModel) {
                 onNewConversation = viewModel::createNewConversation,
                 onSessionSelected = viewModel::openSession,
                 onSettings = { destination = CelesteDestination.Settings },
+                onRetry = viewModel::retrySavedConnection,
+                onSignIn = {
+                    viewModel.signOut()
+                    destination = CelesteDestination.Gateway
+                },
             )
 
             ui.connectionPhase == ConnectionPhase.CheckingSavedConnection ||
@@ -116,6 +125,10 @@ internal fun CelesteRoutes(ui: CelesteUiState, viewModel: CelesteViewModel) {
             ui.connectionPhase == ConnectionPhase.RestoreFailed -> ConnectionUnavailableScreen(
                 notice = ui.notice,
                 onRetry = viewModel::retrySavedConnection,
+                onSignIn = {
+                    viewModel.signOut()
+                    destination = CelesteDestination.Gateway
+                },
                 onSettings = { destination = CelesteDestination.Gateway },
             )
 
@@ -158,6 +171,7 @@ private fun GatewaySettingsRoute(
             },
             onConnect = viewModel::loadSessions,
             onRetry = viewModel::retrySavedConnection,
+            onSignIn = viewModel::loadSessions,
             onSignOut = viewModel::signOut,
             onForgetConnection = viewModel::forgetConnection,
             onBack = onBack,

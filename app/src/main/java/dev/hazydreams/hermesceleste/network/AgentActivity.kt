@@ -330,6 +330,7 @@ internal object AgentActivityReducer {
                 if (
                     reasoningEnabled &&
                     projection.serverReasoningAllowed != false &&
+                    event.payload.booleanValue("show_reasoning") != false &&
                     event.payload.booleanValue("verbose") == true
                 ) {
                     applyReasoningSummary(projection, event.payload)
@@ -344,6 +345,7 @@ internal object AgentActivityReducer {
                 if (
                     reasoningEnabled &&
                     projection.serverReasoningAllowed != false &&
+                    event.payload.booleanValue("show_reasoning") != false &&
                     event.payload.booleanValue("verbose") == true
                 ) {
                     applyReasoningDelta(projection, event.payload)
@@ -1188,7 +1190,10 @@ internal fun decodeGatewayActivity(elements: List<JsonElement>): List<ActivityIt
                 // server-authored `reasoning` summary is eligible here.
                 val detail = row.reasoningDetailFrom(listOf("reasoning"), REASONING_ACTIVITY_DETAIL_LIMIT)
                     ?: return@mapNotNull null
-                if (row.booleanValue("verbose") != true) return@mapNotNull null
+                if (
+                    row.booleanValue("show_reasoning") == false ||
+                    row.booleanValue("verbose") != true
+                ) return@mapNotNull null
                 ServerReasoningActivity(
                     uiKey = "",
                     source = ReasoningSource.ServerSummary,
@@ -1203,7 +1208,7 @@ internal fun decodeGatewayActivity(elements: List<JsonElement>): List<ActivityIt
 
 private fun JsonObject.firstString(vararg keys: String): String? =
     keys.asSequence()
-        .mapNotNull { key -> this[key]?.stringValue() }
+        .mapNotNull { key -> stringValue(key) }
         .firstOrNull { it.isNotBlank() }
 
 private fun JsonObject.stringValue(key: String): String? =

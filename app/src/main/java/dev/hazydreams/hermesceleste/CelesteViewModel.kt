@@ -1422,7 +1422,11 @@ internal class CelesteViewModel(
     ) {
         val context = reconciliationGuard?.context ?: currentSessionContext() ?: return
         if (reconciliationGuard != null && !isCurrent(reconciliationGuard)) return
-        if (event.type == "reasoning.delta" && event.payload.boolean("verbose") == true) {
+        if (
+            event.type == "reasoning.delta" &&
+            event.payload.boolean("show_reasoning") != false &&
+            event.payload.boolean("verbose") == true
+        ) {
             pendingReasoningDeltas += PendingReasoningDelta(
                 event = event,
                 context = context,
@@ -1693,7 +1697,7 @@ internal class CelesteViewModel(
 
     private fun deduplicateReasoningFromFinalContent(raw: String): String {
         var content = raw
-        val reasoningDetails = mutableState.value.agentActivity?.items
+        val reasoningDetails = mutableState.value.agentActivity?.items.orEmpty()
             .filterIsInstance<ServerReasoningActivity>()
             .map(ServerReasoningActivity::text)
             .filter { it.text.isNotBlank() }

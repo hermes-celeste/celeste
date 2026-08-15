@@ -1,5 +1,7 @@
 package dev.hazydreams.hermesceleste
 
+import androidx.lifecycle.ViewModelStore
+import androidx.lifecycle.viewModelScope
 import dev.hazydreams.hermesceleste.connection.InMemoryConnectionStore
 import dev.hazydreams.hermesceleste.connection.ReusableSecret
 import dev.hazydreams.hermesceleste.connection.SavedAuthMode
@@ -20,6 +22,7 @@ import dev.hazydreams.hermesceleste.network.StoredSession
 import dev.hazydreams.hermesceleste.network.TransportUnavailable
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
@@ -29,6 +32,8 @@ import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
+import kotlinx.coroutines.joinAll
+import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import org.junit.After
@@ -42,15 +47,30 @@ import org.junit.Test
 @OptIn(ExperimentalCoroutinesApi::class)
 class CelesteViewModelAutoLoginTest {
     private val mainDispatcher = UnconfinedTestDispatcher()
+    private lateinit var viewModelStore: ViewModelStore
+    private val trackedViewModels = mutableListOf<CelesteViewModel>()
+    private var viewModelKey = 0
 
     @Before
     fun setUp() {
         Dispatchers.setMain(mainDispatcher)
+        viewModelStore = ViewModelStore()
+        trackedViewModels.clear()
+        viewModelKey = 0
     }
 
     @After
     fun tearDown() {
+        val scopeJobs = trackedViewModels.mapNotNull { it.viewModelScope.coroutineContext[Job] }
+        viewModelStore.clear()
+        runBlocking { scopeJobs.joinAll() }
+        mainDispatcher.scheduler.advanceUntilIdle()
         Dispatchers.resetMain()
+    }
+
+    private fun track(viewModel: CelesteViewModel) {
+        viewModelStore.put("celeste-view-model-${viewModelKey++}", viewModel)
+        trackedViewModels += viewModel
     }
 
     @Test
@@ -63,7 +83,7 @@ class CelesteViewModelAutoLoginTest {
         val store = InMemoryConnectionStore(StoredConnection(descriptor, null))
         val dashboard = AutoLoginDashboard(openProbe)
 
-        val viewModel = CelesteViewModel(dashboard = dashboard, connectionStore = store)
+        val viewModel = CelesteViewModel(dashboard = dashboard, connectionStore = store).also(::track)
         advanceUntilIdle()
 
         val state = viewModel.state.value
@@ -78,7 +98,7 @@ class CelesteViewModelAutoLoginTest {
     fun successfulPasswordConnectionIsRememberedAndVisibleSecretsAreCleared() = runTest {
         val store = InMemoryConnectionStore()
         val dashboard = AutoLoginDashboard(passwordProbe)
-        val viewModel = CelesteViewModel(dashboard = dashboard, connectionStore = store)
+        val viewModel = CelesteViewModel(dashboard = dashboard, connectionStore = store).also(::track)
         advanceUntilIdle()
 
         viewModel.updateDashboardUrl("https://hermes.example.net")
@@ -121,7 +141,7 @@ class CelesteViewModelAutoLoginTest {
             exportedMaterial = "rotated-session-cookies"
         }
 
-        val viewModel = CelesteViewModel(dashboard = dashboard, connectionStore = store)
+        val viewModel = CelesteViewModel(dashboard = dashboard, connectionStore = store).also(::track)
         advanceUntilIdle()
 
         assertEquals(ConnectionPhase.Connected, viewModel.state.value.connectionPhase)
@@ -146,7 +166,7 @@ class CelesteViewModelAutoLoginTest {
             restoreAccepted = false
         }
 
-        val rejected = CelesteViewModel(dashboard = rejectedDashboard, connectionStore = store)
+        val rejected = CelesteViewModel(dashboard = rejectedDashboard, connectionStore = store).also(::track)
         advanceUntilIdle()
 
         assertEquals(ConnectionPhase.AuthenticationRequired, rejected.state.value.connectionPhase)
@@ -157,7 +177,7 @@ class CelesteViewModelAutoLoginTest {
         assertEquals(1, rejectedDashboard.restoreAuthenticationCalls)
 
         val nextDashboard = AutoLoginDashboard(passwordProbe)
-        val nextLaunch = CelesteViewModel(dashboard = nextDashboard, connectionStore = store)
+        val nextLaunch = CelesteViewModel(dashboard = nextDashboard, connectionStore = store).also(::track)
         advanceUntilIdle()
 
         assertEquals(ConnectionPhase.ManualSetup, nextLaunch.state.value.connectionPhase)
@@ -178,7 +198,7 @@ class CelesteViewModelAutoLoginTest {
         val dashboard = AutoLoginDashboard(openProbe).apply {
             probeFailure = TransportUnavailable("Hermes is unavailable.")
         }
-        val viewModel = CelesteViewModel(dashboard = dashboard, connectionStore = store)
+        val viewModel = CelesteViewModel(dashboard = dashboard, connectionStore = store).also(::track)
         advanceUntilIdle()
 
         assertEquals(ConnectionPhase.RestoreFailed, viewModel.state.value.connectionPhase)
@@ -208,7 +228,7 @@ class CelesteViewModelAutoLoginTest {
             probeFailure = InvalidDashboardResponse("Malformed response.")
         }
 
-        val viewModel = CelesteViewModel(dashboard = dashboard, connectionStore = store)
+        val viewModel = CelesteViewModel(dashboard = dashboard, connectionStore = store).also(::track)
         advanceUntilIdle()
 
         assertEquals(ConnectionPhase.RestoreFailed, viewModel.state.value.connectionPhase)
@@ -225,7 +245,7 @@ class CelesteViewModelAutoLoginTest {
         )
         val store = InMemoryConnectionStore(StoredConnection(original, null))
         val dashboard = AutoLoginDashboard(openProbe)
-        val viewModel = CelesteViewModel(dashboard = dashboard, connectionStore = store)
+        val viewModel = CelesteViewModel(dashboard = dashboard, connectionStore = store).also(::track)
         advanceUntilIdle()
 
         viewModel.updateDashboardUrl("https://new-hermes.example.net")
@@ -258,7 +278,7 @@ class CelesteViewModelAutoLoginTest {
             StoredConnection(descriptor, ReusableSecret("synthetic-session-cookies")),
         )
         val dashboard = AutoLoginDashboard(passwordProbe)
-        val viewModel = CelesteViewModel(dashboard = dashboard, connectionStore = store)
+        val viewModel = CelesteViewModel(dashboard = dashboard, connectionStore = store).also(::track)
         advanceUntilIdle()
         dashboard.onLogout = { assertNull(store.load()?.secret) }
 
@@ -280,7 +300,7 @@ class CelesteViewModelAutoLoginTest {
         val forgetViewModel = CelesteViewModel(
             dashboard = forgetDashboard,
             connectionStore = forgetStore,
-        )
+        ).also(::track)
         advanceUntilIdle()
         forgetDashboard.onLogout = { assertNull(forgetStore.load()) }
 

@@ -62,8 +62,8 @@ import dev.hazydreams.hermesceleste.ui.CelesteInk
 import dev.hazydreams.hermesceleste.ui.CelesteMuted
 import dev.hazydreams.hermesceleste.ui.CelestePanel
 import dev.hazydreams.hermesceleste.ui.CelestePaper
-
 import dev.hazydreams.hermesceleste.ui.StatusMessage
+import dev.hazydreams.hermesceleste.ui.UiNoticeMessage
 
 @Composable
 internal fun ConversationScreen(
@@ -79,6 +79,7 @@ internal fun ConversationScreen(
     onInterrupt: () -> Unit,
     onReconnect: () -> Unit,
     onBack: () -> Unit,
+    onSignIn: () -> Unit = {},
     agentActivity: AgentActivityProjection? = null,
     reasoningDisclosureEnabled: Boolean = true,
     onReasoningDisclosureChange: (Boolean) -> Unit = {},
@@ -157,7 +158,13 @@ internal fun ConversationScreen(
                     verticalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
                     loadingMessage?.let { StatusMessage(it, CelesteBlue, showSpinner = true) }
-                    notice?.let { StatusMessage(it.message, CelesteError) }
+                    notice?.let {
+                        UiNoticeMessage(
+                            notice = it,
+                            onRetry = onReconnect,
+                            onSignIn = onSignIn,
+                        )
+                    }
                 }
             }
 
