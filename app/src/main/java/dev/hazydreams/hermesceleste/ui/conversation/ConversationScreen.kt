@@ -41,13 +41,21 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
@@ -98,6 +106,8 @@ internal fun ConversationScreen(
 ) {
     val listState = rememberLazyListState()
     val focusManager = LocalFocusManager.current
+    val runtimeControlsFocusRequester = remember { FocusRequester() }
+    var pickerWasOpen by remember { mutableStateOf(false) }
     val transcriptKeys = remember(messages) { transcriptItemKeys(messages) }
     val visibleMessageCount = messages.size + if (streamingText.isNotBlank()) 1 else 0
     val safeDrawingInsets = WindowInsets.safeDrawing
@@ -107,6 +117,12 @@ internal fun ConversationScreen(
     )
     LaunchedEffect(visibleMessageCount, streamingText.length) {
         if (visibleMessageCount > 0) listState.animateScrollToItem(visibleMessageCount - 1)
+    }
+    LaunchedEffect(runtimeControls.pickerOpen) {
+        if (shouldRestoreRuntimeControlsFocus(pickerWasOpen, runtimeControls.pickerOpen)) {
+            runtimeControlsFocusRequester.requestFocus()
+        }
+        pickerWasOpen = runtimeControls.pickerOpen
     }
 
     CelesteBackdrop(showOrnament = false) {
@@ -204,6 +220,7 @@ internal fun ConversationScreen(
                 RuntimeControlsPill(
                     state = runtimeControls,
                     onClick = onRuntimeControlsOpen,
+                    focusRequester = runtimeControlsFocusRequester,
                 )
                 runtimeControls.message?.let { message ->
                     Text(
@@ -217,7 +234,10 @@ internal fun ConversationScreen(
                         modifier = Modifier
                             .fillMaxWidth()
                             .padding(top = 6.dp)
-                            .semantics { stateDescription = message },
+                            .semantics {
+                                stateDescription = message
+                                liveRegion = LiveRegionMode.Polite
+                            },
                     )
                 }
                 Spacer(Modifier.height(8.dp))
@@ -333,6 +353,7 @@ internal fun ConversationScreen(
 private fun RuntimeControlsPill(
     state: RuntimeControlsUiState,
     onClick: () -> Unit,
+    focusRequester: FocusRequester,
 ) {
     val enabled = state.snapshot != null &&
         state.lifecycle == RuntimeControlsLifecycle.Available &&
@@ -342,6 +363,8 @@ private fun RuntimeControlsPill(
         enabled = enabled,
         modifier = Modifier
             .fillMaxWidth()
+            .focusRequester(focusRequester)
+            .testTag("runtime-controls-pill")
             .semantics {
                 contentDescription = state.accessibilityLabel
                 stateDescription = when {
@@ -349,7 +372,7 @@ private fun RuntimeControlsPill(
                     state.lifecycle == RuntimeControlsLifecycle.Synchronizing -> "Synchronizing"
                     state.operation == RuntimeControlsOperation.Applying -> "Applying"
                     state.operation == RuntimeControlsOperation.Queued -> "Queued for next response"
-                    state.operation == RuntimeControlsOperation.Checking -> "Checking current setting"
+                    state.operation == RuntimeControlsOperation.Unknown -> "Unknown result; reconnect to verify"
                     state.snapshot?.capabilities?.available != true -> "Unavailable"
                     else -> "Available"
                 }
@@ -397,6 +420,7 @@ private fun RuntimeControlsSheet(
         modifier = Modifier
             .fillMaxWidth()
             .verticalScroll(scrollState)
+            .testTag("runtime-controls-sheet")
             .padding(horizontal = 24.dp, vertical = 10.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
@@ -449,6 +473,7 @@ private fun RuntimeControlsSheet(
                     enabled = inputsEnabled,
                     modifier = Modifier
                         .fillMaxWidth()
+                        .testTag("runtime-controls-model-${option.provider}-${option.model}")
                         .semantics {
                             role = Role.RadioButton
                             stateDescription = if (selected) "Selected" else "Not selected"
@@ -482,6 +507,7 @@ private fun RuntimeControlsSheet(
                     enabled = inputsEnabled,
                     modifier = Modifier
                         .fillMaxWidth()
+                        .testTag("runtime-controls-reasoning-$effort")
                         .semantics {
                             role = Role.RadioButton
                             stateDescription = if (selected) "Selected" else "Not selected"
@@ -507,11 +533,30 @@ private fun RuntimeControlsSheet(
             TextButton(
                 onClick = onCancel,
                 enabled = true,
+                modifier = Modifier
+                    .testTag("runtime-controls-cancel")
+                    .semantics {
+                        contentDescription = "Cancel runtime control changes"
+                        role = Role.Button
+                    },
             ) { Text("Cancel") }
             Spacer(Modifier.size(8.dp))
             Button(
                 onClick = onApply,
                 enabled = state.canApply && state.operation == RuntimeControlsOperation.Idle,
+                modifier = Modifier
+                    .testTag("runtime-controls-apply")
+                    .semantics {
+                        contentDescription = if (state.operation == RuntimeControlsOperation.Applying) {
+                            "Applying runtime control changes"
+                        } else {
+                            "Apply runtime control changes"
+                        }
+                        state.operationAnnouncement?.let { announcement ->
+                            stateDescription = announcement
+                        }
+                        role = Role.Button
+                    },
                 colors = ButtonDefaults.buttonColors(
                     containerColor = CelesteInk,
                     contentColor = CelestePaper,

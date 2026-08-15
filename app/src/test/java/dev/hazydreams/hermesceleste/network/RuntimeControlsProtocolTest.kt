@@ -12,6 +12,7 @@ import kotlinx.serialization.json.put
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -42,7 +43,8 @@ class RuntimeControlsProtocolTest {
         )
 
         assertTrue(capabilities.available)
-        assertTrue(capabilities.canApplyWhileRunning)
+        assertEquals(true, capabilities.canApplyWhileRunning)
+        assertTrue(capabilities.reasoningEfforts.isEmpty())
         assertEquals(
             listOf("gpt-5.6-sol", "gpt-5.6-fast"),
             capabilities.modelOptions.map(RuntimeModelOption::model),
@@ -55,11 +57,25 @@ class RuntimeControlsProtocolTest {
     @Test
     fun malformedOptionsBecomeUnavailableInsteadOfInventingChoices() {
         val capabilities = decodeRuntimeControlsCapabilities(
-            Json.parseToJsonElement("{\"providers\": [{\"slug\": 7, \"models\": [true]}]}") ,
+            Json.parseToJsonElement("{\"providers\": [{\"slug\": 7, \"models\": [true]}]}"),
         )
 
         assertFalse(capabilities.available)
         assertTrue(capabilities.modelOptions.isEmpty())
+    }
+
+    @Test
+    fun omittedCapabilityFieldsDoNotEnableUnsupportedRuntimeChanges() {
+        val capabilities = decodeRuntimeControlsCapabilities(
+            Json.parseToJsonElement(
+                """{"providers":[{"slug":"nous","models":["gpt-5.6-sol"]}]}""",
+            ),
+        )
+
+        assertTrue(capabilities.available)
+        assertFalse(capabilities.modelOptions.single().supportsReasoning)
+        assertTrue(capabilities.reasoningEfforts.isEmpty())
+        assertNull(capabilities.canApplyWhileRunning)
     }
 
     @Test
@@ -141,6 +157,7 @@ class RuntimeControlsProtocolTest {
                     Json.parseToJsonElement("""{"key":"model","value":"new-model"}"""),
                 ),
             ),
+            failureOnRequest = 2,
             failure = GatewayRpcException(4002, "reasoning rejected"),
         )
 
@@ -162,6 +179,7 @@ class RuntimeControlsProtocolTest {
 
     private class RecordingGateway(
         private val responses: ArrayDeque<JsonElement>,
+        private val failureOnRequest: Int? = null,
         private val failure: Throwable? = null,
     ) : GatewayConnection {
         private val mutableState = MutableStateFlow<GatewayConnectionState>(GatewayConnectionState.Connected)
@@ -180,7 +198,7 @@ class RuntimeControlsProtocolTest {
         ): JsonElement {
             methods += method
             requests += params
-            failure?.let { throw it }
+            if (failureOnRequest == methods.size) failure?.let { throw it }
             return responses.removeFirstOrNull() ?: buildJsonObject {}
         }
 

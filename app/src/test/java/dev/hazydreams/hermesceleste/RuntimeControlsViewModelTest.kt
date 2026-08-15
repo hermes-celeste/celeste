@@ -111,10 +111,19 @@ class RuntimeControlsViewModelTest {
 
         gateway.emit(
             type = "session.info",
-            payload = """{"profile_name":"work","model":"gpt-5.6-fast","provider":"nous","reasoning_effort":"high"}""",
+            payload = """{"profile_name":"work","model":"gpt-5.6-fast","provider":"nous","reasoning_effort":"high","running":true,"pending_model_switch":true}""",
+        )
+        advanceUntilIdle()
+        assertEquals(RuntimeControlsOperation.Queued, viewModel.state.value.runtimeControls.operation)
+        assertEquals("gpt-5.6-sol", viewModel.state.value.runtimeControls.snapshot?.model)
+
+        gateway.emit(
+            type = "session.info",
+            payload = """{"profile_name":"work","model":"gpt-5.6-fast","provider":"nous","reasoning_effort":"high","running":false,"pending_model_switch":false}""",
         )
         advanceUntilIdle()
         assertEquals(RuntimeControlsOperation.Idle, viewModel.state.value.runtimeControls.operation)
+        assertEquals("gpt-5.6-fast", viewModel.state.value.runtimeControls.snapshot?.model)
         viewModel.leaveConversation()
     }
 
@@ -160,9 +169,32 @@ class RuntimeControlsViewModelTest {
 
         assertTrue(viewModel.state.value.runtimeControls.pickerOpen)
         assertFalse(viewModel.state.value.runtimeControls.canApply)
-        assertEquals("Model unavailable", viewModel.state.value.runtimeControls.modelLabel)
-        assertEquals("Reasoning unavailable", viewModel.state.value.runtimeControls.reasoningLabel)
+        assertEquals("nous / gpt-5.6-sol", viewModel.state.value.runtimeControls.modelLabel)
+        assertEquals("Reasoning high", viewModel.state.value.runtimeControls.reasoningLabel)
         viewModel.cancelRuntimeControls()
+        viewModel.leaveConversation()
+    }
+
+    @Test
+    fun uncertainApplyUsesUnknownAndRetainsDraftUntilReconciled() = runTest {
+        val gateway = ControlGateway(
+            applyFailure = IOException("request timed out"),
+            failResumeAfter = 1,
+        )
+        val dashboard = ControlDashboard(gateway)
+        val viewModel = openConversation(dashboard, gateway)
+
+        viewModel.openRuntimeControls()
+        viewModel.selectRuntimeModel("nous", "gpt-5.6-fast")
+        viewModel.applyRuntimeControls()
+        advanceUntilIdle()
+
+        val controls = viewModel.state.value.runtimeControls
+        assertEquals(RuntimeControlsOperation.Unknown, controls.operation)
+        assertEquals(RuntimeControlsLifecycle.Reconnecting, controls.lifecycle)
+        assertEquals("gpt-5.6-sol", controls.snapshot?.model)
+        assertEquals("gpt-5.6-fast", controls.draft?.model)
+        assertTrue(controls.pickerOpen)
         viewModel.leaveConversation()
     }
 
@@ -218,12 +250,15 @@ class RuntimeControlsViewModelTest {
         private val deferredModelApply: Boolean = false,
         private val resumeIncludesEffectiveFields: Boolean = true,
         private val optionsFailure: Throwable? = null,
+        private val applyFailure: Throwable? = null,
+        private val failResumeAfter: Int? = null,
     ) : GatewayConnection {
         private val mutableState = MutableStateFlow<GatewayConnectionState>(GatewayConnectionState.Idle)
         private val mutableEvents = MutableSharedFlow<GatewayEvent>(extraBufferCapacity = 32)
         override val state: StateFlow<GatewayConnectionState> = mutableState
         override val events: SharedFlow<GatewayEvent> = mutableEvents
         val methods = mutableListOf<String>()
+        private var resumeCalls = 0
 
         override suspend fun connect() {
             mutableState.value = GatewayConnectionState.Connected
@@ -232,17 +267,26 @@ class RuntimeControlsViewModelTest {
         override suspend fun request(method: String, params: JsonObject, timeoutMillis: Long): JsonElement {
             methods += method
             return when (method) {
-                "session.resume" -> resumePayload()
+                "session.resume" -> {
+                    resumeCalls += 1
+                    if (failResumeAfter != null && resumeCalls > failResumeAfter) {
+                        throw IOException("resume timed out")
+                    }
+                    resumePayload()
+                }
                 "model.options" -> {
                     optionsFailure?.let { throw it }
                     Json.parseToJsonElement(
-                        """{"providers":[{"slug":"nous","name":"Nous","models":["gpt-5.6-sol","gpt-5.6-fast"],"capabilities":{"gpt-5.6-sol":{"reasoning":true},"gpt-5.6-fast":{"reasoning":true}}}]}""",
+                        """{"providers":[{"slug":"nous","name":"Nous","models":["gpt-5.6-sol","gpt-5.6-fast"],"capabilities":{"gpt-5.6-sol":{"reasoning":true},"gpt-5.6-fast":{"reasoning":true}}}],"reasoning_efforts":["none","high"],"can_apply_while_running":true}""",
                     )
                 }
-                "config.set" -> buildJsonObject {
-                    put("key", params["key"]?.jsonPrimitive?.content.orEmpty())
-                    put("value", params["value"]?.jsonPrimitive?.content.orEmpty())
-                    if (deferredModelApply && params["key"]?.jsonPrimitive?.content == "model") put("deferred", true)
+                "config.set" -> {
+                    applyFailure?.let { throw it }
+                    buildJsonObject {
+                        put("key", params["key"]?.jsonPrimitive?.content.orEmpty())
+                        put("value", params["value"]?.jsonPrimitive?.content.orEmpty())
+                        if (deferredModelApply && params["key"]?.jsonPrimitive?.content == "model") put("deferred", true)
+                    }
                 }
                 "session.list" -> buildJsonObject {}
                 else -> buildJsonObject {}

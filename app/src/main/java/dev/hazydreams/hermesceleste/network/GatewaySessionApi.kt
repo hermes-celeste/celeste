@@ -30,32 +30,19 @@ enum class RuntimeControlsSource {
 data class RuntimeModelOption(
     val provider: String,
     val model: String,
-    val supportsReasoning: Boolean = true,
+    val supportsReasoning: Boolean = false,
     val supportsFast: Boolean = false,
-)
-
-private val DEFAULT_REASONING_EFFORTS = listOf(
-    "none",
-    "minimal",
-    "low",
-    "medium",
-    "high",
-    "xhigh",
-    "max",
-    "ultra",
 )
 
 data class RuntimeControlsCapabilities(
     val available: Boolean,
     val modelOptions: List<RuntimeModelOption> = emptyList(),
-    val reasoningEfforts: List<String> = DEFAULT_REASONING_EFFORTS,
-    val canApplyWhileRunning: Boolean = true,
+    val reasoningEfforts: List<String> = emptyList(),
+    val canApplyWhileRunning: Boolean? = null,
 ) {
     companion object {
         val Unavailable = RuntimeControlsCapabilities(
             available = false,
-            reasoningEfforts = DEFAULT_REASONING_EFFORTS,
-            canApplyWhileRunning = false,
         )
     }
 }
@@ -69,6 +56,7 @@ data class RuntimeControlsInfo(
     val reasoningEffort: String? = null,
     val reasoningEnabled: Boolean? = null,
     val running: Boolean? = null,
+    val pendingModelSwitch: Boolean? = null,
     val authoritative: Boolean = false,
 )
 
@@ -137,7 +125,7 @@ internal fun decodeRuntimeControlsCapabilities(element: JsonElement): RuntimeCon
                 supportsReasoning = capability?.safeBoolean("reasoning")
                     ?: modelObject?.safeBoolean("reasoning")
                     ?: provider.safeBoolean("reasoning")
-                    ?: true,
+                    ?: false,
                 supportsFast = capability?.safeBoolean("fast")
                     ?: modelObject?.safeBoolean("fast")
                     ?: provider.safeBoolean("fast")
@@ -162,15 +150,13 @@ internal fun decodeRuntimeControlsCapabilities(element: JsonElement): RuntimeCon
                 ?.lowercase()
         }
         ?.distinct()
-        ?.takeIf(List<String>::isNotEmpty)
-        ?: DEFAULT_REASONING_EFFORTS
+        .orEmpty()
     return RuntimeControlsCapabilities(
         available = true,
         modelOptions = options,
         reasoningEfforts = efforts,
         canApplyWhileRunning = root.safeBoolean("can_apply_while_running")
-            ?: root.safeBoolean("supports_deferred_apply")
-            ?: true,
+            ?: root.safeBoolean("supports_deferred_apply"),
     )
 }
 
@@ -186,6 +172,9 @@ internal fun decodeRuntimeControlsInfo(
     fun pickBoolean(vararg keys: String): Boolean? = keys.asSequence()
         .mapNotNull { key -> result.safeBoolean(key) ?: info?.safeBoolean(key) }
         .firstOrNull()
+    fun pickPendingModelSwitch(): Boolean? = sequenceOf(result, info)
+        .mapNotNull { value -> value?.pendingModelSwitch() }
+        .firstOrNull()
     return RuntimeControlsInfo(
         runtimeSessionId = pickString("session_id", "runtime_session_id"),
         storedSessionId = pickString("resumed", "stored_session_id", "session_key"),
@@ -199,6 +188,7 @@ internal fun decodeRuntimeControlsInfo(
         reasoningEnabled = pickBoolean("reasoning_enabled", "reasoning_present")
             ?: reasoning?.safeBoolean("enabled"),
         running = pickBoolean("running", "busy"),
+        pendingModelSwitch = pickPendingModelSwitch(),
         authoritative = authoritative,
     )
 }
@@ -212,6 +202,23 @@ private fun JsonObject.safeString(key: String): String? =
 
 private fun JsonObject.safeBoolean(key: String): Boolean? =
     (this[key] as? JsonPrimitive)?.booleanOrNull
+
+private fun JsonObject.pendingModelSwitch(): Boolean? {
+    val value = this["pending_model_switch"] ?: this["model_switch_pending"] ?: return null
+    return when (value) {
+        JsonNull -> false
+        is JsonObject, is JsonArray -> true
+        is JsonPrimitive -> value.booleanOrNull
+            ?: value.contentOrNull?.let { text ->
+                when {
+                    text.equals("true", ignoreCase = true) -> true
+                    text.equals("false", ignoreCase = true) -> false
+                    else -> null
+                }
+            }
+        else -> null
+    }
+}
 
 private fun decodeConfigModel(value: String): Pair<String?, String?> {
     val provider = Regex("--provider\\s+([^\\s]+)").find(value)?.groupValues?.getOrNull(1)
@@ -276,6 +283,7 @@ private fun mergeRuntimeControlsInfo(
     reasoningEffort = second.reasoningEffort ?: first.reasoningEffort,
     reasoningEnabled = second.reasoningEnabled ?: first.reasoningEnabled,
     running = second.running ?: first.running,
+    pendingModelSwitch = second.pendingModelSwitch ?: first.pendingModelSwitch,
     authoritative = first.authoritative || second.authoritative,
 )
 

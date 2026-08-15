@@ -8,6 +8,10 @@ import dev.hazydreams.hermesceleste.network.AuthProvider
 import dev.hazydreams.hermesceleste.network.ConversationMessage
 import dev.hazydreams.hermesceleste.network.DashboardProbeResult
 import dev.hazydreams.hermesceleste.network.DashboardProfile
+import dev.hazydreams.hermesceleste.network.RuntimeControlsCapabilities
+import dev.hazydreams.hermesceleste.network.RuntimeControlsDraft
+import dev.hazydreams.hermesceleste.network.RuntimeControlsSnapshot
+import dev.hazydreams.hermesceleste.network.RuntimeModelOption
 import dev.hazydreams.hermesceleste.network.StoredSession
 import dev.hazydreams.hermesceleste.ui.HermesCelesteTheme
 import dev.hazydreams.hermesceleste.ui.conversation.ConversationScreen
@@ -72,6 +76,66 @@ private val previewMessages = listOf(
         text = "Compared the current Hermes gateway contract with the mobile reference client.",
         id = "preview-tool-1",
     ),
+)
+
+private val previewRuntimeCapabilities = RuntimeControlsCapabilities(
+    available = true,
+    modelOptions = listOf(
+        RuntimeModelOption(provider = "nous", model = "gpt-5.6-sol", supportsReasoning = true),
+        RuntimeModelOption(provider = "nous", model = "gpt-5.6-fast", supportsReasoning = true),
+    ),
+    reasoningEfforts = listOf("none", "high", "xhigh"),
+    canApplyWhileRunning = true,
+)
+
+private val previewRuntimeSnapshot = RuntimeControlsSnapshot(
+    origin = "https://hermes.example.net",
+    profile = "work",
+    storedSessionId = "preview-runtime-session",
+    runtimeSessionId = "preview-runtime",
+    provider = "nous",
+    model = "gpt-5.6-sol",
+    reasoningEffort = "high",
+    capabilities = previewRuntimeCapabilities,
+)
+
+private val previewRuntimeDraft = RuntimeControlsDraft(
+    origin = previewRuntimeSnapshot.origin,
+    profile = previewRuntimeSnapshot.profile,
+    storedSessionId = previewRuntimeSnapshot.storedSessionId,
+    runtimeSessionId = previewRuntimeSnapshot.runtimeSessionId,
+    provider = "nous",
+    model = "gpt-5.6-fast",
+    reasoningEffort = "xhigh",
+)
+
+private val previewUnavailableRuntimeSnapshot = previewRuntimeSnapshot.copy(
+    provider = null,
+    model = null,
+    reasoningEffort = null,
+    capabilities = RuntimeControlsCapabilities.Unavailable,
+)
+
+private val previewOlderGatewayRuntimeSnapshot = previewRuntimeSnapshot.copy(
+    capabilities = RuntimeControlsCapabilities.Unavailable,
+)
+
+private fun previewRuntimeControls(
+    lifecycle: RuntimeControlsLifecycle = RuntimeControlsLifecycle.Available,
+    operation: RuntimeControlsOperation = RuntimeControlsOperation.Idle,
+    pickerOpen: Boolean = false,
+    snapshot: RuntimeControlsSnapshot = previewRuntimeSnapshot,
+    draft: RuntimeControlsDraft? = previewRuntimeDraft,
+    message: String? = null,
+    canApply: Boolean = false,
+) = RuntimeControlsUiState(
+    lifecycle = lifecycle,
+    snapshot = snapshot,
+    draft = draft,
+    pickerOpen = pickerOpen,
+    operation = operation,
+    message = message,
+    canApply = canApply,
 )
 
 private val gatewaySetupState = GatewaySettingsUiState(
@@ -340,6 +404,100 @@ fun ReconnectingPreviewScreenshot() {
             draft = "This draft stays here while the connection recovers.",
             turnState = TurnState.Reconnecting,
             errorMessage = "The dashboard connection closed before Hermes finished responding.",
+        )
+    }
+}
+
+@PreviewTest
+@Preview(name = "14 · Runtime controls known", widthDp = 390, heightDp = 844, showBackground = true)
+@Composable
+fun RuntimeControlsKnownPreviewScreenshot() {
+    HermesCelesteTheme {
+        PreviewConversation(
+            runtimeControls = previewRuntimeControls(
+                pickerOpen = true,
+                canApply = true,
+            ),
+            turnState = TurnState.Idle,
+        )
+    }
+}
+
+@PreviewTest
+@Preview(name = "15 · Runtime controls unavailable", widthDp = 390, heightDp = 844, showBackground = true)
+@Composable
+fun RuntimeControlsUnavailablePreviewScreenshot() {
+    HermesCelesteTheme {
+        PreviewConversation(
+            runtimeControls = previewRuntimeControls(
+                snapshot = previewUnavailableRuntimeSnapshot,
+                pickerOpen = true,
+                message = "Model and reasoning choices are unavailable on this gateway.",
+            ),
+            turnState = TurnState.Idle,
+        )
+    }
+}
+
+@PreviewTest
+@Preview(name = "16 · Runtime controls applying", widthDp = 390, heightDp = 844, showBackground = true)
+@Composable
+fun RuntimeControlsApplyingPreviewScreenshot() {
+    HermesCelesteTheme {
+        PreviewConversation(
+            runtimeControls = previewRuntimeControls(
+                operation = RuntimeControlsOperation.Applying,
+                message = "Applying…",
+            ),
+            turnState = TurnState.Idle,
+        )
+    }
+}
+
+@PreviewTest
+@Preview(name = "17 · Runtime controls queued", widthDp = 390, heightDp = 844, showBackground = true)
+@Composable
+fun RuntimeControlsQueuedPreviewScreenshot() {
+    HermesCelesteTheme {
+        PreviewConversation(
+            runtimeControls = previewRuntimeControls(
+                operation = RuntimeControlsOperation.Queued,
+                message = "Queued for next response",
+            ),
+            turnState = TurnState.Running,
+        )
+    }
+}
+
+@PreviewTest
+@Preview(name = "18 · Runtime controls reconnecting", widthDp = 390, heightDp = 844, showBackground = true)
+@Composable
+fun RuntimeControlsReconnectingPreviewScreenshot() {
+    HermesCelesteTheme {
+        PreviewConversation(
+            runtimeControls = previewRuntimeControls(
+                lifecycle = RuntimeControlsLifecycle.Reconnecting,
+                message = "Reconnecting to Hermes…",
+            ),
+            turnState = TurnState.Reconnecting,
+            errorMessage = "The dashboard connection closed before Hermes finished responding.",
+        )
+    }
+}
+
+@PreviewTest
+@Preview(name = "19 · Runtime controls older gateway", widthDp = 390, heightDp = 844, showBackground = true)
+@Composable
+fun RuntimeControlsOlderGatewayPreviewScreenshot() {
+    HermesCelesteTheme {
+        PreviewConversation(
+            runtimeControls = previewRuntimeControls(
+                snapshot = previewOlderGatewayRuntimeSnapshot,
+                draft = null,
+                pickerOpen = true,
+                message = "This gateway cannot change that setting.",
+            ),
+            turnState = TurnState.Idle,
         )
     }
 }

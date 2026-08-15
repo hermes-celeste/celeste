@@ -68,7 +68,7 @@ internal enum class RuntimeControlsOperation {
     Idle,
     Applying,
     Queued,
-    Checking,
+    Unknown,
 }
 
 internal enum class RuntimeControlsLifecycle {
@@ -87,6 +87,14 @@ internal data class RuntimeControlsUiState(
     val message: String? = null,
     val canApply: Boolean = false,
 ) {
+    val operationAnnouncement: String?
+        get() = when (operation) {
+            RuntimeControlsOperation.Idle -> null
+            RuntimeControlsOperation.Applying -> "Applying"
+            RuntimeControlsOperation.Queued -> "Queued for next response"
+            RuntimeControlsOperation.Unknown -> "Unknown result; reconnect to verify"
+        }
+
     val modelLabel: String
         get() {
             val provider = snapshot?.provider?.takeIf(String::isNotBlank)
@@ -107,6 +115,11 @@ internal data class RuntimeControlsUiState(
     val accessibilityLabel: String
         get() = "$modelLabel, $reasoningLabel, change settings"
 }
+
+internal fun shouldRestoreRuntimeControlsFocus(
+    wasPickerOpen: Boolean,
+    pickerOpen: Boolean,
+): Boolean = wasPickerOpen && !pickerOpen
 
 private data class PendingRuntimeApply(
     val origin: String,
@@ -440,7 +453,7 @@ internal class CelesteViewModel(
         if (draft.model == snapshot.model && draft.provider == snapshot.provider && !reasoningChanged) {
             return false
         }
-        return turnState != TurnState.Running || snapshot.capabilities.canApplyWhileRunning
+        return turnState != TurnState.Running || snapshot.capabilities.canApplyWhileRunning == true
     }
 
     private fun draftMatchesSnapshot(
@@ -518,6 +531,18 @@ internal class CelesteViewModel(
         snapshot.model == pending.target.model && snapshot.provider == pending.target.provider
         )) && (!pending.reasoningChanged || snapshot.reasoningEffort == pending.target.reasoningEffort)
 
+    private fun shouldRetainPendingEffectiveState(
+        info: RuntimeControlsInfo,
+        pending: PendingRuntimeApply,
+    ): Boolean {
+        if (!pending.modelChanged) return false
+        if (info.pendingModelSwitch == true) return true
+        if (info.pendingModelSwitch == false) return false
+        return info.running == true &&
+            info.model == pending.target.model &&
+            (info.provider == null || info.provider == pending.target.provider)
+    }
+
     private fun handleRuntimeControlsAcknowledgement(
         activeGateway: GatewayConnection,
         pending: PendingRuntimeApply,
@@ -533,11 +558,13 @@ internal class CelesteViewModel(
         }
         val current = mutableState.value
         val controls = current.runtimeControls
-        val updated = acknowledgement.authoritativeInfo?.let { info ->
-            controls.snapshot?.let { expected ->
-                applyRuntimeControlsInfo(info, RuntimeControlsSource.ApplyAcknowledgement, expected)
+        val updated = acknowledgement.authoritativeInfo
+            ?.takeUnless { acknowledgement.deferred }
+            ?.let { info ->
+                controls.snapshot?.let { expected ->
+                    applyRuntimeControlsInfo(info, RuntimeControlsSource.ApplyAcknowledgement, expected)
+                }
             }
-        }
         val withAcknowledgement = if (updated != null) controls.copy(snapshot = updated) else controls
         val confirmed = withAcknowledgement.snapshot?.let { authoritativeRuntimeControlsMatch(it, pending) } == true
         mutableState.value = current.copy(
@@ -566,8 +593,8 @@ internal class CelesteViewModel(
             if (reconciled.isFailure && gateway === activeGateway) {
                 mutableState.value = mutableState.value.copy(
                     runtimeControls = mutableState.value.runtimeControls.copy(
-                        operation = RuntimeControlsOperation.Checking,
-                        message = "Checking the current Hermes setting…",
+                        operation = RuntimeControlsOperation.Unknown,
+                        message = "Could not confirm that change. Reconnect to verify.",
                         canApply = false,
                     ),
                 )
@@ -632,8 +659,8 @@ internal class CelesteViewModel(
         pendingRuntimeApply = pending
         mutableState.value = mutableState.value.copy(
             runtimeControls = mutableState.value.runtimeControls.copy(
-                operation = RuntimeControlsOperation.Checking,
-                message = "Checking the current Hermes setting…",
+                operation = RuntimeControlsOperation.Unknown,
+                message = "Could not confirm that change. Reconnect to verify.",
                 canApply = false,
             ),
         )
@@ -684,10 +711,10 @@ internal class CelesteViewModel(
         mutableState.value = mutableState.value.copy(
             runtimeControls = controls.copy(
                 lifecycle = RuntimeControlsLifecycle.Reconnecting,
-                operation = if (controls.operation == RuntimeControlsOperation.Applying) {
-                    RuntimeControlsOperation.Checking
-                } else {
-                    controls.operation
+                operation = when (controls.operation) {
+                    RuntimeControlsOperation.Applying,
+                    RuntimeControlsOperation.Queued -> RuntimeControlsOperation.Unknown
+                    else -> controls.operation
                 },
                 message = message ?: controls.message ?: "Reconnecting to Hermes…",
                 canApply = false,
@@ -1443,19 +1470,30 @@ internal class CelesteViewModel(
             previousSnapshot.profile == profile &&
             previousSnapshot.storedSessionId == storedSessionId
         val info = resumed.runtimeControls
+        val pendingForSnapshot = pendingRuntimeApply?.takeIf {
+            it.origin == origin &&
+                it.profile == profile &&
+                it.storedSessionId == storedSessionId
+        }
+        val retainPendingEffectiveState = pendingForSnapshot?.let {
+            shouldRetainPendingEffectiveState(info, it)
+        } == true
+        val retainedSnapshot = previousSnapshot?.takeIf { sameStoredScope }
         val snapshot = RuntimeControlsSnapshot(
             origin = origin,
             profile = profile,
             storedSessionId = storedSessionId,
             runtimeSessionId = resumed.runtimeSessionId,
-            provider = info.provider ?: previousSnapshot?.takeIf { sameStoredScope }?.provider,
-            model = info.model ?: previousSnapshot?.takeIf { sameStoredScope }?.model,
-            reasoningEffort = info.reasoningEffort
-                ?: previousSnapshot?.takeIf { sameStoredScope }?.reasoningEffort,
-            reasoningEnabled = info.reasoningEnabled
-                ?: previousSnapshot?.takeIf { sameStoredScope }?.reasoningEnabled,
+            provider = if (retainPendingEffectiveState) retainedSnapshot?.provider
+            else info.provider ?: retainedSnapshot?.provider,
+            model = if (retainPendingEffectiveState) retainedSnapshot?.model
+            else info.model ?: retainedSnapshot?.model,
+            reasoningEffort = if (retainPendingEffectiveState) retainedSnapshot?.reasoningEffort
+            else info.reasoningEffort ?: retainedSnapshot?.reasoningEffort,
+            reasoningEnabled = if (retainPendingEffectiveState) retainedSnapshot?.reasoningEnabled
+            else info.reasoningEnabled ?: retainedSnapshot?.reasoningEnabled,
             running = info.running ?: resumed.running
-                ?: previousSnapshot?.takeIf { sameStoredScope }?.running,
+                ?: retainedSnapshot?.running,
             capabilities = previousSnapshot
                 ?.takeIf { sameStoredScope && it.runtimeSessionId == resumed.runtimeSessionId }
                 ?.capabilities
@@ -1495,12 +1533,12 @@ internal class CelesteViewModel(
             optionsLoading = false,
             operation = when {
                 confirmed -> RuntimeControlsOperation.Idle
-                previousControls.operation == RuntimeControlsOperation.Checking -> RuntimeControlsOperation.Idle
+                previousControls.operation == RuntimeControlsOperation.Unknown -> RuntimeControlsOperation.Idle
                 else -> previousControls.operation
             },
             message = when {
                 confirmed -> null
-                previousControls.operation == RuntimeControlsOperation.Checking -> "Reconnect and try again."
+                previousControls.operation == RuntimeControlsOperation.Unknown -> "Reconnect and try again."
                 else -> previousControls.message
             },
             canApply = false,
@@ -1522,12 +1560,29 @@ internal class CelesteViewModel(
         val controls = current.runtimeControls
         val expected = controls.snapshot ?: return
         val info = decodeRuntimeControlsInfo(event.payload, authoritative = true)
+        val pending = pendingRuntimeApply
+        val retainPendingEffectiveState = pending?.takeIf {
+            it.origin == expected.origin &&
+                it.profile == expected.profile &&
+                it.storedSessionId == expected.storedSessionId
+        }?.let {
+            shouldRetainPendingEffectiveState(info, it)
+        } == true
+        val effectiveInfo = if (retainPendingEffectiveState) {
+            info.copy(
+                provider = null,
+                model = null,
+                reasoningEffort = null,
+                reasoningEnabled = null,
+            )
+        } else {
+            info
+        }
         val updated = applyRuntimeControlsInfo(
-            info = info,
+            info = effectiveInfo,
             source = RuntimeControlsSource.SessionInfo,
             expected = expected,
         ) ?: return
-        val pending = pendingRuntimeApply
         val confirmed = pending?.let { authoritativeRuntimeControlsMatch(updated, it) } == true
         if (confirmed) pendingRuntimeApply = null
         val nextTurnState = info.running?.let { if (it) TurnState.Running else TurnState.Idle }
