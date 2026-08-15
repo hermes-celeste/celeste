@@ -12,16 +12,15 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -30,8 +29,10 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
@@ -65,8 +66,11 @@ import dev.hazydreams.hermesceleste.ui.CelestePanelRaised
  */
 internal fun activityItemKeys(items: List<ActivityItem>): List<String> {
     val occurrences = mutableMapOf<String, Int>()
-    return items.mapIndexed { index, item ->
-        val base = item.uiKey.takeIf(String::isNotBlank) ?: "fallback:$index"
+    return items.map { item ->
+        val base = item.uiKey.takeIf(String::isNotBlank) ?: when (item) {
+            is ToolActivity -> "fallback:tool:${item.callId ?: item.name}"
+            is ServerReasoningActivity -> "fallback:reasoning:${item.source}"
+        }
         val occurrence = occurrences.getOrDefault(base, 0) + 1
         occurrences[base] = occurrence
         val key = "activity-ui:${base.length}:$base"
@@ -80,13 +84,17 @@ internal fun AgentActivityPanel(
     reasoningDisclosureEnabled: Boolean,
     onReasoningDisclosureChange: (Boolean) -> Unit,
 ) {
-    var expanded by rememberSaveable(projection.storedSessionId) { mutableStateOf(false) }
-    var expandedItemKey by remember(projection.storedSessionId) { mutableStateOf<String?>(null) }
+    var expanded by rememberSaveable(
+        projection.originKey,
+        projection.profile,
+        projection.storedSessionId,
+    ) { mutableStateOf(false) }
+    val activityScopeKey = "${projection.originKey}|${projection.profile}|${projection.storedSessionId}"
+    var expandedItemKey by remember(activityScopeKey) { mutableStateOf<String?>(null) }
     val keys = remember(projection.items) { activityItemKeys(projection.items) }
-    val detailsScrollState = rememberScrollState()
     val hasReasoningCapability =
         projection.capability == ActivityCapabilityState.ToolAndServerReasoning ||
-            !reasoningDisclosureEnabled
+            projection.serverReasoningAllowed == true
     val stateLabel = activityPresentationLabel(projection.presentation)
 
     Column(
@@ -118,6 +126,9 @@ internal fun AgentActivityPanel(
                     text = stateLabel,
                     color = activityPresentationColor(projection.presentation),
                     style = MaterialTheme.typography.labelSmall,
+                    modifier = Modifier.semantics {
+                        liveRegion = LiveRegionMode.Polite
+                    },
                 )
             }
             if (projection.items.isNotEmpty()) {
@@ -143,7 +154,6 @@ internal fun AgentActivityPanel(
                 modifier = Modifier
                     .fillMaxWidth()
                     .heightIn(max = 320.dp)
-                    .verticalScroll(detailsScrollState)
                     .background(CelestePanel, RoundedCornerShape(16.dp))
                     .border(1.dp, CelesteHairline, RoundedCornerShape(16.dp))
                     .padding(horizontal = 14.dp, vertical = 12.dp),
@@ -199,8 +209,14 @@ internal fun AgentActivityPanel(
                         style = MaterialTheme.typography.bodySmall,
                     )
                 } else {
-                    projection.items.forEachIndexed { index, item ->
-                        key(keys[index]) {
+                    LazyColumn(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalArrangement = Arrangement.spacedBy(10.dp),
+                    ) {
+                        itemsIndexed(
+                            items = projection.items,
+                            key = { index, _ -> keys[index] },
+                        ) { index, item ->
                             ActivityCard(
                                 item = item,
                                 expanded = expandedItemKey == keys[index],
@@ -323,11 +339,12 @@ private fun ReasoningCardHeader(item: ServerReasoningActivity, expanded: Boolean
 
 @Composable
 private fun ToolCardDetails(item: ToolActivity) {
-    if (item.input == null && item.output == null) {
+    if (item.input == null && item.progress == null && item.output == null) {
         DetailUnavailable()
         return
     }
     item.input?.let { ActivityDetailBlock(label = "Displayed input", detail = it) }
+    item.progress?.let { ActivityDetailBlock(label = "Displayed progress", detail = it) }
     item.output?.let { ActivityDetailBlock(label = "Displayed output", detail = it) }
 }
 
@@ -416,6 +433,7 @@ private fun activityPresentationColor(state: ActivityPresentationState): Color =
 private fun activitySummary(item: ActivityItem): String = when (item) {
     is ToolActivity -> buildString {
         append(toolPhaseLabel(item.phase))
+        if (item.progress != null) append(" · displayed progress available")
         if (item.output != null) append(" · displayed output available")
         else if (item.input != null) append(" · displayed input available")
     }

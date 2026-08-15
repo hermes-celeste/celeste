@@ -25,7 +25,12 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import dev.hazydreams.hermesceleste.network.ActivityCapabilityState
+import dev.hazydreams.hermesceleste.network.ActivityPresentationState
+import dev.hazydreams.hermesceleste.network.ActivitySource
+import dev.hazydreams.hermesceleste.network.AgentActivityProjection
 import dev.hazydreams.hermesceleste.network.ConversationMessage
+import dev.hazydreams.hermesceleste.network.ToolActivity
 import dev.hazydreams.hermesceleste.ui.CelesteBlue
 import dev.hazydreams.hermesceleste.ui.CelesteCoral
 import dev.hazydreams.hermesceleste.ui.CelesteGoldText
@@ -46,6 +51,31 @@ internal fun transcriptItemKeys(messages: List<ConversationMessage>): List<Strin
         val occurrence = occurrences.getOrDefault(base, 0) + 1
         occurrences[base] = occurrence
         if (occurrence == 1) base else "$base:occurrence:$occurrence"
+    }
+}
+
+/**
+ * Tool rows are hidden from the transcript only after the activity projection
+ * has a bounded card for every row. An unavailable/unsupported projection must
+ * leave legacy tool messages visible rather than silently dropping server data.
+ */
+internal fun transcriptMessagesForActivity(
+    messages: List<ConversationMessage>,
+    projection: AgentActivityProjection?,
+): List<ConversationMessage> {
+    val toolMessageCount = messages.count { it.role == "tool" }
+    if (toolMessageCount == 0) return messages
+
+    val projectedToolCount = projection?.items?.count { it is ToolActivity } ?: 0
+    val canRenderTools = projection != null &&
+        projection.source != ActivitySource.Unavailable &&
+        projection.capability != ActivityCapabilityState.Unsupported &&
+        projection.presentation != ActivityPresentationState.Unavailable &&
+        projectedToolCount >= toolMessageCount
+    return if (canRenderTools) {
+        messages.filterNot { it.role == "tool" }
+    } else {
+        messages
     }
 }
 

@@ -53,8 +53,67 @@ data class DashboardProbeResult(
     val authRequired: Boolean,
     val providers: List<AuthProvider>,
     val version: String?,
+    /** Explicit server declaration only; absent means capability is unknown. */
+    val activityCapability: ActivityCapabilityState = ActivityCapabilityState.Unknown,
 ) {
     val supportsPassword: Boolean = providers.any(AuthProvider::supportsPassword)
+}
+
+/**
+ * Decode only explicit activity declarations from /api/status. A version string
+ * is deliberately not used as a feature gate because Hermes has no contractual
+ * minimum version for this projection yet.
+ */
+internal fun decodeActivityCapability(status: JsonObject): ActivityCapabilityState {
+    val direct = sequenceOf(
+        status["activity_capability"],
+        status["activity_support"],
+        status["activity"],
+    ).mapNotNull(::activityCapabilityFromElement).firstOrNull()
+    if (direct != null) return direct
+
+    if (
+        (status["activity_supported"] as? JsonPrimitive)?.booleanOrNull == false ||
+        (status["activity_available"] as? JsonPrimitive)?.booleanOrNull == false
+    ) {
+        return ActivityCapabilityState.Unsupported
+    }
+    if (status["activity_legacy"]?.jsonPrimitive?.booleanOrNull == true) {
+        return ActivityCapabilityState.LegacyToolOnly
+    }
+
+    val capabilities = status["capabilities"] as? JsonObject
+    return capabilities?.let { nested ->
+        activityCapabilityFromElement(nested["activity"])
+    } ?: ActivityCapabilityState.Unknown
+}
+
+private fun activityCapabilityFromElement(element: JsonElement?): ActivityCapabilityState? {
+    if (element is JsonObject) {
+        (element["supported"] as? JsonPrimitive)?.booleanOrNull?.let {
+            if (!it) return ActivityCapabilityState.Unsupported
+        }
+        (element["available"] as? JsonPrimitive)?.booleanOrNull?.let {
+            if (!it) return ActivityCapabilityState.Unsupported
+        }
+        (element["legacy"] as? JsonPrimitive)?.booleanOrNull?.let {
+            if (it) return ActivityCapabilityState.LegacyToolOnly
+        }
+        val mode = element["mode"] ?: element["state"] ?: element["capability"]
+        return activityCapabilityFromElement(mode)
+    }
+    val primitive = element as? JsonPrimitive ?: return null
+    primitive.booleanOrNull?.let { return if (it) ActivityCapabilityState.ToolOnly else ActivityCapabilityState.Unsupported }
+    return when (primitive.contentOrNull?.trim()?.lowercase()) {
+        "unsupported", "unavailable", "none", "false", "off" -> ActivityCapabilityState.Unsupported
+        "legacy", "legacy_tool_only", "legacy-tool-only" -> ActivityCapabilityState.LegacyToolOnly
+        "tool_only", "tool-only", "tools", "available" -> ActivityCapabilityState.ToolOnly
+        "tool_and_server_reasoning", "tool-and-server-reasoning", "reasoning" ->
+            ActivityCapabilityState.ToolAndServerReasoning
+        "stale" -> ActivityCapabilityState.Stale
+        "unknown" -> ActivityCapabilityState.Unknown
+        else -> null
+    }
 }
 
 data class StoredSession(
@@ -92,8 +151,10 @@ data class ResumedSession(
     val inflightAssistantText: String = "",
     val hasLiveProjection: Boolean = false,
     val activityItems: List<ActivityItem> = emptyList(),
+    /** Server-provided origin, or the connection-bound origin when omitted. */
     val originKey: NormalizedDashboardOrigin? = null,
     val profile: String? = null,
+    val serverReasoningAllowed: Boolean? = null,
 )
 
 sealed interface GatewayCredential {
@@ -301,6 +362,7 @@ class DashboardClient(
             authRequired = authRequired,
             providers = providers,
             version = status["version"]?.jsonPrimitive?.contentOrNull,
+            activityCapability = decodeActivityCapability(status),
         )
     }
 
@@ -427,11 +489,20 @@ class DashboardClient(
         baseUrl: String,
         credential: GatewayCredential,
         storedSessionId: String,
+        profile: String? = null,
     ): ResumedSession {
         require(storedSessionId.isNotBlank()) { "Choose a Hermes session to open." }
-        val authParameter = resolveWebSocketCredential(baseUrl, credential)
-        val wsUrl = buildWebSocketUrl(baseUrl, authParameter?.first, authParameter?.second)
-        return withTimeout(20_000) { requestSessionResume(wsUrl, storedSessionId) }
+        val normalizedBaseUrl = DashboardUrlPolicy.normalize(baseUrl)
+        val authParameter = resolveWebSocketCredential(normalizedBaseUrl, credential)
+        val wsUrl = buildWebSocketUrl(normalizedBaseUrl, authParameter?.first, authParameter?.second)
+        return withTimeout(20_000) {
+            requestSessionResume(
+                wsUrl = wsUrl,
+                storedSessionId = storedSessionId,
+                profile = profile,
+                originKey = normalizedBaseUrl,
+            )
+        }
     }
 
     private suspend fun resolveWebSocketCredential(
@@ -520,6 +591,8 @@ class DashboardClient(
     private suspend fun requestSessionResume(
         wsUrl: String,
         storedSessionId: String,
+        profile: String?,
+        originKey: NormalizedDashboardOrigin,
     ): ResumedSession {
         val frame = buildJsonObject {
             put("jsonrpc", "2.0")
@@ -531,6 +604,7 @@ class DashboardClient(
                     put("session_id", storedSessionId)
                     put("cols", 80)
                     put("source", "android")
+                    profile?.trim()?.takeIf(String::isNotBlank)?.let { put("profile", it) }
                 },
             )
         }
@@ -564,11 +638,33 @@ class DashboardClient(
                 inflightAssistantText = inflightAssistantText(inflight),
                 hasLiveProjection = inflight.isTruthy() || queued.isTruthy(),
                 activityItems = decodeGatewayActivity(messages),
-                profile = result["profile"]?.jsonPrimitive?.contentOrNull
-                    ?: result["profile_id"]?.jsonPrimitive?.contentOrNull
-                    ?: info?.string("profile_name"),
+                originKey = firstResumeString(result, info, "origin_key", "origin", "dashboard_origin", "base_url")
+                    ?: originKey,
+                profile = firstResumeString(result, info, "profile", "profile_id", "profile_name")
+                    ?: profile?.trim()?.takeIf(String::isNotBlank),
+                serverReasoningAllowed = reasoningDisplayCapability(result)
+                    ?: info?.let(::reasoningDisplayCapability),
             )
         }
+    }
+
+    private fun firstResumeString(
+        result: JsonObject,
+        info: JsonObject?,
+        vararg keys: String,
+    ): String? = keys.asSequence()
+        .mapNotNull { key -> result.string(key) ?: info?.string(key) }
+        .map(String::trim)
+        .firstOrNull(String::isNotBlank)
+
+    private fun reasoningDisplayCapability(value: JsonObject): Boolean? {
+        sequenceOf("show_reasoning", "reasoning_visible", "reasoning_enabled", "server_reasoning")
+            .mapNotNull(value::boolean)
+            .firstOrNull()
+            ?.let { return it }
+        (value["display"] as? JsonObject)?.boolean("show_reasoning")?.let { return it }
+        (value["capabilities"] as? JsonObject)?.boolean("reasoning")?.let { return it }
+        return null
     }
 
     private suspend fun <T> requestSingleWebSocketResponse(

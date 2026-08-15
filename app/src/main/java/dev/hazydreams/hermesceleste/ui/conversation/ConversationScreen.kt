@@ -84,7 +84,9 @@ internal fun ConversationScreen(
 ) {
     val listState = rememberLazyListState()
     val focusManager = LocalFocusManager.current
-    val transcriptMessages = remember(messages) { messages.filterNot { it.role == "tool" } }
+    val transcriptMessages = remember(messages, agentActivity) {
+        transcriptMessagesForActivity(messages, agentActivity)
+    }
     val transcriptKeys = remember(transcriptMessages) { transcriptItemKeys(transcriptMessages) }
     val visibleMessageCount = transcriptMessages.size + if (streamingText.isNotBlank()) 1 else 0
     val safeDrawingInsets = WindowInsets.safeDrawing

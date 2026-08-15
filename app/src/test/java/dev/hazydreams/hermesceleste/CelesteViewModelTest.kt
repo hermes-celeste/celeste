@@ -7,6 +7,7 @@ import dev.hazydreams.hermesceleste.network.AuthenticationMaterial
 import dev.hazydreams.hermesceleste.network.AuthenticationRejected
 import dev.hazydreams.hermesceleste.network.ActivityCapabilityState
 import dev.hazydreams.hermesceleste.network.ActivityDisclosurePreferenceStore
+import dev.hazydreams.hermesceleste.network.ActivityDisclosureScope
 import dev.hazydreams.hermesceleste.network.AuthProvider
 import dev.hazydreams.hermesceleste.network.ConversationMessage
 import dev.hazydreams.hermesceleste.network.CorrelationQuality
@@ -97,7 +98,15 @@ class CelesteViewModelTest {
 
         viewModel.setActivityReasoningDisclosureEnabled(false)
         assertFalse(viewModel.state.value.agentActivityReasoningDisclosureEnabled)
-        assertFalse(preferences.isServerReasoningDisclosureEnabled())
+        assertFalse(
+            preferences.isServerReasoningDisclosureEnabled(
+                ActivityDisclosureScope(
+                    originKey = "http://hermes.test:9119",
+                    profile = "default",
+                    storedSessionId = "stored-42",
+                ),
+            ),
+        )
         assertTrue(viewModel.state.value.agentActivity?.items.orEmpty().none { it is ServerReasoningActivity })
         assertEquals(
             ActivityCapabilityState.ToolAndServerReasoning,
@@ -347,6 +356,75 @@ class CelesteViewModelTest {
         )
 
         assertEquals("and still arriving", suffix)
+    }
+
+    @Test
+    fun disclosurePreferenceIsScopedToOriginProfileAndStoredSession() = runTest {
+        val preferences = InMemoryActivityDisclosurePreferenceStore()
+        val first = ActivityDisclosureScope(
+            originKey = "https://hermes.test/",
+            profile = "default",
+            storedSessionId = "stored-42",
+        )
+        val second = first.copy(profile = "work")
+
+        preferences.setServerReasoningDisclosureEnabled(first, false)
+
+        assertFalse(preferences.isServerReasoningDisclosureEnabled(first))
+        assertTrue(preferences.isServerReasoningDisclosureEnabled(second))
+        assertTrue(preferences.isServerReasoningDisclosureEnabled())
+    }
+
+    @Test
+    fun viewModelReloadsDisclosureChoiceWhenSwitchingActivityScope() = runTest {
+        val gateway = FakeGateway()
+        val dashboard = FakeDashboard(gateway)
+        val preferences = InMemoryActivityDisclosurePreferenceStore()
+        val viewModel = CelesteViewModel(
+            dashboard = dashboard,
+            reconnectDelayMillis = { _, _ -> 0L },
+            activityDisclosurePreferences = preferences,
+        )
+        advanceUntilIdle()
+        viewModel.updateDashboardUrl("http://hermes.test:9119")
+        viewModel.findDashboard()
+        viewModel.loadSessions()
+        viewModel.openSession(dashboard.session)
+        advanceUntilIdle()
+        viewModel.setActivityReasoningDisclosureEnabled(false)
+        viewModel.leaveConversation()
+
+        viewModel.openSession(dashboard.session.copy(profile = "work"))
+        advanceUntilIdle()
+        assertTrue(viewModel.state.value.agentActivityReasoningDisclosureEnabled)
+        viewModel.leaveConversation()
+
+        viewModel.openSession(dashboard.session)
+        advanceUntilIdle()
+        assertFalse(viewModel.state.value.agentActivityReasoningDisclosureEnabled)
+        viewModel.leaveConversation()
+    }
+
+    @Test
+    fun messageCompletionSettlesAnUnfinishedToolWithoutBlockingTheTurn() = runTest {
+        val gateway = FakeGateway()
+        val viewModel = openConversation(gateway)
+        gateway.emit(
+            "tool.start",
+            """{"name":"terminal","tool_call_id":"call-incomplete"}""",
+        )
+        gateway.emit("message.complete", """{"status":"complete"}""")
+        advanceUntilIdle()
+
+        assertEquals(
+            ToolPhase.Interrupted,
+            viewModel.state.value.agentActivity?.items
+                ?.filterIsInstance<ToolActivity>()
+                ?.single()
+                ?.phase,
+        )
+        assertEquals(TurnState.Idle, viewModel.state.value.turnState)
+        viewModel.leaveConversation()
     }
 
     private suspend fun openConversation(

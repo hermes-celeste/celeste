@@ -1,6 +1,8 @@
 package dev.hazydreams.hermesceleste.network
 
 import java.io.IOException
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonNull
@@ -46,7 +48,11 @@ suspend fun GatewayConnection.createSession(profile: String): CreatedSession {
     )
 }
 
-suspend fun GatewayConnection.resumeStoredSession(storedSessionId: String): ResumedSession {
+suspend fun GatewayConnection.resumeStoredSession(
+    storedSessionId: String,
+    profile: String? = null,
+    originKey: NormalizedDashboardOrigin? = null,
+): ResumedSession {
     require(storedSessionId.isNotBlank()) { "Choose a Hermes session to open." }
     val result = request(
         method = "session.resume",
@@ -54,6 +60,7 @@ suspend fun GatewayConnection.resumeStoredSession(storedSessionId: String): Resu
             put("session_id", storedSessionId)
             put("cols", 96)
             put("source", "android")
+            profile?.trim()?.takeIf(String::isNotBlank)?.let { put("profile", it) }
         },
         timeoutMillis = 30_000,
     ).asObject("Hermes returned no resumed session.")
@@ -66,27 +73,60 @@ suspend fun GatewayConnection.resumeStoredSession(storedSessionId: String): Resu
     val status = result.string("status") ?: info?.string("status")
     val inflight = result["inflight"]
     val queued = result["queued"]
+    val messages = result["messages"]?.jsonArray.orEmpty()
+    val decoded = withContext(Dispatchers.Default) {
+        decodeGatewayMessages(messages) to decodeGatewayActivity(messages)
+    }
+    val resolvedStoredSessionId = sequenceOf(
+        result.string("resumed"),
+        result.string("stored_session_id"),
+        result.string("session_key"),
+        storedSessionId,
+    ).map(String?::orEmpty)
+        .map(String::trim)
+        .firstOrNull(String::isNotBlank)
+        ?: storedSessionId.trim()
 
     return ResumedSession(
-        runtimeSessionId = runtimeId,
-        storedSessionId = result.string("resumed")
-            ?: result.string("stored_session_id")
-            ?: result.string("session_key")
-            ?: storedSessionId,
-        messages = decodeGatewayMessages(result["messages"]?.jsonArray.orEmpty()),
+        runtimeSessionId = runtimeId.trim(),
+        storedSessionId = resolvedStoredSessionId,
+        messages = decoded.first,
         running = running,
         status = status,
         inflightAssistantText = inflightAssistantText(inflight),
         hasLiveProjection = inflight.isTruthy() || queued.isTruthy(),
         // The current Hermes gateway exposes durable activity through its
         // server-authored `messages` projection: role=tool rows plus explicit
-        // `reasoning`/`reasoning_content` fields on assistant rows. No guessed
-        // activity RPC or speculative snapshot key is introduced here.
-        activityItems = decodeGatewayActivity(result["messages"]?.jsonArray.orEmpty()),
-        profile = result.string("profile")
-            ?: result.string("profile_id")
-            ?: info?.string("profile_name"),
+        // `reasoning` fields on assistant rows. Provider-facing
+        // `reasoning_content` is intentionally ignored by decodeGatewayActivity.
+        activityItems = decoded.second,
+        originKey = firstResumeString(result, info, "origin_key", "origin", "dashboard_origin", "base_url")
+            ?: originKey,
+        profile = firstResumeString(result, info, "profile", "profile_id", "profile_name")
+            ?: profile?.trim()?.takeIf(String::isNotBlank),
+        serverReasoningAllowed = reasoningDisplayCapability(result)
+            ?: info?.let(::reasoningDisplayCapability),
     )
+}
+
+private fun firstResumeString(
+    result: JsonObject,
+    info: JsonObject?,
+    vararg keys: String,
+): String? = keys.asSequence()
+    .mapNotNull { key -> result.string(key) ?: info?.string(key) }
+    .map(String::trim)
+    .firstOrNull(String::isNotBlank)
+
+/** Read only an explicit server disclosure bit; reasoning effort is not a capability bit. */
+private fun reasoningDisplayCapability(value: JsonObject): Boolean? {
+    sequenceOf("show_reasoning", "reasoning_visible", "reasoning_enabled", "server_reasoning")
+        .mapNotNull(value::boolean)
+        .firstOrNull()
+        ?.let { return it }
+    (value["display"] as? JsonObject)?.boolean("show_reasoning")?.let { return it }
+    (value["capabilities"] as? JsonObject)?.boolean("reasoning")?.let { return it }
+    return null
 }
 
 suspend fun GatewayConnection.submitPrompt(runtimeSessionId: String, text: String): JsonObject {

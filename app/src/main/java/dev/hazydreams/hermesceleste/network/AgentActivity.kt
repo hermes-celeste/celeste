@@ -5,6 +5,7 @@ import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.contentOrNull
 
 /** The origin/profile/session chain that authorizes an activity projection. */
@@ -83,6 +84,8 @@ data class ToolActivity(
     val startedAt: Instant?,
     val finishedAt: Instant?,
     val correlation: CorrelationQuality,
+    /** The official `tool.progress` preview, kept separate from input/output. */
+    val progress: DisplayedDetail? = null,
 ) : ActivityItem
 
 data class ServerReasoningActivity(
@@ -112,6 +115,10 @@ data class AgentActivityProjection(
     val presentation: ActivityPresentationState = ActivityPresentationState.Unknown,
     val malformedEventCount: Int = 0,
     val ambiguousCorrelationCount: Int = 0,
+    /** Null means the server has not disclosed its reasoning display policy. */
+    val serverReasoningAllowed: Boolean? = null,
+    /** Event IDs/sequences only; never raw activity payloads. */
+    internal val seenEventKeys: Set<String> = emptySet(),
 ) {
     /** Count-only diagnostics; raw event payloads are deliberately absent. */
     val diagnosticCount: Int get() = malformedEventCount + ambiguousCorrelationCount
@@ -144,6 +151,7 @@ data class AgentActivityProjection(
 internal const val TOOL_ACTIVITY_DETAIL_LIMIT = 8_000
 internal const val REASONING_ACTIVITY_DETAIL_LIMIT = 12_000
 internal const val MAX_ACTIVITY_ITEMS = 100
+private const val MAX_SEEN_ACTIVITY_EVENT_KEYS = 512
 
 /**
  * A pure redaction/truncation boundary for anything that can reach Compose or
@@ -193,25 +201,37 @@ private val privateKeyPattern = Regex(
     setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL),
 )
 private val authorizationHeaderPattern = Regex(
-    "(?im)(\\bauthorization\\s*[:=]\\s*(?:bearer|basic)\\s+)[^\\s,;]+",
+    "(?im)(\\b(?:authorization|proxy-authorization)\\s*[:=]\\s*(?:bearer|basic|token)\\s+)[^\\s,;]+",
 )
-private val bearerPattern = Regex("(?i)\\bbearer\\s+[A-Za-z0-9._~+/=-]{8,}")
+private val authorizationValuePattern = Regex(
+    "(?im)(\\b(?:authorization|proxy-authorization)\\s*[:=]\\s*)[^\\r\\n,;]+",
+)
+private val bearerPattern = Regex("(?i)\\bbearer\\s+[A-Za-z0-9._~+/=-]+")
 private val cookieHeaderPattern = Regex("(?im)(\\b(?:cookie|set-cookie)\\s*[:=]\\s*)[^\\r\\n]+")
+private val sessionTokenHeaderPattern = Regex(
+    "(?im)(\\b(?:x[-_]?hermes[-_])?session[-_]?token\\s*[:=]\\s*)[^\\s,;]+",
+)
 private val credentialAssignmentPattern = Regex(
-    "(?i)(\\b(?:api[_-]?key|access[_-]?token|refresh[_-]?token|auth[_-]?token|password|passwd|secret|private[_-]?key)\\s*[:=]\\s*[\\\"']?)[^\\\"'\\s,}&]+",
+    "(?i)(\\b(?:api[_-]?key|api[_-]?secret|access[_-]?token|refresh[_-]?token|auth[_-]?token|session[_-]?token|id[_-]?token|client[_-]?secret|password|passwd|secret|credential|private[_-]?key|token)\\s*[:=]\\s*[\\\"']?)[^\\\"'\\s,}&]+",
 )
 private val credentialQueryPattern = Regex(
-    "(?i)([?&](?:api[_-]?key|access[_-]?token|refresh[_-]?token|auth[_-]?token|password|secret|key)=)[^&#\\s]+",
+    "(?i)([?&](?:api[_-]?key|api[_-]?secret|access[_-]?token|refresh[_-]?token|auth[_-]?token|session[_-]?token|id[_-]?token|client[_-]?secret|password|secret|credential|token|key)=)[^&#\\s]+",
 )
 private val knownTokenPattern = Regex(
     "(?i)\\b(?:sk-[A-Za-z0-9_-]{12,}|gh[pousr]_[A-Za-z0-9]{12,}|xox[baprs]-[A-Za-z0-9-]{10,}|eyJ[A-Za-z0-9_-]{20,}\\.[A-Za-z0-9_-]{10,}\\.[A-Za-z0-9_-]{10,})\\b",
+)
+private val hiddenReasoningTagPattern = Regex(
+    "</?(?:think|thinking|reasoning|reasoning_scratchpad)\\b[^>]*>",
+    RegexOption.IGNORE_CASE,
 )
 
 private fun redactActivitySecrets(raw: String): String {
     var safe = privateKeyPattern.replace(raw, "[redacted]")
     safe = authorizationHeaderPattern.replace(safe) { "${it.groupValues[1]}[redacted]" }
+    safe = authorizationValuePattern.replace(safe) { "${it.groupValues[1]}[redacted]" }
     safe = bearerPattern.replace(safe, "Bearer [redacted]")
     safe = cookieHeaderPattern.replace(safe) { "${it.groupValues[1]}[redacted]" }
+    safe = sessionTokenHeaderPattern.replace(safe) { "${it.groupValues[1]}[redacted]" }
     safe = credentialAssignmentPattern.replace(safe) { "${it.groupValues[1]}[redacted]" }
     safe = credentialQueryPattern.replace(safe) { "${it.groupValues[1]}[redacted]" }
     return knownTokenPattern.replace(safe, "[redacted]")
@@ -260,20 +280,60 @@ internal object AgentActivityReducer {
         now: Instant = Instant.now(),
     ): AgentActivityProjection {
         if (!accepts(projection, event)) return projection
-        return when (event.type) {
+        val replayKey = activityReplayKey(event)
+        if (replayKey != null && replayKey in projection.seenEventKeys) return projection
+        val updated = when (event.type) {
             "tool.start" -> applyToolStart(projection, event.payload, legacy = false, now)
             "tool_call" -> applyToolStart(projection, event.payload, legacy = true, now)
+            "tool.progress" -> applyToolProgress(projection, event.payload, now)
             "tool.complete" -> applyToolComplete(projection, event.payload, legacy = false, now)
             "tool_result" -> applyToolComplete(projection, event.payload, legacy = true, now)
             REASONING_SUMMARY_EVENT -> {
-                if (reasoningEnabled) applyReasoningSummary(projection, event.payload) else projection
+                if (
+                    reasoningEnabled &&
+                    projection.serverReasoningAllowed != false &&
+                    event.payload.booleanValue("verbose") != false
+                ) {
+                    applyReasoningSummary(projection, event.payload)
+                } else {
+                    projection
+                }
             }
             REASONING_DELTA_EVENT -> {
-                if (reasoningEnabled) applyReasoningDelta(projection, event.payload) else projection
+                // Hermes marks the provider-facing reasoning callback with
+                // `verbose: true`. An unmarked delta is not a user-facing
+                // summary and must never become a CoT surface in Celeste.
+                if (
+                    reasoningEnabled &&
+                    projection.serverReasoningAllowed != false &&
+                    event.payload.booleanValue("verbose") == true
+                ) {
+                    applyReasoningDelta(projection, event.payload)
+                } else {
+                    projection
+                }
             }
-            "message.complete" -> settleReasoning(projection)
+            "session.info" -> applySessionInfo(projection, event.payload)
+            "message.complete" -> settleOpenItems(
+                projection,
+                failed = event.payload.isFailure(),
+                now = now,
+            )
+            "message.error", "error" -> settleOpenItems(projection, failed = true, now = now)
             "message.interrupted", "session.interrupted" -> markInterrupted(projection, now)
-            else -> projection
+            "tool.generating" -> projection.copy(presentation = ActivityPresentationState.Running)
+            else -> {
+                if (event.type.startsWith("tool.") || event.type.startsWith("reasoning.")) {
+                    unavailableAfterMalformed(projection)
+                } else {
+                    projection
+                }
+            }
+        }
+        return if (replayKey == null) {
+            updated
+        } else {
+            updated.copy(seenEventKeys = rememberReplayKey(projection.seenEventKeys, replayKey))
         }
     }
 
@@ -282,6 +342,7 @@ internal object AgentActivityReducer {
         items: List<ActivityItem>,
         binding: ActivityBinding,
         running: Boolean,
+        serverReasoningAllowed: Boolean? = projection.serverReasoningAllowed,
         now: Instant = Instant.now(),
     ): AgentActivityProjection {
         if (!sameBinding(projection, binding)) {
@@ -289,36 +350,73 @@ internal object AgentActivityReducer {
                 malformedEventCount = (projection.malformedEventCount + 1).coerceAtMost(1_000),
             )
         }
-        val rekeyed = items
-            .takeLast(MAX_ACTIVITY_ITEMS)
-            .mapIndexed { index, item ->
-                normalizeSnapshotItem(item, projection.storedSessionId, index)
-            }
-        val capability = if (
+        val visibleItems = items.filterNot {
+            serverReasoningAllowed == false && it is ServerReasoningActivity
+        }
+        val rekeyed = normalizeActivityKeys(
+            visibleItems.takeLast(MAX_ACTIVITY_ITEMS),
+            projection.storedSessionId,
+        )
+        val capability = when {
+            projection.capability == ActivityCapabilityState.Unsupported ->
+                ActivityCapabilityState.Unsupported
             projection.capability == ActivityCapabilityState.ToolAndServerReasoning &&
-                rekeyed.none { it is ServerReasoningActivity }
-        ) {
-            // A local disclosure choice may hide the already-proven reasoning
-            // stream. Keep the capability fact so the control can be restored
-            // without retaining the hidden body in memory.
-            ActivityCapabilityState.ToolAndServerReasoning
-        } else {
-            capabilityForItems(rekeyed)
+                serverReasoningAllowed != false &&
+                rekeyed.none { it is ServerReasoningActivity } -> {
+                // A local disclosure choice may hide the already-proven reasoning
+                // stream. Keep the capability fact so the control can be restored
+                // without retaining the hidden body in memory.
+                ActivityCapabilityState.ToolAndServerReasoning
+            }
+            else -> capabilityForItems(rekeyed)
         }
         return projection.copy(
             originKey = normalizeActivityOrigin(binding.originKey),
-            profile = binding.profile.ifBlank { "default" },
-            storedSessionId = binding.storedSessionId,
-            runtimeSessionId = binding.runtimeSessionId,
+            profile = binding.profile.trim().ifBlank { "default" },
+            storedSessionId = binding.storedSessionId.trim(),
+            runtimeSessionId = binding.runtimeSessionId?.trim()?.takeIf(String::isNotBlank),
             items = rekeyed,
-            source = ActivitySource.Resumed,
+            source = when {
+                capability == ActivityCapabilityState.Unsupported -> ActivitySource.Unavailable
+                rekeyed.any { item ->
+                    item is ToolActivity && item.correlation != CorrelationQuality.ExactId
+                } -> ActivitySource.Legacy
+                else -> ActivitySource.Resumed
+            },
             capability = capability,
+            serverReasoningAllowed = serverReasoningAllowed,
             lastAuthoritativeSnapshot = now,
             presentation = when {
                 capability == ActivityCapabilityState.Unsupported -> ActivityPresentationState.Unavailable
                 running || rekeyed.any(ActivityItem::isInFlight) -> ActivityPresentationState.Running
                 rekeyed.isNotEmpty() -> ActivityPresentationState.Available
                 capability == ActivityCapabilityState.ToolAndServerReasoning -> ActivityPresentationState.Available
+                else -> ActivityPresentationState.Discovering
+            },
+        )
+    }
+
+    /** Apply a server disclosure declaration without retaining a hidden body. */
+    fun applyServerReasoningCapability(
+        projection: AgentActivityProjection,
+        allowed: Boolean,
+    ): AgentActivityProjection {
+        if (allowed) return projection.copy(serverReasoningAllowed = true)
+        val items = projection.items.filterNot { it is ServerReasoningActivity }
+        val capability = if (projection.capability == ActivityCapabilityState.ToolAndServerReasoning) {
+            capabilityForItems(items)
+        } else {
+            projection.capability
+        }
+        return projection.copy(
+            items = items,
+            capability = capability,
+            serverReasoningAllowed = false,
+            presentation = when {
+                projection.presentation == ActivityPresentationState.Stale -> ActivityPresentationState.Stale
+                items.any(ActivityItem::isInFlight) -> ActivityPresentationState.Running
+                items.isNotEmpty() -> ActivityPresentationState.Available
+                capability == ActivityCapabilityState.Unsupported -> ActivityPresentationState.Unavailable
                 else -> ActivityPresentationState.Discovering
             },
         )
@@ -339,6 +437,34 @@ internal object AgentActivityReducer {
             capability = ActivityCapabilityState.Unsupported,
             presentation = ActivityPresentationState.Unavailable,
         )
+
+    /** Settle cards when Hermes ends a turn without sending tool.complete. */
+    fun settleOpenItems(
+        projection: AgentActivityProjection,
+        failed: Boolean,
+        now: Instant = Instant.now(),
+    ): AgentActivityProjection {
+        val phase = if (failed) ToolPhase.Failed else ToolPhase.Interrupted
+        val items = projection.items.map { item ->
+            when {
+                item is ToolActivity && item.phase.isInFlight() ->
+                    item.copy(phase = phase, finishedAt = now)
+                item is ServerReasoningActivity && item.phase == ReasoningPhase.Streaming ->
+                    item.copy(phase = if (failed) ReasoningPhase.Unavailable else ReasoningPhase.Complete)
+                else -> item
+            }
+        }
+        return projection.copy(
+            items = items,
+            presentation = if (items.any(ActivityItem::isInFlight)) {
+                ActivityPresentationState.Running
+            } else if (projection.presentation == ActivityPresentationState.Unavailable) {
+                ActivityPresentationState.Unavailable
+            } else {
+                ActivityPresentationState.Available
+            },
+        )
+    }
 
     fun withoutServerReasoning(projection: AgentActivityProjection): AgentActivityProjection {
         val items = projection.items.filterNot { it is ServerReasoningActivity }
@@ -384,12 +510,21 @@ internal object AgentActivityReducer {
     }
 
     private fun accepts(projection: AgentActivityProjection, event: GatewayEvent): Boolean {
-        val runtime = projection.runtimeSessionId
-        if (runtime == null && event.sessionId.isNotBlank()) return false
-        if (runtime != null && event.sessionId.isNotBlank() && event.sessionId != runtime) return false
+        val runtime = projection.runtimeSessionId?.trim()?.takeIf(String::isNotBlank)
+        val eventSession = event.sessionId.trim()
+        if (runtime == null && eventSession.isNotBlank()) return false
+        if (runtime != null && eventSession.isNotBlank() && eventSession != runtime) return false
         if (event.originKey != null && normalizeActivityOrigin(event.originKey) != projection.originKey) return false
-        if (event.profile != null && event.profile!!.isNotBlank() && event.profile != projection.profile) return false
-        if (event.storedSessionId != null && event.storedSessionId != projection.storedSessionId) return false
+        if (
+            event.profile != null &&
+            event.profile!!.trim().isNotBlank() &&
+            event.profile!!.trim() != projection.profile
+        ) return false
+        if (
+            event.storedSessionId != null &&
+            event.storedSessionId!!.trim().isNotBlank() &&
+            event.storedSessionId!!.trim() != projection.storedSessionId
+        ) return false
         return true
     }
 
@@ -400,32 +535,50 @@ internal object AgentActivityReducer {
         now: Instant,
     ): AgentActivityProjection {
         val rawName = payload.firstString("name", "tool_name")?.trim().orEmpty()
-        if (rawName.isBlank()) return malformed(projection)
+        if (rawName.isBlank()) return unavailableAfterMalformed(projection)
         val name = safeToolName(rawName)
         val callId = payload.activityCallId()
+        val effectiveLegacy = legacy || callId == null
         val input = payload.detailFrom(
             keys = listOf("args_text", "context", "args"),
             limit = TOOL_ACTIVITY_DETAIL_LIMIT,
         )
         val items = projection.items.toMutableList()
-        val activeIndex = callId?.let { id ->
-            items.indexOfFirst { item -> item is ToolActivity && item.callId == id && item.phase.isInFlight() }
-        } ?: -1
+        val activeCandidates = if (callId == null) {
+            items.withIndex().filter { (_, item) ->
+                item is ToolActivity && item.name == name && item.phase.isInFlight()
+            }
+        } else {
+            items.withIndex().filter { (_, item) ->
+                item is ToolActivity && item.callId == callId && item.phase.isInFlight()
+            }
+        }
+        val activeIndex = if (callId != null) {
+            activeCandidates.singleOrNull()?.index ?: -1
+        } else {
+            -1
+        }
         if (activeIndex >= 0) {
             val existing = items[activeIndex] as ToolActivity
+            // A repeated start for the same active occurrence is a harmless
+            // replay. A changed payload is allowed to create a new occurrence.
+            if (callId != null && existing.name == name && (input == null || input == existing.input)) {
+                return projection
+            }
             items[activeIndex] = existing.copy(
                 name = if (existing.name == "Tool activity") name else existing.name,
-                phase = if (existing.phase.isTerminal()) existing.phase else ToolPhase.Started,
+                phase = ToolPhase.Started,
                 input = input ?: existing.input,
                 startedAt = existing.startedAt ?: now,
-                correlation = if (legacy) CorrelationQuality.LegacyName else CorrelationQuality.ExactId,
+                correlation = if (effectiveLegacy) {
+                    CorrelationQuality.LegacyName
+                } else {
+                    CorrelationQuality.ExactId
+                },
             )
-        } else if (callId != null && items.any { item -> item is ToolActivity && item.callId == callId }) {
-            // A repeated start for a terminal server call is an idempotent replay.
-            return projection
         } else {
             items += ToolActivity(
-                uiKey = nextActivityKey(projection, items),
+                uiKey = nextActivityKey(projection, items, callId, name),
                 callId = callId,
                 name = name,
                 phase = ToolPhase.Started,
@@ -433,7 +586,7 @@ internal object AgentActivityReducer {
                 output = null,
                 startedAt = now,
                 finishedAt = null,
-                correlation = if (legacy || callId == null) {
+                correlation = if (effectiveLegacy) {
                     CorrelationQuality.LegacyName
                 } else {
                     CorrelationQuality.ExactId
@@ -442,9 +595,73 @@ internal object AgentActivityReducer {
         }
         return projection.copy(
             items = items.takeLast(MAX_ACTIVITY_ITEMS),
-            source = if (legacy) ActivitySource.Legacy else ActivitySource.Live,
-            capability = capabilityWithTool(projection.capability, legacy),
+            source = if (effectiveLegacy) ActivitySource.Legacy else ActivitySource.Live,
+            capability = capabilityWithTool(projection.capability, effectiveLegacy),
             presentation = ActivityPresentationState.Running,
+        )
+    }
+
+    private fun applyToolProgress(
+        projection: AgentActivityProjection,
+        payload: JsonObject,
+        now: Instant,
+    ): AgentActivityProjection {
+        val rawName = payload.firstString("name", "tool_name")?.trim().orEmpty()
+        val callId = payload.activityCallId()
+        val progress = payload.detailFrom(
+            keys = listOf("preview", "progress", "delta", "text", "context"),
+            limit = TOOL_ACTIVITY_DETAIL_LIMIT,
+        ) ?: return unavailableAfterMalformed(projection)
+        val fallbackName = if (rawName.isBlank()) "Tool activity" else safeToolName(rawName)
+        val items = projection.items.toMutableList()
+        val candidates = items.withIndex().filter { (_, item) ->
+            item is ToolActivity &&
+                item.phase.isInFlight() &&
+                if (callId != null) item.callId == callId else item.name == fallbackName
+        }
+        val ambiguous = candidates.size > 1
+        if (candidates.size == 1) {
+            val index = candidates.single().index
+            val existing = items[index] as ToolActivity
+            if (existing.progress == progress) return projection
+            items[index] = existing.copy(
+                phase = ToolPhase.Running,
+                progress = progress,
+                startedAt = existing.startedAt ?: now,
+                correlation = if (callId == null) {
+                    CorrelationQuality.LegacyName
+                } else {
+                    CorrelationQuality.ExactId
+                },
+            )
+        } else {
+            items += ToolActivity(
+                uiKey = nextActivityKey(projection, items, callId, fallbackName),
+                callId = callId,
+                name = fallbackName,
+                phase = ToolPhase.Running,
+                input = null,
+                output = null,
+                startedAt = now,
+                finishedAt = null,
+                correlation = when {
+                    ambiguous -> CorrelationQuality.Uncorrelated
+                    callId == null -> CorrelationQuality.LegacyName
+                    else -> CorrelationQuality.ExactId
+                },
+                progress = progress,
+            )
+        }
+        return projection.copy(
+            items = items.takeLast(MAX_ACTIVITY_ITEMS),
+            source = if (callId == null) ActivitySource.Legacy else ActivitySource.Live,
+            capability = capabilityWithTool(projection.capability, legacy = callId == null),
+            presentation = ActivityPresentationState.Running,
+            ambiguousCorrelationCount = if (ambiguous) {
+                (projection.ambiguousCorrelationCount + 1).coerceAtMost(1_000)
+            } else {
+                projection.ambiguousCorrelationCount
+            },
         )
     }
 
@@ -470,39 +687,37 @@ internal object AgentActivityReducer {
             payload.firstString("error")?.isNotBlank() == true
         val phase = if (failed) ToolPhase.Failed else ToolPhase.Completed
         val items = projection.items.toMutableList()
-        val matchIndex = when {
-            callId != null -> items.indexOfFirst { item ->
+        val candidates = when {
+            callId != null -> items.withIndex().filter { (_, item) ->
                 item is ToolActivity && item.callId == callId && item.phase.isInFlight()
             }
-            rawName.isNotBlank() -> {
-                val candidates = items.withIndex().filter { (_, item) ->
-                    item is ToolActivity && item.name == name && item.phase.isInFlight()
-                }
-                if (candidates.size == 1) candidates.single().index else -1
+            rawName.isNotBlank() -> items.withIndex().filter { (_, item) ->
+                item is ToolActivity && item.name == name && item.phase.isInFlight()
             }
-            else -> -1
+            else -> emptyList()
         }
-        val ambiguousLegacy = callId == null && rawName.isNotBlank() &&
-            items.count { item -> item is ToolActivity && item.name == name && item.phase.isInFlight() } > 1
-        if (callId != null && items.any { item -> item is ToolActivity && item.callId == callId && item.phase.isTerminal() }) {
-            // Retransmitted completion after a reconnect must not duplicate a card.
-            return projection
-        }
-        if (matchIndex >= 0 && !ambiguousLegacy) {
+        val ambiguous = candidates.size > 1
+        val matchIndex = candidates.singleOrNull()?.index ?: -1
+        val effectiveLegacy = legacy || callId == null || ambiguous
+        if (matchIndex >= 0) {
             val existing = items[matchIndex] as ToolActivity
             items[matchIndex] = existing.copy(
                 phase = phase,
                 input = input ?: existing.input,
                 output = output ?: existing.output,
                 finishedAt = now,
-                correlation = when {
-                    callId != null && !legacy -> CorrelationQuality.ExactId
-                    else -> CorrelationQuality.LegacyName
+                correlation = if (callId != null && !legacy) {
+                    CorrelationQuality.ExactId
+                } else {
+                    CorrelationQuality.LegacyName
                 },
             )
         } else {
+            // No matching in-flight occurrence is a new, occurrence-qualified
+            // card. In particular, a reused/terminal Hermes ID is not silently
+            // treated as a replay; explicit event IDs are deduplicated above.
             items += ToolActivity(
-                uiKey = nextActivityKey(projection, items),
+                uiKey = nextActivityKey(projection, items, callId, name),
                 callId = callId,
                 name = name,
                 phase = phase,
@@ -515,14 +730,14 @@ internal object AgentActivityReducer {
         }
         return projection.copy(
             items = items.takeLast(MAX_ACTIVITY_ITEMS),
-            source = if (legacy) ActivitySource.Legacy else ActivitySource.Live,
-            capability = capabilityWithTool(projection.capability, legacy),
+            source = if (effectiveLegacy) ActivitySource.Legacy else ActivitySource.Live,
+            capability = capabilityWithTool(projection.capability, effectiveLegacy),
             presentation = if (items.any(ActivityItem::isInFlight)) {
                 ActivityPresentationState.Running
             } else {
                 ActivityPresentationState.Available
             },
-            ambiguousCorrelationCount = if (ambiguousLegacy) {
+            ambiguousCorrelationCount = if (ambiguous) {
                 (projection.ambiguousCorrelationCount + 1).coerceAtMost(1_000)
             } else {
                 projection.ambiguousCorrelationCount
@@ -534,24 +749,42 @@ internal object AgentActivityReducer {
         projection: AgentActivityProjection,
         payload: JsonObject,
     ): AgentActivityProjection {
-        val detail = payload.detailFrom(listOf("text"), REASONING_ACTIVITY_DETAIL_LIMIT)
-            ?: return malformed(projection)
+        val detail = payload.reasoningDetailFrom(listOf("text"), REASONING_ACTIVITY_DETAIL_LIMIT)
+            ?: return projection.copy(serverReasoningAllowed = true)
+        val label = safeServerLabel(payload.firstString("label")) ?: "Server-provided summary"
         val item = ServerReasoningActivity(
-            uiKey = nextActivityKey(projection, projection.items),
+            uiKey = nextReasoningKey(projection, projection.items),
             source = ReasoningSource.ServerSummary,
             phase = ReasoningPhase.Complete,
-            text = detail.copy(text = stripReasoningTags(detail.text)),
-            serverLabel = safeServerLabel(payload.firstString("label")) ?: "Server-provided summary",
+            text = detail,
+            serverLabel = label,
         )
         val items = projection.items.toMutableList()
-        val existingIndex = items.indexOfLast {
+        val summaryIndex = items.indexOfLast {
             it is ServerReasoningActivity && it.source == ReasoningSource.ServerSummary
         }
-        if (existingIndex >= 0) items[existingIndex] = item.copy(uiKey = items[existingIndex].uiKey) else items += item
+        val streamingIndex = items.indexOfLast {
+            it is ServerReasoningActivity && it.source == ReasoningSource.ServerFull
+        }
+        val duplicateStreaming = streamingIndex >= 0 &&
+            items[streamingIndex] is ServerReasoningActivity &&
+            reasoningTextMatches(
+                (items[streamingIndex] as ServerReasoningActivity).text.text,
+                detail.text,
+            )
+        when {
+            duplicateStreaming -> {
+                val existing = items[streamingIndex] as ServerReasoningActivity
+                items[streamingIndex] = item.copy(uiKey = existing.uiKey)
+            }
+            summaryIndex >= 0 -> items[summaryIndex] = item.copy(uiKey = items[summaryIndex].uiKey)
+            else -> items += item
+        }
         return projection.copy(
             items = items.takeLast(MAX_ACTIVITY_ITEMS),
             source = ActivitySource.Live,
             capability = ActivityCapabilityState.ToolAndServerReasoning,
+            serverReasoningAllowed = true,
             presentation = ActivityPresentationState.Available,
         )
     }
@@ -560,9 +793,8 @@ internal object AgentActivityReducer {
         projection: AgentActivityProjection,
         payload: JsonObject,
     ): AgentActivityProjection {
-        val detail = payload.detailFrom(listOf("text"), REASONING_ACTIVITY_DETAIL_LIMIT)
-            ?: return malformed(projection)
-        val delta = detail.copy(text = stripReasoningTags(detail.text))
+        val detail = payload.reasoningDetailFrom(listOf("text"), REASONING_ACTIVITY_DETAIL_LIMIT)
+            ?: return projection.copy(serverReasoningAllowed = true)
         val items = projection.items.toMutableList()
         val index = items.indexOfLast {
             it is ServerReasoningActivity &&
@@ -571,22 +803,25 @@ internal object AgentActivityReducer {
         }
         if (index >= 0) {
             val existing = items[index] as ServerReasoningActivity
-            val combined = sanitizeActivityDetail(
-                existing.text.text + delta.text,
-                REASONING_ACTIVITY_DETAIL_LIMIT,
-            )
-            items[index] = existing.copy(
-                text = combined.copy(
-                    originalLength = existing.text.originalLength + delta.originalLength,
-                    wasRedacted = existing.text.wasRedacted || delta.wasRedacted,
-                ),
-            )
+            if (reasoningDeltaIsReplay(existing.text.text, detail.text)) return projection
+            val combined = if (detail.text.startsWith(existing.text.text)) {
+                detail
+            } else {
+                sanitizeActivityDetail(
+                    buildString(existing.text.text.length + detail.text.length) {
+                        append(existing.text.text)
+                        append(detail.text)
+                    },
+                    REASONING_ACTIVITY_DETAIL_LIMIT,
+                )
+            }
+            items[index] = existing.copy(text = combined)
         } else {
             items += ServerReasoningActivity(
-                uiKey = nextActivityKey(projection, items),
+                uiKey = nextReasoningKey(projection, items),
                 source = ReasoningSource.ServerFull,
                 phase = ReasoningPhase.Streaming,
-                text = delta,
+                text = detail,
                 serverLabel = "Server-provided reasoning",
             )
         }
@@ -594,6 +829,7 @@ internal object AgentActivityReducer {
             items = items.takeLast(MAX_ACTIVITY_ITEMS),
             source = ActivitySource.Live,
             capability = ActivityCapabilityState.ToolAndServerReasoning,
+            serverReasoningAllowed = true,
             presentation = ActivityPresentationState.Running,
         )
     }
@@ -616,21 +852,111 @@ internal object AgentActivityReducer {
         )
     }
 
+    private fun applySessionInfo(
+        projection: AgentActivityProjection,
+        payload: JsonObject,
+    ): AgentActivityProjection {
+        val serverAllowed = payload.reasoningDisplayCapability() ?: return projection
+        return AgentActivityReducer.applyServerReasoningCapability(projection, serverAllowed)
+    }
+
     private fun malformed(projection: AgentActivityProjection): AgentActivityProjection =
         projection.copy(malformedEventCount = (projection.malformedEventCount + 1).coerceAtMost(1_000))
 
+    private fun unavailableAfterMalformed(projection: AgentActivityProjection): AgentActivityProjection =
+        markUnavailable(malformed(projection))
+
+    private fun activityReplayKey(event: GatewayEvent): String? {
+        val explicit = (
+            event.eventId?.takeIf(String::isNotBlank)
+                ?: event.payload.firstString("event_id", "eventId", "event_seq", "seq")
+            )?.trim()?.takeIf(String::isNotBlank)
+        return explicit?.let { "${event.type}:$it" }
+    }
+
+    private fun rememberReplayKey(existing: Set<String>, key: String): Set<String> =
+        (existing.asSequence() + key)
+            .toList()
+            .distinct()
+            .takeLast(MAX_SEEN_ACTIVITY_EVENT_KEYS)
+            .toSet()
+
     private fun sameBinding(projection: AgentActivityProjection, binding: ActivityBinding): Boolean =
         normalizeActivityOrigin(binding.originKey) == projection.originKey &&
-            binding.profile.ifBlank { "default" } == projection.profile &&
-            binding.storedSessionId == projection.storedSessionId
+            binding.profile.trim().ifBlank { "default" } == projection.profile &&
+            binding.storedSessionId.trim() == projection.storedSessionId
 
-    private fun normalizeSnapshotItem(
-        item: ActivityItem,
+    private fun normalizeActivityKeys(
+        items: List<ActivityItem>,
         storedSessionId: String,
-        index: Int,
-    ): ActivityItem = when (item) {
-        is ToolActivity -> item.copy(uiKey = "activity:$storedSessionId:snapshot:tool:$index")
-        is ServerReasoningActivity -> item.copy(uiKey = "activity:$storedSessionId:snapshot:reasoning:$index")
+    ): List<ActivityItem> {
+        val occurrences = mutableMapOf<String, Int>()
+        return items.map { item ->
+            val identity = activityIdentity(item)
+            val occurrence = occurrences.getOrDefault(identity, 0) + 1
+            occurrences[identity] = occurrence
+            item.copyWithUiKey(stableActivityKey(storedSessionId, identity, occurrence))
+        }
+    }
+
+    private fun ActivityItem.copyWithUiKey(key: String): ActivityItem = when (this) {
+        is ToolActivity -> copy(uiKey = key)
+        is ServerReasoningActivity -> copy(uiKey = key)
+    }
+
+    private fun activityIdentity(item: ActivityItem): String = when (item) {
+        is ToolActivity -> item.callId?.takeIf(String::isNotBlank)?.let { "tool-id:${safeKeyPart(it)}" }
+            ?: "tool-legacy:${safeKeyPart(item.name.lowercase())}"
+        is ServerReasoningActivity -> "reasoning:server"
+    }
+
+    private fun stableActivityKey(
+        storedSessionId: String,
+        identity: String,
+        occurrence: Int,
+    ): String = "activity:${storedSessionId.ifBlank { "session" }}:$identity:occurrence:$occurrence"
+
+    private fun safeKeyPart(value: String): String = value.trim()
+        .replace(Regex("[^A-Za-z0-9_.:-]"), "_")
+        .take(96)
+        .ifBlank { "unknown" }
+
+    private fun nextActivityKey(
+        projection: AgentActivityProjection,
+        items: List<ActivityItem>,
+        callId: String?,
+        name: String,
+    ): String {
+        val identity = if (callId.isNullOrBlank()) {
+            "tool-legacy:${safeKeyPart(name.lowercase())}"
+        } else {
+            "tool-id:${safeKeyPart(callId)}"
+        }
+        val occurrence = items.count { activityIdentity(it) == identity } + 1
+        var candidate = stableActivityKey(projection.storedSessionId, identity, occurrence)
+        val keys = items.asSequence().map(ActivityItem::uiKey).toSet()
+        var nextOccurrence = occurrence
+        while (candidate in keys) {
+            nextOccurrence += 1
+            candidate = stableActivityKey(projection.storedSessionId, identity, nextOccurrence)
+        }
+        return candidate
+    }
+
+    private fun nextReasoningKey(
+        projection: AgentActivityProjection,
+        items: List<ActivityItem>,
+    ): String {
+        val identity = "reasoning:server"
+        val occurrence = items.count { it is ServerReasoningActivity } + 1
+        var candidate = stableActivityKey(projection.storedSessionId, identity, occurrence)
+        val keys = items.asSequence().map(ActivityItem::uiKey).toSet()
+        var nextOccurrence = occurrence
+        while (candidate in keys) {
+            nextOccurrence += 1
+            candidate = stableActivityKey(projection.storedSessionId, identity, nextOccurrence)
+        }
+        return candidate
     }
 
     private fun capabilityForItems(items: List<ActivityItem>): ActivityCapabilityState {
@@ -640,7 +966,7 @@ internal object AgentActivityReducer {
         val tools = items.filterIsInstance<ToolActivity>()
         if (hasReasoning) return ActivityCapabilityState.ToolAndServerReasoning
         if (tools.isEmpty()) return ActivityCapabilityState.Unknown
-        return if (tools.all { it.correlation != CorrelationQuality.ExactId }) {
+        return if (tools.any { it.correlation != CorrelationQuality.ExactId }) {
             ActivityCapabilityState.LegacyToolOnly
         } else {
             ActivityCapabilityState.ToolOnly
@@ -652,24 +978,11 @@ internal object AgentActivityReducer {
         legacy: Boolean,
     ): ActivityCapabilityState = when {
         current == ActivityCapabilityState.ToolAndServerReasoning -> current
-        legacy -> ActivityCapabilityState.LegacyToolOnly
+        legacy || current == ActivityCapabilityState.LegacyToolOnly ->
+            ActivityCapabilityState.LegacyToolOnly
         else -> ActivityCapabilityState.ToolOnly
     }
 
-    private fun nextActivityKey(
-        projection: AgentActivityProjection,
-        items: List<ActivityItem>,
-    ): String {
-        val prefix = "activity:${projection.storedSessionId.ifBlank { "session" }}:live:"
-        var occurrence = items.size + 1
-        var candidate = "$prefix$occurrence"
-        val keys = items.asSequence().map(ActivityItem::uiKey).toSet()
-        while (candidate in keys) {
-            occurrence += 1
-            candidate = "$prefix$occurrence"
-        }
-        return candidate
-    }
 }
 
 internal fun reduceActivityEvent(
@@ -704,15 +1017,24 @@ internal fun decodeGatewayActivity(elements: List<JsonElement>): List<ActivityIt
         val row = element as? JsonObject ?: return@mapNotNull null
         when (row.stringValue("role")) {
             "tool" -> {
-                val rawName = row.firstString("name", "tool_name") ?: return@mapNotNull null
+                val rawName = row.firstString("name", "tool_name").orEmpty()
                 val callId = row.activityCallId()
+                val status = row.firstString("status")?.lowercase()
                 val failed = row.booleanLike("is_error", "failed") ||
-                    row.firstString("status")?.lowercase() in setOf("error", "failed", "failure")
+                    status in setOf("error", "failed", "failure")
+                val running = !failed && (
+                    row.booleanLike("pending", "running", "in_progress", "streaming") ||
+                        status in setOf("started", "running", "in_progress", "streaming", "queued")
+                    )
                 ToolActivity(
                     uiKey = "",
                     callId = callId,
-                    name = safeToolName(rawName),
-                    phase = if (failed) ToolPhase.Failed else ToolPhase.Completed,
+                    name = safeToolName(rawName.ifBlank { "Tool activity" }),
+                    phase = when {
+                        failed -> ToolPhase.Failed
+                        running -> ToolPhase.Running
+                        else -> ToolPhase.Completed
+                    },
                     input = row.detailFrom(listOf("args_text", "context", "args"), TOOL_ACTIVITY_DETAIL_LIMIT),
                     output = row.detailFrom(
                         listOf("result_text", "summary", "output", "result", "error"),
@@ -725,22 +1047,28 @@ internal fun decodeGatewayActivity(elements: List<JsonElement>): List<ActivityIt
                     } else {
                         CorrelationQuality.ExactId
                     },
+                    progress = row.detailFrom(
+                        listOf("progress", "preview", "delta"),
+                        TOOL_ACTIVITY_DETAIL_LIMIT,
+                    ),
                 )
             }
             "assistant" -> {
-                val summary = row.detailFrom(listOf("reasoning"), REASONING_ACTIVITY_DETAIL_LIMIT)
-                val full = row.detailFrom(listOf("reasoning_content"), REASONING_ACTIVITY_DETAIL_LIMIT)
-                val detail = summary ?: full ?: return@mapNotNull null
+                // Hermes' `reasoning_content` is provider-facing thinking text,
+                // not a user-visible activity surface. Only the explicit
+                // server-authored `reasoning` summary is eligible here.
+                val detail = row.reasoningDetailFrom(listOf("reasoning"), REASONING_ACTIVITY_DETAIL_LIMIT)
+                    ?: return@mapNotNull null
+                if (
+                    row.reasoningDisplayCapability() == false ||
+                    row.booleanValue("verbose") == false
+                ) return@mapNotNull null
                 ServerReasoningActivity(
                     uiKey = "",
-                    source = if (summary != null) ReasoningSource.ServerSummary else ReasoningSource.ServerFull,
+                    source = ReasoningSource.ServerSummary,
                     phase = ReasoningPhase.Complete,
-                    text = detail.copy(text = stripReasoningTags(detail.text)),
-                    serverLabel = if (summary != null) {
-                        "Server-provided summary"
-                    } else {
-                        "Server-provided reasoning"
-                    },
+                    text = detail,
+                    serverLabel = safeServerLabel(row.firstString("label")) ?: "Server-provided summary",
                 )
             }
             else -> null
@@ -754,6 +1082,35 @@ private fun JsonObject.firstString(vararg keys: String): String? =
 
 private fun JsonObject.stringValue(key: String): String? =
     (this[key] as? JsonPrimitive)?.contentOrNull
+
+private fun JsonObject.booleanValue(key: String): Boolean? =
+    (this[key] as? JsonPrimitive)?.booleanOrNull
+
+private fun JsonObject.reasoningDisplayCapability(): Boolean? {
+    val direct = sequenceOf(
+        "show_reasoning",
+        "reasoning_visible",
+        "reasoning_enabled",
+        "server_reasoning",
+    ).mapNotNull(::booleanValue).firstOrNull()
+    if (direct != null) return direct
+    val display = this["display"] as? JsonObject
+    display?.booleanValue("show_reasoning")?.let { return it }
+    val capabilities = this["capabilities"] as? JsonObject
+    capabilities?.booleanValue("reasoning")?.let { return it }
+    return null
+}
+
+private fun JsonObject.isFailure(): Boolean =
+    booleanLike("is_error", "failed") ||
+        firstString("status")?.lowercase() in setOf("error", "failed", "failure") ||
+        firstString("error")?.isNotBlank() == true
+
+private fun reasoningTextMatches(existing: String, incoming: String): Boolean =
+    existing == incoming || existing.startsWith(incoming) || incoming.startsWith(existing)
+
+private fun reasoningDeltaIsReplay(existing: String, incoming: String): Boolean =
+    existing == incoming || existing.startsWith(incoming) || existing.endsWith(incoming)
 
 private fun JsonObject.activityCallId(): String? {
     val direct = sequenceOf("tool_call_id", "call_id", "id", "tool_id")
@@ -780,7 +1137,17 @@ private fun JsonObject.detailFrom(keys: List<String>, limit: Int): DisplayedDeta
         val value = this[key] ?: continue
         val text = value.displayText() ?: continue
         if (text.isBlank()) continue
-        return sanitizeActivityDetail(stripReasoningTags(text), limit)
+        return sanitizeActivityDetail(text, limit)
+    }
+    return null
+}
+
+private fun JsonObject.reasoningDetailFrom(keys: List<String>, limit: Int): DisplayedDetail? {
+    for (key in keys) {
+        val value = this[key] ?: continue
+        val text = value.displayText() ?: continue
+        if (text.isBlank() || hiddenReasoningTagPattern.containsMatchIn(text)) continue
+        return sanitizeActivityDetail(text, limit)
     }
     return null
 }
@@ -805,12 +1172,6 @@ private fun safeServerLabel(raw: String?): String? {
     if (candidate.isBlank() || candidate.length > 80) return null
     return if (candidate.matches(Regex("[A-Za-z0-9 ._:-]+"))) candidate else null
 }
-
-private fun stripReasoningTags(text: String): String =
-    text.replace(
-        Regex("</?(?:REASONING_SCRATCHPAD|think|reasoning)>", RegexOption.IGNORE_CASE),
-        "",
-    ).trim()
 
 private fun ToolPhase.isInFlight(): Boolean = this == ToolPhase.Started || this == ToolPhase.Running
 private fun ToolPhase.isTerminal(): Boolean = !isInFlight()

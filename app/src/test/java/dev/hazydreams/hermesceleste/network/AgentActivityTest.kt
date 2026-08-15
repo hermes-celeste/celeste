@@ -225,8 +225,8 @@ class AgentActivityTest {
 
         assertEquals(
             listOf(
-                "activity:stored-42:snapshot:tool:0",
-                "activity:stored-42:snapshot:reasoning:1",
+                "activity:stored-42:tool-legacy:terminal:occurrence:1",
+                "activity:stored-42:reasoning:server:occurrence:1",
             ),
             snapshot.items.map(ActivityItem::uiKey),
         )
@@ -256,9 +256,319 @@ class AgentActivityTest {
         assertEquals(ActivityCapabilityState.ToolAndServerReasoning, hidden.capability)
     }
 
+    @Test
+    fun officialToolProgressUpdatesTheCorrelatedCardAndSurvivesCompletion() {
+        var projection = initialActivityProjection(
+            originKey = "https://hermes.test",
+            profile = "default",
+            storedSessionId = "stored-42",
+            runtimeSessionId = "runtime-7",
+        )
+        projection = reduceActivityEvent(
+            projection,
+            event(
+                type = "tool.start",
+                sessionId = "runtime-7",
+                payload = buildJsonObject {
+                    put("name", "terminal")
+                    put("tool_id", "call-progress")
+                },
+            ),
+            now = now,
+        )
+        projection = reduceActivityEvent(
+            projection,
+            event(
+                type = "tool.progress",
+                sessionId = "runtime-7",
+                payload = buildJsonObject {
+                    put("tool_id", "call-progress")
+                    put("progress", "<tool-progress>")
+                },
+            ),
+            now = now,
+        )
+
+        val running = projection.items.filterIsInstance<ToolActivity>().single()
+        assertEquals(ToolPhase.Running, running.phase)
+        assertEquals("<tool-progress>", running.progress?.text)
+        assertEquals("call-progress", running.callId)
+
+        projection = reduceActivityEvent(
+            projection,
+            event(
+                type = "tool.complete",
+                sessionId = "runtime-7",
+                payload = buildJsonObject {
+                    put("tool_id", "call-progress")
+                    put("output", "<tool-output>")
+                },
+            ),
+            now = now,
+        )
+        val completed = projection.items.filterIsInstance<ToolActivity>().single()
+        assertEquals(ToolPhase.Completed, completed.phase)
+        assertEquals("<tool-progress>", completed.progress?.text)
+        assertEquals("<tool-output>", completed.output?.text)
+    }
+
+    @Test
+    fun missingIdOfficialEventsUseLegacyCorrelationInsteadOfExactId() {
+        var projection = initialActivityProjection(
+            originKey = "https://hermes.test",
+            profile = "default",
+            storedSessionId = "stored-42",
+            runtimeSessionId = "runtime-7",
+        )
+        projection = reduceActivityEvent(
+            projection,
+            event(
+                type = "tool.start",
+                sessionId = "runtime-7",
+                payload = buildJsonObject { put("name", "terminal") },
+            ),
+            now = now,
+        )
+        projection = reduceActivityEvent(
+            projection,
+            event(
+                type = "tool.complete",
+                sessionId = "runtime-7",
+                payload = buildJsonObject {
+                    put("name", "terminal")
+                    put("output", "<legacy-output>")
+                },
+            ),
+            now = now,
+        )
+
+        val tool = projection.items.filterIsInstance<ToolActivity>().single()
+        assertEquals(ToolPhase.Completed, tool.phase)
+        assertEquals(CorrelationQuality.LegacyName, tool.correlation)
+        assertEquals(ActivitySource.Legacy, projection.source)
+        assertEquals(ActivityCapabilityState.LegacyToolOnly, projection.capability)
+    }
+
+    @Test
+    fun explicitEventReplayIsIgnoredButAReusedToolIdGetsAnotherOccurrence() {
+        var projection = initialActivityProjection(
+            originKey = "https://hermes.test",
+            profile = "default",
+            storedSessionId = "stored-42",
+            runtimeSessionId = "runtime-7",
+        )
+        val start = event(
+            type = "tool.start",
+            sessionId = "runtime-7",
+            payload = buildJsonObject {
+                put("name", "terminal")
+                put("tool_call_id", "reused-call")
+            },
+        ).copy(eventId = "event-start-1")
+        projection = reduceActivityEvent(projection, start, now = now)
+        projection = reduceActivityEvent(projection, start, now = now)
+        val complete = event(
+            type = "tool.complete",
+            sessionId = "runtime-7",
+            payload = buildJsonObject {
+                put("name", "terminal")
+                put("tool_call_id", "reused-call")
+            },
+        ).copy(eventId = "event-complete-1")
+        projection = reduceActivityEvent(projection, complete, now = now)
+        projection = reduceActivityEvent(projection, complete, now = now)
+        projection = reduceActivityEvent(
+            projection,
+            start.copy(eventId = "event-start-2"),
+            now = now,
+        )
+
+        val tools = projection.items.filterIsInstance<ToolActivity>()
+        assertEquals(2, tools.size)
+        assertEquals(listOf(ToolPhase.Completed, ToolPhase.Started), tools.map(ToolActivity::phase))
+        assertEquals(2, tools.map(ActivityItem::uiKey).toSet().size)
+    }
+
+    @Test
+    fun malformedActivityEventDowngradesOnlyActivityPresentation() {
+        val projection = initialActivityProjection(
+            originKey = "https://hermes.test",
+            profile = "default",
+            storedSessionId = "stored-42",
+            runtimeSessionId = "runtime-7",
+        )
+        val updated = reduceActivityEvent(
+            projection,
+            event(
+                type = "tool.future_variant",
+                sessionId = "runtime-7",
+                payload = buildJsonObject {},
+            ),
+            now = now,
+        )
+
+        assertEquals(ActivityCapabilityState.Unsupported, updated.capability)
+        assertEquals(ActivityPresentationState.Unavailable, updated.presentation)
+        assertEquals(1, updated.malformedEventCount)
+        assertEquals(projection.items, updated.items)
+    }
+
+    @Test
+    fun incompleteToolCardsSettleAsInterruptedOrFailed() {
+        var projection = initialActivityProjection(
+            originKey = "https://hermes.test",
+            profile = "default",
+            storedSessionId = "stored-42",
+            runtimeSessionId = "runtime-7",
+        )
+        projection = reduceActivityEvent(
+            projection,
+            event(
+                type = "tool.start",
+                sessionId = "runtime-7",
+                payload = buildJsonObject {
+                    put("name", "terminal")
+                    put("tool_call_id", "call-interrupted")
+                },
+            ),
+            now = now,
+        )
+        projection = reduceActivityEvent(
+            projection,
+            event("message.complete", "runtime-7", buildJsonObject { put("status", "complete") }),
+            now = now,
+        )
+        assertEquals(
+            ToolPhase.Interrupted,
+            projection.items.filterIsInstance<ToolActivity>().single().phase,
+        )
+
+        projection = reduceActivityEvent(
+            projection,
+            event(
+                type = "tool.start",
+                sessionId = "runtime-7",
+                payload = buildJsonObject {
+                    put("name", "terminal")
+                    put("tool_call_id", "call-failed")
+                },
+            ),
+            now = now,
+        )
+        projection = reduceActivityEvent(
+            projection,
+            event("message.error", "runtime-7", buildJsonObject {}),
+            now = now,
+        )
+        assertEquals(
+            ToolPhase.Failed,
+            projection.items.filterIsInstance<ToolActivity>().last().phase,
+        )
+    }
+
+    @Test
+    fun reasoningRequiresTheExplicitStreamAndNeverUsesProviderThinkingContent() {
+        var projection = initialActivityProjection(
+            originKey = "https://hermes.test",
+            profile = "default",
+            storedSessionId = "stored-42",
+            runtimeSessionId = "runtime-7",
+        )
+        projection = reduceActivityEvent(
+            projection,
+            event(
+                type = "reasoning.delta",
+                sessionId = "runtime-7",
+                payload = buildJsonObject { put("text", "<unmarked-thinking>") },
+            ),
+            now = now,
+        )
+        assertTrue(projection.items.isEmpty())
+        projection = reduceActivityEvent(
+            projection,
+            event(
+                type = "reasoning.delta",
+                sessionId = "runtime-7",
+                payload = buildJsonObject {
+                    put("text", "<server-stream>")
+                    put("verbose", true)
+                },
+            ),
+            now = now,
+        )
+        projection = reduceActivityEvent(
+            projection,
+            event(
+                type = "reasoning.delta",
+                sessionId = "runtime-7",
+                payload = buildJsonObject {
+                    put("text", "<server-stream>")
+                    put("verbose", true)
+                },
+            ),
+            now = now,
+        )
+        assertEquals(1, projection.items.filterIsInstance<ServerReasoningActivity>().size)
+        assertEquals(
+            "<server-stream>",
+            projection.items.filterIsInstance<ServerReasoningActivity>().single().text.text,
+        )
+
+        val snapshotItems = decodeGatewayActivity(
+            Json.parseToJsonElement(
+                """
+                [
+                  {"role":"assistant","reasoning_content":"<private-thinking>"},
+                  {"role":"assistant","reasoning":"<think>hidden</think>","verbose":true},
+                  {"role":"assistant","reasoning":"<server-summary>","verbose":true}
+                ]
+                """.trimIndent(),
+            ).jsonArray,
+        )
+        assertEquals(1, snapshotItems.size)
+        assertEquals("<server-summary>", snapshotItems.single().let { (it as ServerReasoningActivity).text.text })
+    }
+
+    @Test
+    fun redactionCoversSessionTokensAndBoundedActivityKeepsLatestHundredItems() {
+        val detail = sanitizeActivityDetail(
+            "session_token=synthetic-session-token x-hermes-session-token:synthetic-header-token",
+            500,
+        )
+        assertTrue(detail.wasRedacted)
+        assertFalse(detail.text.contains("synthetic-session-token"))
+        assertFalse(detail.text.contains("synthetic-header-token"))
+
+        var projection = initialActivityProjection(
+            originKey = "https://hermes.test",
+            profile = "default",
+            storedSessionId = "stored-42",
+            runtimeSessionId = "runtime-7",
+        )
+        repeat(105) { index ->
+            projection = reduceActivityEvent(
+                projection,
+                event(
+                    type = "tool.start",
+                    sessionId = "runtime-7",
+                    payload = buildJsonObject {
+                        put("name", "terminal")
+                        put("tool_call_id", "call-$index")
+                    },
+                ),
+                now = now,
+            )
+        }
+        val tools = projection.items.filterIsInstance<ToolActivity>()
+        assertEquals(100, tools.size)
+        assertEquals("call-5", tools.first().callId)
+        assertEquals("call-104", tools.last().callId)
+    }
+
     private fun event(
         type: String,
         sessionId: String,
         payload: kotlinx.serialization.json.JsonObject,
     ): GatewayEvent = GatewayEvent(type = type, sessionId = sessionId, payload = payload)
+
 }

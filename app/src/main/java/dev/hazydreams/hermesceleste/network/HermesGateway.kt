@@ -39,7 +39,9 @@ data class GatewayEvent(
     val type: String,
     val sessionId: String,
     val payload: JsonObject,
-    /** Optional local binding metadata; the wire event remains generic JSON-RPC. */
+    /** Server event identity, when the gateway supplies one outside the payload. */
+    val eventId: String? = null,
+    /** Optional binding metadata decoded from the event envelope/payload. */
     val originKey: NormalizedDashboardOrigin? = null,
     val profile: String? = null,
     val storedSessionId: String? = null,
@@ -251,14 +253,49 @@ class HermesGateway(
         val params = root["params"] as? JsonObject ?: return
         val type = params["type"]?.jsonPrimitive?.contentOrNull.orEmpty()
         if (type.isBlank()) return
+        val payload = params["payload"] as? JsonObject ?: JsonObject(emptyMap())
+        val binding = params["binding"] as? JsonObject
         mutableEvents.tryEmit(
             GatewayEvent(
                 type = type,
                 sessionId = params["session_id"]?.jsonPrimitive?.contentOrNull.orEmpty(),
-                payload = params["payload"] as? JsonObject ?: JsonObject(emptyMap()),
+                payload = payload,
+                eventId = firstNonBlankString(root, "event_id", "eventId", "event_seq", "seq")
+                    ?: firstNonBlankString(params, "event_id", "eventId", "event_seq", "seq")
+                    ?: firstNonBlankString(binding, "event_id", "eventId", "event_seq", "seq")
+                    ?: firstNonBlankString(payload, "event_id", "eventId", "event_seq", "seq"),
+                originKey = firstNonBlankString(params, "origin_key", "origin", "dashboard_origin", "base_url")
+                    ?: firstNonBlankString(binding, "origin_key", "origin", "dashboard_origin", "base_url")
+                    ?: firstNonBlankString(payload, "origin_key", "origin", "dashboard_origin", "base_url"),
+                profile = firstNonBlankString(params, "profile", "profile_name")
+                    ?: firstNonBlankString(binding, "profile", "profile_name")
+                    ?: firstNonBlankString(payload, "profile", "profile_name"),
+                storedSessionId = firstNonBlankString(
+                    params,
+                    "stored_session_id",
+                    "session_key",
+                    "stored_id",
+                ) ?: firstNonBlankString(
+                    binding,
+                    "stored_session_id",
+                    "session_key",
+                    "stored_id",
+                ) ?: firstNonBlankString(
+                    payload,
+                    "stored_session_id",
+                    "session_key",
+                    "stored_id",
+                ),
             ),
         )
     }
+
+    private fun firstNonBlankString(objectValue: JsonObject?, vararg keys: String): String? =
+        objectValue?.let { value ->
+            keys.asSequence()
+                .mapNotNull { key -> (value[key] as? JsonPrimitive)?.contentOrNull?.trim() }
+                .firstOrNull(String::isNotBlank)
+        }
 
     private fun handleDisconnect(
         reason: String,
