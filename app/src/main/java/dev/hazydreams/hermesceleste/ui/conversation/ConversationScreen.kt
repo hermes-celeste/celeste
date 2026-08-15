@@ -392,6 +392,7 @@ private fun RuntimeControlsPill(
         ) {
             Text(
                 text = "${state.modelLabel}  ·  ${state.reasoningLabel}",
+                modifier = Modifier.weight(1f),
                 maxLines = 2,
                 overflow = TextOverflow.Ellipsis,
                 fontSize = 12.sp,

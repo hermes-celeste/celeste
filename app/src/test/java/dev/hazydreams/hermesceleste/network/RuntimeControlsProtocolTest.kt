@@ -79,6 +79,18 @@ class RuntimeControlsProtocolTest {
     }
 
     @Test
+    fun explicitMutabilityCapabilitiesAreDecoded() {
+        val capabilities = decodeRuntimeControlsCapabilities(
+            Json.parseToJsonElement(
+                """{"providers":[{"slug":"nous","models":["gpt-5.6-sol"]}],"mutability":{"model":false,"reasoning":true}}""",
+            ),
+        )
+
+        assertEquals(false, capabilities.canChangeModel)
+        assertEquals(true, capabilities.canChangeReasoning)
+    }
+
+    @Test
     fun resumeAndSessionInfoDecodeEffectiveFieldsWithoutUsingCatalogDefaults() {
         val resumed = decodeRuntimeControlsInfo(
             Json.parseToJsonElement(
@@ -147,6 +159,82 @@ class RuntimeControlsProtocolTest {
         assertEquals("runtime-7", gateway.requests[0]["session_id"]?.jsonPrimitive?.content)
         assertEquals("reasoning", gateway.requests[1]["key"]?.jsonPrimitive?.content)
         assertEquals("high", gateway.requests[1]["value"]?.jsonPrimitive?.content)
+    }
+
+    @Test
+    fun definiteFirstWriteRejectionStopsBeforeTheSecondWrite() = runBlocking {
+        val gateway = RecordingGateway(
+            responses = ArrayDeque(
+                listOf(
+                    Json.parseToJsonElement("""{"key":"model","accepted":false,"ok":false}"""),
+                    Json.parseToJsonElement("""{"key":"reasoning","accepted":true}"""),
+                ),
+            ),
+        )
+
+        val result = gateway.applyRuntimeControls(
+            runtimeSessionId = "runtime-7",
+            provider = "nous",
+            model = "new-model",
+            reasoningEffort = "high",
+            applyModel = true,
+            applyReasoning = true,
+        )
+
+        assertFalse(result.acknowledged)
+        assertFalse(result.partial)
+        assertEquals(listOf("config.set"), gateway.methods)
+        assertEquals(RuntimeControlsWriteStatus.Rejected, result.writes.single().status)
+    }
+
+    @Test
+    fun explicitSecondWriteRejectionIsReportedAsPartial() = runBlocking {
+        val gateway = RecordingGateway(
+            responses = ArrayDeque(
+                listOf(
+                    Json.parseToJsonElement("""{"key":"model","accepted":true}"""),
+                    Json.parseToJsonElement("""{"key":"reasoning","accepted":false,"ok":false}"""),
+                ),
+            ),
+        )
+
+        val result = gateway.applyRuntimeControls(
+            runtimeSessionId = "runtime-7",
+            provider = "nous",
+            model = "new-model",
+            reasoningEffort = "high",
+            applyModel = true,
+            applyReasoning = true,
+        )
+
+        assertFalse(result.acknowledged)
+        assertTrue(result.partial)
+        assertEquals(listOf("config.set", "config.set"), gateway.methods)
+        assertEquals(
+            listOf(RuntimeControlsWriteStatus.Accepted, RuntimeControlsWriteStatus.Rejected),
+            result.writes.map { it.status },
+        )
+    }
+
+    @Test
+    fun configFallbackRequiresAnExplicitSessionScopeMarker() {
+        val profileDefault = decodeRuntimeControlsConfig(
+            Json.parseToJsonElement(
+                """{"session_id":"runtime-7","scope":"profile","model":"profile-default"}""",
+            ),
+            runtimeSessionId = "runtime-7",
+        )
+        val sessionValue = decodeRuntimeControlsConfig(
+            Json.parseToJsonElement(
+                """{"session_id":"runtime-7","scope":"session","model":"session-model"}""",
+            ),
+            runtimeSessionId = "runtime-7",
+        )
+
+        assertFalse(profileDefault.authoritative)
+        assertNull(profileDefault.model)
+        assertTrue(sessionValue.authoritative)
+        assertEquals("session-model", sessionValue.model)
     }
 
     @Test

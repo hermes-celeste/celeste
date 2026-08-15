@@ -12,6 +12,7 @@ import dev.hazydreams.hermesceleste.network.GatewayEvent
 import dev.hazydreams.hermesceleste.network.StoredSession
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
@@ -128,6 +129,89 @@ class RuntimeControlsViewModelTest {
     }
 
     @Test
+    fun clearedDeferredSwitchReopensPickerWithRetryableDraft() = runTest {
+        val gateway = ControlGateway(deferredModelApply = true)
+        val dashboard = ControlDashboard(gateway)
+        val viewModel = openConversation(dashboard, gateway)
+        gateway.emit("session.busy", """{"busy":true}""")
+        advanceUntilIdle()
+
+        viewModel.openRuntimeControls()
+        viewModel.selectRuntimeModel("nous", "gpt-5.6-fast")
+        viewModel.applyRuntimeControls()
+        advanceUntilIdle()
+
+        gateway.emit(
+            type = "session.info",
+            payload = """{"profile_name":"work","model":"gpt-5.6-sol","provider":"nous","reasoning_effort":"high","running":true,"pending_model_switch":false}""",
+        )
+        advanceUntilIdle()
+
+        val controls = viewModel.state.value.runtimeControls
+        assertEquals(RuntimeControlsOperation.Idle, controls.operation)
+        assertTrue(controls.pickerOpen)
+        assertEquals("gpt-5.6-fast", controls.draft?.model)
+        assertTrue(controls.canApply)
+        assertEquals("Hermes did not apply that queued change. Review and apply again.", controls.message)
+        viewModel.leaveConversation()
+    }
+
+    @Test
+    fun explicitPartialAcknowledgementReconcilesBeforeReopeningPicker() = runTest {
+        val gateway = ControlGateway(rejectReasoningApply = true)
+        val dashboard = ControlDashboard(gateway)
+        val viewModel = openConversation(dashboard, gateway)
+
+        viewModel.openRuntimeControls()
+        viewModel.selectRuntimeModel("nous", "gpt-5.6-fast")
+        viewModel.selectRuntimeReasoning("none")
+        viewModel.applyRuntimeControls()
+        advanceUntilIdle()
+
+        val controls = viewModel.state.value.runtimeControls
+        assertEquals(2, gateway.methods.count { it == "config.set" })
+        assertEquals(RuntimeControlsOperation.Idle, controls.operation)
+        assertTrue(controls.pickerOpen)
+        assertEquals("gpt-5.6-fast", controls.draft?.model)
+        assertEquals("Only part of that change was applied. Review the current setting.", controls.message)
+        viewModel.leaveConversation()
+    }
+
+    @Test
+    fun modelAndExistingReasoningMustBeAdvertisedAsACompatiblePair() = runTest {
+        val gateway = ControlGateway(fastModelSupportsReasoning = false)
+        val dashboard = ControlDashboard(gateway)
+        val viewModel = openConversation(dashboard, gateway)
+
+        viewModel.openRuntimeControls()
+        viewModel.selectRuntimeModel("nous", "gpt-5.6-fast")
+        advanceUntilIdle()
+
+        assertFalse(viewModel.state.value.runtimeControls.canApply)
+        viewModel.applyRuntimeControls()
+        advanceUntilIdle()
+        assertEquals(0, gateway.methods.count { it == "config.set" })
+        viewModel.leaveConversation()
+    }
+
+    @Test
+    fun busyUnsupportedApplyExplainsHowToRetry() = runTest {
+        val gateway = ControlGateway(canApplyWhileRunning = false)
+        val dashboard = ControlDashboard(gateway)
+        val viewModel = openConversation(dashboard, gateway)
+        gateway.emit("session.busy", """{"busy":true}""")
+        advanceUntilIdle()
+
+        viewModel.openRuntimeControls()
+        advanceUntilIdle()
+
+        assertFalse(viewModel.state.value.runtimeControls.canApply)
+        assertEquals("Apply when this response finishes.", viewModel.state.value.runtimeControls.message)
+        viewModel.cancelRuntimeControls()
+        viewModel.leaveConversation()
+    }
+
+    @Test
     fun staleRuntimeEventCannotOverwriteTheActivePill() = runTest {
         val gateway = ControlGateway()
         val dashboard = ControlDashboard(gateway)
@@ -142,6 +226,58 @@ class RuntimeControlsViewModelTest {
 
         assertEquals("gpt-5.6-sol", viewModel.state.value.runtimeControls.snapshot?.model)
         assertEquals("nous", viewModel.state.value.runtimeControls.snapshot?.provider)
+        viewModel.leaveConversation()
+    }
+
+    @Test
+    fun staleCapabilityReadIsDiscardedAndRefreshedAgainstTheNewSnapshot() = runTest {
+        val optionsGate = CompletableDeferred<Unit>()
+        val gateway = ControlGateway(optionsGate = optionsGate)
+        val dashboard = ControlDashboard(gateway)
+        val viewModel = openConversation(dashboard, gateway)
+
+        viewModel.openRuntimeControls()
+        gateway.emit(
+            type = "session.info",
+            payload = """{"profile_name":"work","model":"gpt-5.6-fast","provider":"nous","reasoning_effort":"high"}""",
+        )
+        optionsGate.complete(Unit)
+        advanceUntilIdle()
+
+        val controls = viewModel.state.value.runtimeControls
+        assertEquals("gpt-5.6-fast", controls.snapshot?.model)
+        assertFalse(controls.optionsLoading)
+        assertEquals(2, gateway.methods.count { it == "model.options" })
+        viewModel.leaveConversation()
+    }
+
+    @Test
+    fun overlappingReconciliationsSerializeResumeAndDoNotRunConcurrently() = runTest {
+        val resumeGate = CompletableDeferred<Unit>()
+        val gateway = ControlGateway(
+            resumeGate = resumeGate,
+            blockResumeAfter = 2,
+        )
+        val dashboard = ControlDashboard(gateway)
+        val viewModel = openConversation(dashboard, gateway)
+
+        viewModel.openRuntimeControls()
+        viewModel.selectRuntimeModel("nous", "gpt-5.6-fast")
+        viewModel.applyRuntimeControls()
+        advanceUntilIdle()
+
+        viewModel.updateDraft("A message that is unrelated to the control reconciliation")
+        viewModel.sendMessage()
+        viewModel.interrupt()
+        advanceUntilIdle()
+
+        assertEquals(1, gateway.activeResumeCalls)
+        assertEquals(1, gateway.maxConcurrentResumeCalls)
+        resumeGate.complete(Unit)
+        advanceUntilIdle()
+
+        assertEquals(3, gateway.methods.count { it == "session.resume" })
+        assertEquals(1, gateway.maxConcurrentResumeCalls)
         viewModel.leaveConversation()
     }
 
@@ -252,12 +388,22 @@ class RuntimeControlsViewModelTest {
         private val optionsFailure: Throwable? = null,
         private val applyFailure: Throwable? = null,
         private val failResumeAfter: Int? = null,
+        private val optionsGate: CompletableDeferred<Unit>? = null,
+        private val rejectReasoningApply: Boolean = false,
+        private val fastModelSupportsReasoning: Boolean = true,
+        private val canApplyWhileRunning: Boolean = true,
+        private val resumeGate: CompletableDeferred<Unit>? = null,
+        private val blockResumeAfter: Int? = null,
     ) : GatewayConnection {
         private val mutableState = MutableStateFlow<GatewayConnectionState>(GatewayConnectionState.Idle)
         private val mutableEvents = MutableSharedFlow<GatewayEvent>(extraBufferCapacity = 32)
         override val state: StateFlow<GatewayConnectionState> = mutableState
         override val events: SharedFlow<GatewayEvent> = mutableEvents
         val methods = mutableListOf<String>()
+        var activeResumeCalls = 0
+            private set
+        var maxConcurrentResumeCalls = 0
+            private set
         private var resumeCalls = 0
 
         override suspend fun connect() {
@@ -272,20 +418,38 @@ class RuntimeControlsViewModelTest {
                     if (failResumeAfter != null && resumeCalls > failResumeAfter) {
                         throw IOException("resume timed out")
                     }
+                    val gate = resumeGate
+                    if (gate != null &&
+                        (blockResumeAfter == null || resumeCalls >= blockResumeAfter)
+                    ) {
+                        activeResumeCalls += 1
+                        maxConcurrentResumeCalls = maxOf(maxConcurrentResumeCalls, activeResumeCalls)
+                        try {
+                            gate.await()
+                        } finally {
+                            activeResumeCalls -= 1
+                        }
+                    }
                     resumePayload()
                 }
                 "model.options" -> {
+                    optionsGate?.await()
                     optionsFailure?.let { throw it }
                     Json.parseToJsonElement(
-                        """{"providers":[{"slug":"nous","name":"Nous","models":["gpt-5.6-sol","gpt-5.6-fast"],"capabilities":{"gpt-5.6-sol":{"reasoning":true},"gpt-5.6-fast":{"reasoning":true}}}],"reasoning_efforts":["none","high"],"can_apply_while_running":true}""",
+                        """{"providers":[{"slug":"nous","name":"Nous","models":["gpt-5.6-sol","gpt-5.6-fast"],"capabilities":{"gpt-5.6-sol":{"reasoning":true},"gpt-5.6-fast":{"reasoning":$fastModelSupportsReasoning}}}],"reasoning_efforts":["none","high"],"can_apply_while_running":$canApplyWhileRunning}""",
                     )
                 }
                 "config.set" -> {
                     applyFailure?.let { throw it }
+                    val key = params["key"]?.jsonPrimitive?.content.orEmpty()
                     buildJsonObject {
                         put("key", params["key"]?.jsonPrimitive?.content.orEmpty())
                         put("value", params["value"]?.jsonPrimitive?.content.orEmpty())
                         if (deferredModelApply && params["key"]?.jsonPrimitive?.content == "model") put("deferred", true)
+                        if (rejectReasoningApply && key == "reasoning") {
+                            put("accepted", false)
+                            put("ok", false)
+                        }
                     }
                 }
                 "session.list" -> buildJsonObject {}

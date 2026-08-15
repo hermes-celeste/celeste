@@ -1,6 +1,7 @@
 package dev.hazydreams.hermesceleste.network
 
 import java.io.IOException
+import kotlinx.coroutines.CancellationException
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonNull
@@ -25,7 +26,20 @@ enum class RuntimeControlsSource {
     ResumedSnapshot,
     SessionInfo,
     ApplyAcknowledgement,
+    ConfigFallback,
 }
+
+enum class RuntimeControlsWriteStatus {
+    Accepted,
+    Deferred,
+    Rejected,
+}
+
+data class RuntimeControlsWriteOutcome(
+    val key: String,
+    val status: RuntimeControlsWriteStatus,
+    val authoritativeInfo: RuntimeControlsInfo? = null,
+)
 
 data class RuntimeModelOption(
     val provider: String,
@@ -39,6 +53,8 @@ data class RuntimeControlsCapabilities(
     val modelOptions: List<RuntimeModelOption> = emptyList(),
     val reasoningEfforts: List<String> = emptyList(),
     val canApplyWhileRunning: Boolean? = null,
+    val canChangeModel: Boolean? = null,
+    val canChangeReasoning: Boolean? = null,
 ) {
     companion object {
         val Unavailable = RuntimeControlsCapabilities(
@@ -88,7 +104,12 @@ data class RuntimeControlsApplyResult(
     val deferred: Boolean = false,
     val acknowledged: Boolean = true,
     val authoritativeInfo: RuntimeControlsInfo? = null,
-)
+    val writes: List<RuntimeControlsWriteOutcome> = emptyList(),
+) {
+    val partial: Boolean
+        get() = writes.any { it.status == RuntimeControlsWriteStatus.Rejected } &&
+            writes.any { it.status != RuntimeControlsWriteStatus.Rejected }
+}
 
 class RuntimeControlsPartialApplyException(
     val completed: RuntimeControlsApplyResult,
@@ -157,6 +178,12 @@ internal fun decodeRuntimeControlsCapabilities(element: JsonElement): RuntimeCon
         reasoningEfforts = efforts,
         canApplyWhileRunning = root.safeBoolean("can_apply_while_running")
             ?: root.safeBoolean("supports_deferred_apply"),
+        canChangeModel = root.safeBoolean("can_change_model")
+            ?: root.safeBoolean("supports_model_change")
+            ?: (root["mutability"] as? JsonObject)?.safeBoolean("model"),
+        canChangeReasoning = root.safeBoolean("can_change_reasoning")
+            ?: root.safeBoolean("supports_reasoning_change")
+            ?: (root["mutability"] as? JsonObject)?.safeBoolean("reasoning"),
     )
 }
 
@@ -236,8 +263,9 @@ internal fun decodeRuntimeControlsConfig(
     val responseRuntimeId = root.safeString("session_id")
         ?: root.safeString("runtime_session_id")
         ?: metadata?.safeString("session_id")
-    val sessionScoped = responseRuntimeId == runtimeSessionId ||
-        scope?.lowercase() in setOf("session", "runtime", "conversation")
+    val sessionScoped = scope?.lowercase() in setOf("session", "runtime", "conversation") ||
+        root.safeBoolean("session_scoped") == true ||
+        metadata?.safeBoolean("session_scoped") == true
     if (!sessionScoped) return RuntimeControlsInfo()
 
     val key = root.safeString("key") ?: metadata?.safeString("key")
@@ -293,7 +321,7 @@ suspend fun GatewayConnection.readRuntimeControlsConfig(
     require(runtimeSessionId.isNotBlank()) { "No Hermes conversation is open." }
     var result = RuntimeControlsInfo(runtimeSessionId = runtimeSessionId)
     for (key in listOf("model", "reasoning")) {
-        val response = runCatching {
+        val response = try {
             request(
                 method = "config.get",
                 params = buildJsonObject {
@@ -301,7 +329,11 @@ suspend fun GatewayConnection.readRuntimeControlsConfig(
                     put("session_id", runtimeSessionId)
                 },
             )
-        }.getOrNull() ?: continue
+        } catch (error: CancellationException) {
+            throw error
+        } catch (_: Throwable) {
+            continue
+        }
         result = mergeRuntimeControlsInfo(
             result,
             decodeRuntimeControlsConfig(response, runtimeSessionId),
@@ -310,7 +342,10 @@ suspend fun GatewayConnection.readRuntimeControlsConfig(
     return result
 }
 
-private fun decodeRuntimeControlsApplyResult(element: JsonElement): RuntimeControlsApplyResult {
+private fun decodeRuntimeControlsApplyResult(
+    element: JsonElement,
+    key: String,
+): RuntimeControlsApplyResult {
     val result = element as? JsonObject
         ?: throw IOException("Hermes returned no control acknowledgement.")
     val info = if (
@@ -322,11 +357,24 @@ private fun decodeRuntimeControlsApplyResult(element: JsonElement): RuntimeContr
     } else {
         null
     }
+    val deferred = result.safeBoolean("deferred") == true ||
+        result.safeString("status")?.equals("deferred", ignoreCase = true) == true
+    val acknowledged = result.safeBoolean("accepted") != false && result.safeBoolean("ok") != false
     return RuntimeControlsApplyResult(
-        deferred = result.safeBoolean("deferred") == true ||
-            result.safeString("status")?.equals("deferred", ignoreCase = true) == true,
-        acknowledged = result.safeBoolean("accepted") != false && result.safeBoolean("ok") != false,
+        deferred = deferred,
+        acknowledged = acknowledged,
         authoritativeInfo = info,
+        writes = listOf(
+            RuntimeControlsWriteOutcome(
+                key = result.safeString("key") ?: key,
+                status = when {
+                    !acknowledged -> RuntimeControlsWriteStatus.Rejected
+                    deferred -> RuntimeControlsWriteStatus.Deferred
+                    else -> RuntimeControlsWriteStatus.Accepted
+                },
+                authoritativeInfo = info,
+            ),
+        ),
     )
 }
 
@@ -370,7 +418,9 @@ suspend fun GatewayConnection.applyRuntimeControls(
                     put("session_id", runtimeSessionId)
                 },
             ),
+            key = "model",
         )
+        if (!result.acknowledged) return result
     }
     if (applyReasoning) {
         val selectedEffort = reasoningEffort?.trim()?.lowercase()
@@ -386,12 +436,24 @@ suspend fun GatewayConnection.applyRuntimeControls(
                         put("session_id", runtimeSessionId)
                     },
                 ),
+                key = "reasoning",
             )
+            if (!reasoningResult.acknowledged) {
+                return RuntimeControlsApplyResult(
+                    deferred = result.deferred || reasoningResult.deferred,
+                    acknowledged = false,
+                    authoritativeInfo = reasoningResult.authoritativeInfo ?: result.authoritativeInfo,
+                    writes = result.writes + reasoningResult.writes,
+                )
+            }
             result = RuntimeControlsApplyResult(
                 deferred = result.deferred || reasoningResult.deferred,
                 acknowledged = result.acknowledged && reasoningResult.acknowledged,
                 authoritativeInfo = reasoningResult.authoritativeInfo ?: result.authoritativeInfo,
+                writes = result.writes + reasoningResult.writes,
             )
+        } catch (error: CancellationException) {
+            throw error
         } catch (error: Throwable) {
             throw RuntimeControlsPartialApplyException(result, error)
         }

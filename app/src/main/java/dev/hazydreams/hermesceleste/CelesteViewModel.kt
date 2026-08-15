@@ -131,6 +131,22 @@ private data class PendingRuntimeApply(
     val reasoningChanged: Boolean,
 )
 
+private data class RuntimeControlsCapabilityCache(
+    val gateway: GatewayConnection,
+    val origin: String,
+    val profile: String,
+    val storedSessionId: String,
+    val runtimeSessionId: String,
+    val revision: Long,
+    val capabilities: RuntimeControlsCapabilities,
+)
+
+private data class ReconciliationRun(
+    val gateway: GatewayConnection,
+    val generation: Long,
+    val bufferedEvents: MutableList<GatewayEvent> = mutableListOf(),
+)
+
 internal enum class ConnectionPhase {
     CheckingSavedConnection,
     ManualSetup,
@@ -193,12 +209,15 @@ internal class CelesteViewModel(
     private var connectionJob: Job? = null
     private var connectionAttempt = 0L
     private val connectionStoreMutex = Mutex()
+    private val reconciliationMutex = Mutex()
     private var currentDescriptor: SavedConnectionDescriptor? = null
     private var reconnectAttempts = 0
-    private var reconciling = false
     private var currentSessionCanResume = true
-    private val bufferedEvents = mutableListOf<GatewayEvent>()
     private var pendingRuntimeApply: PendingRuntimeApply? = null
+    private var runtimeControlsRevision = 0L
+    private var runtimeControlsCapabilityCache: RuntimeControlsCapabilityCache? = null
+    private var reconciliationGeneration = 0L
+    private var activeReconciliation: ReconciliationRun? = null
 
     init {
         restoreSavedConnection()
@@ -264,24 +283,71 @@ internal class CelesteViewModel(
             ),
         )
         val identity = RuntimeControlIdentity.from(snapshot)
+        val capturedRevision = runtimeControlsRevision
+        val cachedCapabilities = runtimeControlsCapabilityCache?.takeIf {
+            it.gateway === activeGateway &&
+                it.origin == identity.origin &&
+                it.profile == identity.profile &&
+                it.storedSessionId == identity.storedSessionId &&
+                it.runtimeSessionId == identity.runtimeSessionId &&
+                it.revision == capturedRevision
+        }
+        val needsConfigFallback = snapshot.provider == null ||
+            snapshot.model == null ||
+            snapshot.reasoningEffort == null
         viewModelScope.launch {
-            val optionsResult = runCatching {
-                activeGateway.readRuntimeControlsOptions(snapshot.runtimeSessionId)
+            val optionsResult = if (cachedCapabilities != null) {
+                Result.success(cachedCapabilities.capabilities)
+            } else {
+                try {
+                    Result.success(activeGateway.readRuntimeControlsOptions(snapshot.runtimeSessionId))
+                } catch (error: CancellationException) {
+                    throw error
+                } catch (error: Throwable) {
+                    Result.failure(error)
+                }
             }
-            val needsConfigFallback = snapshot.provider == null ||
-                snapshot.model == null ||
-                snapshot.reasoningEffort == null
             val configInfo = if (needsConfigFallback) {
-                runCatching {
+                try {
                     activeGateway.readRuntimeControlsConfig(snapshot.runtimeSessionId)
-                }.getOrNull()
+                } catch (error: CancellationException) {
+                    throw error
+                } catch (_: Throwable) {
+                    null
+                }
             } else {
                 null
             }
-            if (!isCurrentRuntimeControlIdentity(activeGateway, identity)) return@launch
+            val readStillCurrent = isCurrentRuntimeControlIdentity(activeGateway, identity) &&
+                runtimeControlsRevision == capturedRevision
+            if (!readStillCurrent) {
+                if (gateway === activeGateway && mutableState.value.runtimeControls.pickerOpen) {
+                    openRuntimeControls()
+                }
+                return@launch
+            }
             var next = mutableState.value.runtimeControls
             val nextSnapshot = next.snapshot ?: return@launch
+            val capabilities = optionsResult.getOrElse {
+                RuntimeControlsCapabilities.Unavailable
+            }
+            if (cachedCapabilities == null) {
+                runtimeControlsCapabilityCache = RuntimeControlsCapabilityCache(
+                    gateway = activeGateway,
+                    origin = identity.origin,
+                    profile = identity.profile,
+                    storedSessionId = identity.storedSessionId,
+                    runtimeSessionId = identity.runtimeSessionId,
+                    revision = runtimeControlsRevision,
+                    capabilities = capabilities,
+                )
+            }
             optionsResult.onSuccess { capabilities ->
+                next = next.copy(
+                    snapshot = nextSnapshot.copy(capabilities = capabilities),
+                )
+            }
+            if (optionsResult.isFailure) {
                 next = next.copy(
                     snapshot = nextSnapshot.copy(capabilities = capabilities),
                 )
@@ -290,16 +356,28 @@ internal class CelesteViewModel(
             if (configInfo?.authoritative == true) {
                 applyRuntimeControlsInfo(
                     info = configInfo,
-                    source = RuntimeControlsSource.SessionInfo,
+                    source = RuntimeControlsSource.ConfigFallback,
                     expected = refreshedSnapshot,
                 )?.let { merged ->
+                    if (merged != refreshedSnapshot) runtimeControlsRevision += 1
                     next = next.copy(snapshot = merged)
                 }
             }
+            runtimeControlsCapabilityCache = runtimeControlsCapabilityCache?.takeIf {
+                it.gateway === activeGateway &&
+                    it.origin == identity.origin &&
+                    it.profile == identity.profile &&
+                    it.storedSessionId == identity.storedSessionId &&
+                    it.runtimeSessionId == identity.runtimeSessionId
+            }?.copy(revision = runtimeControlsRevision)
             val message = when {
                 optionsResult.isFailure -> "This gateway cannot change model or reasoning settings."
                 next.snapshot?.capabilities?.available != true -> {
                     "Model and reasoning choices are unavailable on this gateway."
+                }
+                mutableState.value.turnState == TurnState.Running &&
+                    next.snapshot?.capabilities?.canApplyWhileRunning != true -> {
+                    "Apply when this response finishes."
                 }
                 else -> null
             }
@@ -438,18 +516,22 @@ internal class CelesteViewModel(
         val modelOption = snapshot.capabilities.modelOptions.firstOrNull {
             it.provider == draft.provider && it.model == draft.model
         }
-        if (draft.model != snapshot.model || draft.provider != snapshot.provider) {
-            if (modelOption == null) return false
-        }
+        if (modelOption == null) return false
+        val modelChanged = draft.model != snapshot.model || draft.provider != snapshot.provider
+        if (modelChanged && snapshot.capabilities.canChangeModel == false) return false
         val reasoningChanged = draft.reasoningEffort != snapshot.reasoningEffort
+        if (reasoningChanged && snapshot.capabilities.canChangeReasoning == false) return false
         if (reasoningChanged && (
                 draft.reasoningEffort == null ||
                     draft.reasoningEffort !in snapshot.capabilities.reasoningEfforts ||
-                    modelOption?.supportsReasoning == false
+                    (draft.reasoningEffort != "none" && !modelOption.supportsReasoning)
             )
         ) {
             return false
         }
+        val targetRequiresReasoning = draft.reasoningEffort?.equals("none", ignoreCase = true) != true &&
+            (draft.reasoningEffort != null || snapshot.reasoningEnabled == true)
+        if (targetRequiresReasoning && !modelOption.supportsReasoning) return false
         if (draft.model == snapshot.model && draft.provider == snapshot.provider && !reasoningChanged) {
             return false
         }
@@ -543,12 +625,24 @@ internal class CelesteViewModel(
             (info.provider == null || info.provider == pending.target.provider)
     }
 
+    private fun deferredApplyWasRejected(
+        info: RuntimeControlsInfo,
+        pending: PendingRuntimeApply,
+        snapshot: RuntimeControlsSnapshot,
+    ): Boolean = pending.modelChanged &&
+        info.pendingModelSwitch == false &&
+        !authoritativeRuntimeControlsMatch(snapshot, pending)
+
     private fun handleRuntimeControlsAcknowledgement(
         activeGateway: GatewayConnection,
         pending: PendingRuntimeApply,
         acknowledgement: RuntimeControlsApplyResult,
     ) {
         if (!acknowledgement.acknowledged) {
+            if (acknowledgement.partial) {
+                reconcileAfterPartialRuntimeApply(activeGateway, pending)
+                return
+            }
             handleRuntimeControlsApplyFailure(
                 activeGateway,
                 pending,
@@ -566,6 +660,10 @@ internal class CelesteViewModel(
                 }
             }
         val withAcknowledgement = if (updated != null) controls.copy(snapshot = updated) else controls
+        if (updated != null) {
+            runtimeControlsRevision += 1
+            runtimeControlsCapabilityCache = null
+        }
         val confirmed = withAcknowledgement.snapshot?.let { authoritativeRuntimeControlsMatch(it, pending) } == true
         mutableState.value = current.copy(
             runtimeControls = withAcknowledgement.copy(
@@ -603,38 +701,57 @@ internal class CelesteViewModel(
         }
     }
 
+    private fun reconcileAfterPartialRuntimeApply(
+        activeGateway: GatewayConnection,
+        pending: PendingRuntimeApply,
+    ) {
+        viewModelScope.launch {
+            val reconciliation = try {
+                reconcile(activeGateway, pending.storedSessionId)
+                true
+            } catch (error: CancellationException) {
+                throw error
+            } catch (_: Throwable) {
+                false
+            }
+            if (gateway !== activeGateway) return@launch
+            pendingRuntimeApply = null
+            val current = mutableState.value
+            val target = pending.target.copy(
+                runtimeSessionId = current.runtimeControls.snapshot?.runtimeSessionId
+                    ?: pending.runtimeSessionId,
+            )
+            val nextControls = current.runtimeControls.copy(
+                pickerOpen = true,
+                draft = target,
+                operation = RuntimeControlsOperation.Idle,
+                message = if (reconciliation) {
+                    "Only part of that change was applied. Review the current setting."
+                } else {
+                    "Reconnect and review the current setting."
+                },
+                canApply = false,
+            )
+            mutableState.value = current.copy(
+                runtimeControls = nextControls.copy(
+                    canApply = if (reconciliation) {
+                        canApplyRuntimeControls(nextControls, current.turnState)
+                    } else {
+                        false
+                    },
+                ),
+            )
+            if (!reconciliation) markRuntimeControlsReconnecting("Reconnect and review the current setting.")
+        }
+    }
+
     private fun handleRuntimeControlsApplyFailure(
         activeGateway: GatewayConnection,
         pending: PendingRuntimeApply,
         error: Throwable,
     ) {
         if (error is RuntimeControlsPartialApplyException) {
-            viewModelScope.launch {
-                val reconciliation = runCatching { reconcile(activeGateway, pending.storedSessionId) }
-                if (gateway !== activeGateway) return@launch
-                pendingRuntimeApply = null
-                val current = mutableState.value
-                val nextControls = current.runtimeControls.copy(
-                    pickerOpen = true,
-                    draft = pending.target,
-                    operation = RuntimeControlsOperation.Idle,
-                    message = if (reconciliation.isSuccess) {
-                        "Only part of that change was applied. Review the current setting."
-                    } else {
-                        "Reconnect and review the current setting."
-                    },
-                    canApply = false,
-                )
-                mutableState.value = current.copy(
-                    runtimeControls = nextControls.copy(
-                        canApply = if (reconciliation.isSuccess) {
-                            canApplyRuntimeControls(nextControls, current.turnState)
-                        } else {
-                            false
-                        },
-                    ),
-                )
-            }
+            reconcileAfterPartialRuntimeApply(activeGateway, pending)
             return
         }
         if (error is GatewayRpcException) {
@@ -1211,55 +1328,63 @@ internal class CelesteViewModel(
         viewModelScope.launch {
             runCatching {
                 newGateway.connect()
-                reconciling = true
-                bufferedEvents.clear()
-                val created = newGateway.createSession(selectedProfile)
-                if (gateway !== newGateway) throw IOException("The Hermes connection changed while creating the conversation.")
-                val returnedProfile = created.profile?.takeIf(String::isNotBlank)
-                if (returnedProfile != null && !returnedProfile.equals(selectedProfile, ignoreCase = true)) {
-                    throw IOException("Hermes created this conversation in $returnedProfile instead of $selectedProfile.")
-                }
-                currentRuntimeSessionId = created.runtimeSessionId
-                currentStoredSessionId = created.storedSessionId
-                currentSessionCanResume = false
-                val summary = StoredSession(
-                    id = created.storedSessionId,
-                    title = "New conversation",
-                    preview = "",
-                    startedAt = 0.0,
-                    messageCount = 0,
-                    source = "android",
-                    profile = selectedProfile,
-                )
-                val createdInfo = created.runtimeControls
-                val createdSnapshot = RuntimeControlsSnapshot(
-                    origin = connection.baseUrl,
-                    profile = createdInfo.profile?.takeIf(String::isNotBlank) ?: selectedProfile,
-                    storedSessionId = created.storedSessionId,
-                    runtimeSessionId = created.runtimeSessionId,
-                    provider = createdInfo.provider,
-                    model = createdInfo.model,
-                    reasoningEffort = createdInfo.reasoningEffort,
-                    reasoningEnabled = createdInfo.reasoningEnabled,
-                    running = createdInfo.running,
-                    source = RuntimeControlsSource.ResumedSnapshot,
-                )
-                val events = bufferedEvents.toList()
-                bufferedEvents.clear()
-                reconciling = false
-                mutableState.value = mutableState.value.copy(
-                    sessions = listOf(summary) + mutableState.value.sessions.orEmpty()
-                        .filterNot { it.id == summary.id },
-                    activeSummary = summary,
-                    turnState = TurnState.Idle,
-                    runtimeControls = RuntimeControlsUiState(
-                        lifecycle = RuntimeControlsLifecycle.Available,
-                        snapshot = createdSnapshot,
-                    ),
-                    loadingMessage = null,
-                    errorMessage = null,
-                )
-                events.forEach(::applyEvent)
+                val created = withReconciliationBuffer(
+                    activeGateway = newGateway,
+                    operation = { newGateway.createSession(selectedProfile) },
+                    applySnapshot = { createdSession ->
+                        if (gateway !== newGateway) {
+                            throw IOException("The Hermes connection changed while creating the conversation.")
+                        }
+                        val returnedProfile = createdSession.profile?.takeIf(String::isNotBlank)
+                        if (returnedProfile != null &&
+                            !returnedProfile.equals(selectedProfile, ignoreCase = true)
+                        ) {
+                            throw IOException(
+                                "Hermes created this conversation in $returnedProfile instead of $selectedProfile.",
+                            )
+                        }
+                        currentRuntimeSessionId = createdSession.runtimeSessionId
+                        currentStoredSessionId = createdSession.storedSessionId
+                        currentSessionCanResume = false
+                        val summary = StoredSession(
+                            id = createdSession.storedSessionId,
+                            title = "New conversation",
+                            preview = "",
+                            startedAt = 0.0,
+                            messageCount = 0,
+                            source = "android",
+                            profile = selectedProfile,
+                        )
+                        val createdInfo = createdSession.runtimeControls
+                        val createdSnapshot = RuntimeControlsSnapshot(
+                            origin = connection.baseUrl,
+                            profile = createdInfo.profile?.takeIf(String::isNotBlank) ?: selectedProfile,
+                            storedSessionId = createdSession.storedSessionId,
+                            runtimeSessionId = createdSession.runtimeSessionId,
+                            provider = createdInfo.provider,
+                            model = createdInfo.model,
+                            reasoningEffort = createdInfo.reasoningEffort,
+                            reasoningEnabled = createdInfo.reasoningEnabled,
+                            running = createdInfo.running,
+                            source = RuntimeControlsSource.ResumedSnapshot,
+                        )
+                        runtimeControlsRevision += 1
+                        runtimeControlsCapabilityCache = null
+                        mutableState.value = mutableState.value.copy(
+                            sessions = listOf(summary) + mutableState.value.sessions.orEmpty()
+                                .filterNot { it.id == summary.id },
+                            activeSummary = summary,
+                            turnState = TurnState.Idle,
+                            runtimeControls = RuntimeControlsUiState(
+                                lifecycle = RuntimeControlsLifecycle.Available,
+                                snapshot = createdSnapshot,
+                            ),
+                            loadingMessage = null,
+                            errorMessage = null,
+                        )
+                    },
+                ) ?: throw IOException("The Hermes connection changed while creating the conversation.")
+                created
             }.onSuccess {
                 reconnectAttempts = 0
             }.onFailure { error ->
@@ -1380,7 +1505,7 @@ internal class CelesteViewModel(
     fun onForeground() {
         val activeGateway = gateway ?: return
         val storedSessionId = currentStoredSessionId ?: return
-        if (foregroundCheckJob?.isActive == true || reconciling) return
+        if (foregroundCheckJob?.isActive == true || reconciliationMutex.isLocked) return
         if (activeGateway.state.value != GatewayConnectionState.Connected) {
             reconnectNow()
             return
@@ -1414,8 +1539,9 @@ internal class CelesteViewModel(
         gatewayEventsJob = viewModelScope.launch {
             activeGateway.events.collect { event ->
                 if (gateway !== activeGateway) return@collect
-                if (reconciling) {
-                    bufferedEvents += event
+                val reconciliation = activeReconciliation
+                if (reconciliation?.gateway === activeGateway) {
+                    reconciliation.bufferedEvents += event
                 } else {
                     applyEvent(event)
                 }
@@ -1437,22 +1563,41 @@ internal class CelesteViewModel(
         }
     }
 
-    private suspend fun reconcile(activeGateway: GatewayConnection, storedSessionId: String) {
-        reconciling = true
-        bufferedEvents.clear()
+    private suspend fun <T> withReconciliationBuffer(
+        activeGateway: GatewayConnection,
+        operation: suspend () -> T,
+        applySnapshot: (T) -> Unit,
+    ): T? = reconciliationMutex.withLock {
+        if (gateway !== activeGateway) return@withLock null
+        val run = ReconciliationRun(
+            gateway = activeGateway,
+            generation = ++reconciliationGeneration,
+        )
+        activeReconciliation = run
         try {
-            val resumed = activeGateway.resumeStoredSession(storedSessionId)
-            if (gateway !== activeGateway) return
-            applyResumedSession(resumed)
-            val events = bufferedEvents.toList()
-            bufferedEvents.clear()
-            reconciling = false
-            events.forEach(::applyEvent)
-        } catch (error: Throwable) {
-            bufferedEvents.clear()
-            reconciling = false
-            throw error
+            val result = operation()
+            if (gateway !== activeGateway || activeReconciliation !== run ||
+                run.generation != reconciliationGeneration
+            ) return@withLock null
+            applySnapshot(result)
+            while (run.bufferedEvents.isNotEmpty()) {
+                val events = run.bufferedEvents.toList()
+                run.bufferedEvents.clear()
+                events.forEach(::applyEvent)
+            }
+            result
+        } finally {
+            if (activeReconciliation === run) activeReconciliation = null
+            run.bufferedEvents.clear()
         }
+    }
+
+    private suspend fun reconcile(activeGateway: GatewayConnection, storedSessionId: String) {
+        withReconciliationBuffer(
+            activeGateway = activeGateway,
+            operation = { activeGateway.resumeStoredSession(storedSessionId) },
+            applySnapshot = ::applyResumedSession,
+        )
     }
 
     private fun applyResumedSession(resumed: ResumedSession) {
@@ -1520,30 +1665,43 @@ internal class CelesteViewModel(
             ?.copy(runtimeSessionId = snapshot.runtimeSessionId)
         val updatedPending = pendingRuntimeApply
         val confirmed = updatedPending?.let { authoritativeRuntimeControlsMatch(snapshot, it) } == true
+        val deferredRejected = updatedPending?.let {
+            deferredApplyWasRejected(info, it, snapshot)
+        } == true
+        val rejectedDraft = updatedPending?.target
+            ?.copy(runtimeSessionId = snapshot.runtimeSessionId)
+            ?: existingDraft
         val nextTurnState = if (resumed.running == true || resumed.hasLiveProjection) {
             TurnState.Running
         } else {
             TurnState.Idle
         }
+        runtimeControlsRevision += 1
+        runtimeControlsCapabilityCache = null
         val controls = previousControls.copy(
             lifecycle = RuntimeControlsLifecycle.Available,
             snapshot = snapshot,
-            draft = if (confirmed) null else existingDraft,
-            pickerOpen = if (confirmed) false else previousControls.pickerOpen,
+            draft = if (confirmed) null else rejectedDraft,
+            pickerOpen = when {
+                confirmed -> false
+                deferredRejected -> true
+                else -> previousControls.pickerOpen
+            },
             optionsLoading = false,
             operation = when {
-                confirmed -> RuntimeControlsOperation.Idle
+                confirmed || deferredRejected -> RuntimeControlsOperation.Idle
                 previousControls.operation == RuntimeControlsOperation.Unknown -> RuntimeControlsOperation.Idle
                 else -> previousControls.operation
             },
             message = when {
                 confirmed -> null
+                deferredRejected -> "Hermes did not apply that queued change. Review and apply again."
                 previousControls.operation == RuntimeControlsOperation.Unknown -> "Reconnect and try again."
                 else -> previousControls.message
             },
             canApply = false,
         )
-        if (confirmed) pendingRuntimeApply = null
+        if (confirmed || deferredRejected) pendingRuntimeApply = null
         mutableState.value = mutableState.value.copy(
             messages = resumed.messages,
             streamingText = streamingSuffix,
@@ -1584,15 +1742,36 @@ internal class CelesteViewModel(
             expected = expected,
         ) ?: return
         val confirmed = pending?.let { authoritativeRuntimeControlsMatch(updated, it) } == true
-        if (confirmed) pendingRuntimeApply = null
+        val deferredRejected = pending?.let {
+            deferredApplyWasRejected(info, it, updated)
+        } == true
+        if (confirmed || deferredRejected) pendingRuntimeApply = null
         val nextTurnState = info.running?.let { if (it) TurnState.Running else TurnState.Idle }
             ?: current.turnState
+        runtimeControlsRevision += 1
+        runtimeControlsCapabilityCache = null
         val nextControls = controls.copy(
             snapshot = updated,
-            operation = if (confirmed) RuntimeControlsOperation.Idle else controls.operation,
-            pickerOpen = if (confirmed) false else controls.pickerOpen,
-            draft = if (confirmed) null else controls.draft,
-            message = if (confirmed) null else controls.message,
+            operation = if (confirmed || deferredRejected) {
+                RuntimeControlsOperation.Idle
+            } else {
+                controls.operation
+            },
+            pickerOpen = when {
+                confirmed -> false
+                deferredRejected -> true
+                else -> controls.pickerOpen
+            },
+            draft = when {
+                confirmed -> null
+                deferredRejected -> pending?.target?.copy(runtimeSessionId = updated.runtimeSessionId)
+                else -> controls.draft
+            },
+            message = when {
+                confirmed -> null
+                deferredRejected -> "Hermes did not apply that queued change. Review and apply again."
+                else -> controls.message
+            },
             canApply = false,
         )
         mutableState.value = current.copy(
@@ -1679,9 +1858,25 @@ internal class CelesteViewModel(
                     TurnState.Idle
                 }
                 val controls = mutableState.value.runtimeControls
+                val capabilities = controls.snapshot?.capabilities
+                runtimeControlsRevision += 1
+                runtimeControlsCapabilityCache = null
+                val busyMessage = if (
+                    nextTurnState == TurnState.Running &&
+                    controls.operation == RuntimeControlsOperation.Idle &&
+                    capabilities?.available == true &&
+                    capabilities.canApplyWhileRunning != true
+                ) {
+                    "Apply when this response finishes."
+                } else {
+                    null
+                }
                 mutableState.value = mutableState.value.copy(
                     turnState = nextTurnState,
                     runtimeControls = controls.copy(
+                        message = busyMessage ?: controls.message.takeUnless {
+                            it == "Apply when this response finishes."
+                        },
                         canApply = canApplyRuntimeControls(controls, nextTurnState),
                     ),
                 )
@@ -1778,50 +1973,48 @@ internal class CelesteViewModel(
         profile: String,
     ) {
         val previousStoredId = currentStoredSessionId
-        reconciling = true
-        bufferedEvents.clear()
-        try {
-            val created = activeGateway.createSession(profile)
-            if (gateway !== activeGateway) return
-            currentRuntimeSessionId = created.runtimeSessionId
-            currentStoredSessionId = created.storedSessionId
-            val previousSummary = mutableState.value.activeSummary
-                ?: throw IOException("No draft conversation is open.")
-            val updatedSummary = previousSummary.copy(id = created.storedSessionId, profile = profile)
-            val createdInfo = created.runtimeControls
-            val createdSnapshot = RuntimeControlsSnapshot(
-                origin = mutableState.value.probe?.baseUrl ?: mutableState.value.dashboardUrl,
-                profile = createdInfo.profile?.takeIf(String::isNotBlank) ?: profile,
-                storedSessionId = created.storedSessionId,
-                runtimeSessionId = created.runtimeSessionId,
-                provider = createdInfo.provider,
-                model = createdInfo.model,
-                reasoningEffort = createdInfo.reasoningEffort,
-                reasoningEnabled = createdInfo.reasoningEnabled,
-                running = createdInfo.running,
-                source = RuntimeControlsSource.ResumedSnapshot,
-            )
-            mutableState.value = mutableState.value.copy(
-                activeSummary = updatedSummary,
-                sessions = mutableState.value.sessions?.map { session ->
-                    if (session.id == previousStoredId) updatedSummary else session
-                },
-                turnState = TurnState.Idle,
-                runtimeControls = RuntimeControlsUiState(
-                    lifecycle = RuntimeControlsLifecycle.Available,
-                    snapshot = createdSnapshot,
-                ),
-                errorMessage = null,
-            )
-            val events = bufferedEvents.toList()
-            bufferedEvents.clear()
-            reconciling = false
-            events.forEach(::applyEvent)
-        } catch (error: Throwable) {
-            bufferedEvents.clear()
-            reconciling = false
-            throw error
-        }
+        val created = withReconciliationBuffer(
+            activeGateway = activeGateway,
+            operation = { activeGateway.createSession(profile) },
+            applySnapshot = { createdSession ->
+                if (gateway !== activeGateway) {
+                    throw IOException("The Hermes connection changed while recreating the conversation.")
+                }
+                currentRuntimeSessionId = createdSession.runtimeSessionId
+                currentStoredSessionId = createdSession.storedSessionId
+                val previousSummary = mutableState.value.activeSummary
+                    ?: throw IOException("No draft conversation is open.")
+                val updatedSummary = previousSummary.copy(id = createdSession.storedSessionId, profile = profile)
+                val createdInfo = createdSession.runtimeControls
+                val createdSnapshot = RuntimeControlsSnapshot(
+                    origin = mutableState.value.probe?.baseUrl ?: mutableState.value.dashboardUrl,
+                    profile = createdInfo.profile?.takeIf(String::isNotBlank) ?: profile,
+                    storedSessionId = createdSession.storedSessionId,
+                    runtimeSessionId = createdSession.runtimeSessionId,
+                    provider = createdInfo.provider,
+                    model = createdInfo.model,
+                    reasoningEffort = createdInfo.reasoningEffort,
+                    reasoningEnabled = createdInfo.reasoningEnabled,
+                    running = createdInfo.running,
+                    source = RuntimeControlsSource.ResumedSnapshot,
+                )
+                runtimeControlsRevision += 1
+                runtimeControlsCapabilityCache = null
+                mutableState.value = mutableState.value.copy(
+                    activeSummary = updatedSummary,
+                    sessions = mutableState.value.sessions?.map { session ->
+                        if (session.id == previousStoredId) updatedSummary else session
+                    },
+                    turnState = TurnState.Idle,
+                    runtimeControls = RuntimeControlsUiState(
+                        lifecycle = RuntimeControlsLifecycle.Available,
+                        snapshot = createdSnapshot,
+                    ),
+                    errorMessage = null,
+                )
+            },
+        ) ?: throw IOException("The Hermes connection changed while recreating the conversation.")
+        created
     }
 
     private fun scheduleReconnect(wasRunning: Boolean, immediate: Boolean = false) {
@@ -1880,8 +2073,10 @@ internal class CelesteViewModel(
         gatewayEventsJob = null
         gatewayStateJob?.cancel()
         gatewayStateJob = null
-        reconciling = false
-        bufferedEvents.clear()
+        reconciliationGeneration += 1
+        activeReconciliation?.bufferedEvents?.clear()
+        activeReconciliation = null
+        runtimeControlsCapabilityCache = null
         currentRuntimeSessionId = null
         currentStoredSessionId = null
         currentSessionCanResume = true
