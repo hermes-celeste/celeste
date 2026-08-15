@@ -90,19 +90,21 @@ class ConversationScrollPolicyTest {
     }
 
     @Test
-    fun deliberateDragCancelsPendingFollowBeforeContentChanges() {
+    fun deliberateDragCancelsActiveProgrammaticFollowAndInvalidatesGeneration() {
+        val activeGeneration = 7L
         val decision = policy.decide(
             ScrollPolicyInput(
                 followsLatest = true,
                 deliberateDragAway = true,
                 contentChanged = true,
-                pendingGeneration = 7L,
-                transitionGeneration = 7L,
+                pendingGeneration = activeGeneration,
+                transitionGeneration = activeGeneration,
             ),
         )
 
         assertFalse(decision.followsLatest)
         assertEquals(ScrollCommand.CancelPendingFollow, decision.command)
+        assertEquals(activeGeneration + 1L, decision.transitionGeneration)
     }
 
     @Test

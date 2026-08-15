@@ -277,6 +277,27 @@ class ConversationViewportDeviceTest {
     }
 
     @Test
+    fun accessibilityScrollAwayInterruptsAnActiveJumpAndPreservesHistoryMode() {
+        val transcript = composeRule.onNodeWithContentDescription("Conversation transcript")
+        transcript.performScrollToIndex(6)
+        composeRule.waitForIdle()
+        composeRule.onNodeWithContentDescription("Jump to latest").assertIsDisplayed()
+
+        // Do not wait for idle between the explicit jump and the accessibility
+        // scroll. This deliberately interrupts the active programmatic
+        // generation instead of testing only the settled end state.
+        composeRule.onNodeWithContentDescription("Jump to latest").performClick()
+        transcript.performScrollToIndex(5)
+        composeRule.waitForIdle()
+
+        updateContent {
+            setContentStreamingText(longStreamingText())
+        }
+        composeRule.onNodeWithText(syntheticRowText(5)).assertIsDisplayed()
+        composeRule.onNodeWithContentDescription("Jump to latest").assertIsDisplayed()
+    }
+
+    @Test
     fun streamingAndTallRowsFollowLatestButPreserveAHistoryReader() {
         composeRule.onNodeWithContentDescription("Terminal transcript row").assertIsDisplayed()
 

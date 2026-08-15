@@ -71,10 +71,14 @@ internal class ConversationScrollPolicy(
         }
 
         if (input.deliberateDragAway) {
+            val invalidatedGeneration = maxOf(
+                input.transitionGeneration,
+                input.pendingGeneration ?: input.transitionGeneration,
+            ) + 1L
             return ScrollPolicyDecision(
                 followsLatest = false,
                 command = ScrollCommand.CancelPendingFollow,
-                transitionGeneration = input.transitionGeneration,
+                transitionGeneration = invalidatedGeneration,
             )
         }
 

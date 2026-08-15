@@ -407,7 +407,7 @@ private fun ConversationViewport(
             ScrollPolicyInput(
                 followsLatest = followsLatest,
                 deliberateDragAway = true,
-                pendingGeneration = transitionGeneration,
+                pendingGeneration = programmaticScrollGeneration ?: transitionGeneration,
                 transitionGeneration = transitionGeneration,
                 hasItems = itemCount > 0,
             ),
@@ -420,7 +420,7 @@ private fun ConversationViewport(
             }
         }
         followsLatest = decision.followsLatest
-        transitionGeneration = decision.transitionGeneration + 1
+        transitionGeneration = decision.transitionGeneration
         transitionActive = false
         programmaticScrollGeneration = null
     }
@@ -430,7 +430,8 @@ private fun ConversationViewport(
         programmaticScrollGeneration = generation
         try {
             action()
-            return true
+            return generation == transitionGeneration &&
+                programmaticScrollGeneration == generation
         } finally {
             if (programmaticScrollGeneration == generation) {
                 programmaticScrollGeneration = null
@@ -471,32 +472,42 @@ private fun ConversationViewport(
         }
     }
 
-    LaunchedEffect(
-        listState,
-        summaryId,
-        followsLatest,
-        transitionGeneration,
-        transitionActive,
-        programmaticScrollGeneration,
-    ) {
+    LaunchedEffect(listState, summaryId, itemCount) {
         var previousPosition: ScrollPosition? = null
         snapshotFlow {
             ScrollPosition(
                 firstVisibleItemIndex = listState.firstVisibleItemIndex,
                 firstVisibleItemScrollOffset = listState.firstVisibleItemScrollOffset,
                 isScrollInProgress = listState.isScrollInProgress,
+                programmaticScrollGeneration = programmaticScrollGeneration,
             )
         }.distinctUntilChanged().collect { position ->
             val movedTowardHistory = previousPosition?.let {
                 position.isEarlierThan(it)
             } == true
+            val positionChanged = previousPosition?.let {
+                position.firstVisibleItemIndex != it.firstVisibleItemIndex ||
+                    position.firstVisibleItemScrollOffset != it.firstVisibleItemScrollOffset
+            } == true
             val deliberateScrollBeforeInitialSettle = !initialProjectionHandled &&
                 previousPosition != null &&
-                position != previousPosition
-            if (position.isScrollInProgress &&
-                (movedTowardHistory || deliberateScrollBeforeInitialSettle) &&
-                programmaticScrollGeneration == null
+                positionChanged
+            val userMovedAwayFromLatest = movedTowardHistory || (
+                deliberateScrollBeforeInitialSettle &&
+                    programmaticScrollGeneration == null
+            )
+            val interruptedProgrammaticScroll =
+                (position.programmaticScrollGeneration != null ||
+                    previousPosition?.programmaticScrollGeneration != null) &&
+                    movedTowardHistory
+            if (interruptedProgrammaticScroll ||
+                (position.isScrollInProgress && userMovedAwayFromLatest)
             ) {
+                // An accessibility scroll-to-index and a drag can cancel an
+                // active animateScrollToItem between two snapshots. Treat the
+                // historyward movement as input even while that generation is
+                // still published, rather than allowing its completion to
+                // relatch latest.
                 markHistoryReading()
             } else if (!position.isScrollInProgress &&
                 previousPosition?.isScrollInProgress == true &&
@@ -910,6 +921,7 @@ private data class ScrollPosition(
     val firstVisibleItemIndex: Int,
     val firstVisibleItemScrollOffset: Int,
     val isScrollInProgress: Boolean,
+    val programmaticScrollGeneration: Long? = null,
 ) {
     fun isEarlierThan(other: ScrollPosition): Boolean =
         firstVisibleItemIndex < other.firstVisibleItemIndex ||
