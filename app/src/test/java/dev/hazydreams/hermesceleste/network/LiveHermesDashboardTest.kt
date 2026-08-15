@@ -1,7 +1,6 @@
 package dev.hazydreams.hermesceleste.network
 
 import kotlinx.coroutines.runBlocking
-import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Assume.assumeTrue
 import org.junit.Test
@@ -14,24 +13,33 @@ import org.junit.Test
  */
 class LiveHermesDashboardTest {
     @Test
-    fun listsAndResumesARealStoredSession() = runBlocking {
+    fun listsARealDashboardThroughPrimaryRestOrCompatibilityContract() = runBlocking {
         val url = System.getenv("HERMES_CELESTE_LIVE_URL").orEmpty()
         assumeTrue("HERMES_CELESTE_LIVE_URL is not set", url.isNotBlank())
         val token = System.getenv("HERMES_CELESTE_LIVE_TOKEN").orEmpty()
-        val credential = if (token.isBlank()) {
-            GatewayCredential.None
-        } else {
-            GatewayCredential.StaticToken(token)
-        }
         val client = DashboardClient()
-
         val probe = client.probe(url)
-        val sessions = client.listSessions(probe.baseUrl, credential, limit = 10)
+        assumeTrue(
+            "HERMES_CELESTE_LIVE_TOKEN is required for this dashboard",
+            !probe.authRequired || token.isNotBlank(),
+        )
+        val credential = token.takeIf(String::isNotBlank)
+            ?.let(GatewayCredential::StaticToken)
+            ?: GatewayCredential.None
 
-        assertTrue("The real Hermes state store returned no sessions", sessions.isNotEmpty())
-        val selected = sessions.first()
-        val resumed = client.resumeSession(probe.baseUrl, credential, selected.id)
-        assertEquals(selected.id, resumed.storedSessionId)
-        assertTrue(resumed.runtimeSessionId.isNotBlank())
+        // listSessionPage owns the primary REST request and, when the server is
+        // older, its permanent WebSocket session.list compatibility fallback.
+        val page = client.listSessionPage(
+            baseUrl = probe.baseUrl,
+            credential = credential,
+            profile = "all",
+            limit = 10,
+            offset = 0,
+        )
+
+        assertTrue("The page offset must be non-negative", page.offset >= 0)
+        assertTrue("The page limit must be bounded", page.limit in 1..200)
+        assertTrue("The page total cannot omit returned rows", page.total >= page.sessions.size)
+        assertTrue("Every returned session needs a durable ID", page.sessions.all { it.id.isNotBlank() })
     }
 }

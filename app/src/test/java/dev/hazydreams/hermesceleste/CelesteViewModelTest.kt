@@ -84,6 +84,7 @@ class CelesteViewModelTest {
         assertFalse(state.messages.single { it.role == "user" }.pending)
         assertEquals(1, gateway.methods.count { it == "prompt.submit" })
         viewModel.leaveConversation()
+        viewModel.onBackground()
     }
 
     @Test
@@ -110,6 +111,7 @@ class CelesteViewModelTest {
         assertEquals(TurnState.Idle, viewModel.state.value.turnState)
         assertEquals("Partial work", viewModel.state.value.messages.last().text)
         viewModel.leaveConversation()
+        viewModel.onBackground()
     }
 
     @Test
@@ -140,6 +142,7 @@ class CelesteViewModelTest {
         assertEquals("", state.streamingText)
         assertEquals(TurnState.Idle, state.turnState)
         viewModel.leaveConversation()
+        viewModel.onBackground()
     }
 
     @Test
@@ -405,6 +408,7 @@ class CelesteViewModelTest {
 
         assertEquals(callsBefore + 2, dashboard.listPageCalls)
         viewModel.leaveConversation()
+        viewModel.onBackground()
     }
 
     @Test
@@ -483,6 +487,7 @@ class CelesteViewModelTest {
         assertEquals(2, gateway.methods.count { it == "session.resume" })
         assertEquals(TurnState.Idle, viewModel.state.value.turnState)
         viewModel.leaveConversation()
+        viewModel.onBackground()
     }
 
     @Test
@@ -501,6 +506,7 @@ class CelesteViewModelTest {
         assertEquals("REST temporarily unavailable", viewModel.state.value.errorMessage)
         assertEquals(0, gateway.methods.count { it == "session.list" })
         viewModel.leaveConversation()
+        viewModel.onBackground()
     }
 
     @Test
@@ -522,6 +528,7 @@ class CelesteViewModelTest {
         assertEquals(1, gateway.methods.count { it == "session.list" })
         assertEquals(TurnState.Idle, viewModel.state.value.turnState)
         viewModel.leaveConversation()
+        viewModel.onBackground()
     }
 
     @Test
@@ -544,10 +551,11 @@ class CelesteViewModelTest {
             sessions = listOf(dashboard.session.copy(title = "Updated in list", lastActive = 3.0)),
         )
         viewModel.leaveConversation()
-        advanceUntilIdle()
+        runCurrent()
 
         assertEquals(1L, viewModel.state.value.sessionRefreshAnnouncementToken)
         assertEquals("Updated in list", viewModel.state.value.sessions?.single()?.title)
+        viewModel.onBackground()
     }
 
     @Test
@@ -562,24 +570,26 @@ class CelesteViewModelTest {
             ordering = SessionOrdering.AUTHORITATIVE_RECENCY,
         )
         viewModel.leaveConversation()
-        advanceUntilIdle()
+        runCurrent()
+        viewModel.setConversationsDestinationVisible(false)
         assertEquals(0L, viewModel.state.value.sessionRefreshAnnouncementToken)
 
         dashboard.sessionPage = dashboard.sessionPage?.copy(
             sessions = listOf(dashboard.session.copy(lastActive = 3.0)),
         )
         viewModel.setConversationsDestinationVisible(true)
-        advanceUntilIdle()
+        runCurrent()
         assertEquals(0L, viewModel.state.value.sessionRefreshAnnouncementToken)
+        viewModel.setConversationsDestinationVisible(false)
 
         dashboard.sessionPage = dashboard.sessionPage?.copy(
             sessions = listOf(dashboard.session.copy(title = "Meaningful update", lastActive = 4.0)),
         )
         viewModel.setConversationsDestinationVisible(true)
-        advanceUntilIdle()
+        runCurrent()
         assertEquals(1L, viewModel.state.value.sessionRefreshAnnouncementToken)
-
         viewModel.setConversationsDestinationVisible(false)
+
         assertEquals(0L, viewModel.state.value.sessionRefreshAnnouncementToken)
     }
 
@@ -630,6 +640,7 @@ class CelesteViewModelTest {
         assertEquals(1, gateway.methods.count { it == "session.resume" })
         assertEquals(1, gateway.methods.count { it == "prompt.submit" })
         viewModel.leaveConversation()
+        viewModel.onBackground()
     }
 
     @Test
