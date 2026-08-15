@@ -148,6 +148,30 @@ interface DashboardService {
         serverReference: String,
     ): ByteArray = throw AttachmentMediaUnavailable()
 
+    /**
+     * Preview reads carry the owner captured from the authoritative transcript.
+     * A caller cannot reuse a reference under a different normalized origin or profile.
+     */
+    suspend fun readImageMedia(
+        baseUrl: String,
+        credential: GatewayCredential,
+        reference: ImageMediaReference,
+    ): ByteArray {
+        val normalizedOrigin = DashboardUrlPolicy.normalize(baseUrl)
+        require(normalizedOrigin == reference.normalizedGatewayOrigin) {
+            "The image reference does not belong to this dashboard."
+        }
+        require(reference.profileId.isNotBlank()) {
+            "A Hermes profile is required for image previews."
+        }
+        return readImageMedia(
+            baseUrl = normalizedOrigin,
+            credential = credential,
+            profileId = reference.profileId,
+            serverReference = reference.serverReference,
+        )
+    }
+
     suspend fun logout(baseUrl: String) = Unit
 
     fun exportAuthentication(baseUrl: String): AuthenticationMaterial? = null

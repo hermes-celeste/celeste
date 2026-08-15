@@ -61,6 +61,26 @@ private val transcriptPreviewCache = object : LruCache<String, Bitmap>(4 * 1024)
     }
 }
 
+private fun decodeBoundedTranscriptThumbnail(bytes: ByteArray): Bitmap? {
+    val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+    BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
+    if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
+    var sampleSize = 1
+    while (bounds.outWidth / sampleSize > 96 || bounds.outHeight / sampleSize > 96) {
+        sampleSize = (sampleSize * 2).coerceAtMost(1 shl 16)
+        if (sampleSize == 1 shl 16) break
+    }
+    return BitmapFactory.decodeByteArray(
+        bytes,
+        0,
+        bytes.size,
+        BitmapFactory.Options().apply {
+            inSampleSize = sampleSize
+            inPreferredConfig = Bitmap.Config.RGB_565
+        },
+    )
+}
+
 internal fun transcriptItemKeys(messages: List<ConversationMessage>): List<String> {
     val occurrences = mutableMapOf<String, Int>()
     return messages.mapIndexed { index, message ->
@@ -167,11 +187,12 @@ private fun TranscriptAttachmentThumbnail(attachment: MessageAttachment) {
         key2 = attachment.previewBytes,
     ) {
         val bytes = attachment.previewBytes ?: return@produceState
-        val cached = synchronized(transcriptPreviewCache) { transcriptPreviewCache.get(attachment.id) }
+        val cacheKey = "${attachment.id}:${attachment.serverReference.orEmpty()}"
+        val cached = synchronized(transcriptPreviewCache) { transcriptPreviewCache.get(cacheKey) }
         value = cached ?: withContext(Dispatchers.Default) {
-            BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+            decodeBoundedTranscriptThumbnail(bytes)
         }?.also { decoded ->
-            synchronized(transcriptPreviewCache) { transcriptPreviewCache.put(attachment.id, decoded) }
+            synchronized(transcriptPreviewCache) { transcriptPreviewCache.put(cacheKey, decoded) }
         }
     }
     if (bitmap != null) {

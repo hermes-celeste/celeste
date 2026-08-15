@@ -30,6 +30,7 @@ import java.io.InputStream
 import java.io.IOException
 import java.util.Base64
 import java.util.UUID
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -46,6 +47,7 @@ import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -127,9 +129,38 @@ class CelesteViewModelAttachmentTest {
     }
 
     @Test
+    fun removingDuringUploadCancelsTheTransactionAndDetachesAlreadyStagedReferences() = runTest {
+        val gateway = AttachmentGateway().apply {
+            blockSecondAttach = true
+            secondAttachStarted = CompletableDeferred()
+        }
+        val store = FakeAttachmentStore()
+        val viewModel = openConversation(gateway, store)
+
+        viewModel.updateDraft("Keep these images")
+        viewModel.beginAttachmentPicker()
+        viewModel.onAttachmentPickerResult(
+            listOf(Uri.parse("content://image-1"), Uri.parse("content://image-2")),
+        )
+        advanceUntilIdle()
+        viewModel.sendMessage()
+        gateway.secondAttachStarted!!.await()
+
+        val removedId = viewModel.state.value.attachments[1].id
+        viewModel.removeAttachment(removedId)
+        advanceUntilIdle()
+
+        assertFalse("prompt.submit" in gateway.methods)
+        assertEquals(1, viewModel.state.value.attachments.size)
+        assertTrue(viewModel.state.value.messages.none { it.id?.startsWith("local-") == true })
+        assertEquals(1, gateway.methods.count { it == "image.detach" })
+    }
+
+    @Test
     fun timeoutDuringSubmitReconcilesTheStoredSessionWithoutResending() = runTest {
         val gateway = AttachmentGateway().apply {
             promptFailure = GatewayRequestTimeout("prompt.submit", IOException("timed out"))
+            disconnectOnPromptFailure = true
         }
         val store = FakeAttachmentStore()
         val viewModel = openConversation(gateway, store)
@@ -140,6 +171,7 @@ class CelesteViewModelAttachmentTest {
         advanceUntilIdle()
 
         assertEquals(1, gateway.methods.count { it == "prompt.submit" })
+        assertTrue(gateway.connectCount >= 2)
         assertEquals("", viewModel.state.value.draft)
         assertTrue(viewModel.state.value.messages.any { it.id == "authoritative-user" })
         assertEquals(TurnState.Idle, viewModel.state.value.turnState)
@@ -215,18 +247,39 @@ class CelesteViewModelAttachmentTest {
         override val state = mutableState
         override val events = MutableSharedFlow<GatewayEvent>(extraBufferCapacity = 8)
         val methods = mutableListOf<String>()
+        var connectCount = 0
+        var attachCallCount = 0
+        var blockSecondAttach = false
+        var secondAttachStarted: CompletableDeferred<Unit>? = null
+        val releaseSecondAttach = CompletableDeferred<Unit>()
+        var disconnectOnPromptFailure = false
         var attachFailure: Throwable? = null
         var promptFailure: Throwable? = null
         var promptText: String? = null
         var resumeMessages: String = "[]"
 
-        override suspend fun connect() { mutableState.value = GatewayConnectionState.Connected }
+        override suspend fun connect() {
+            connectCount += 1
+            mutableState.value = GatewayConnectionState.Connected
+        }
         override suspend fun request(method: String, params: JsonObject, timeoutMillis: Long): JsonElement {
             methods += method
             when (method) {
-                "image.attach_bytes" -> attachFailure?.let { throw it }
+                "image.attach_bytes" -> {
+                    attachCallCount += 1
+                    if (attachCallCount == 2 && blockSecondAttach) {
+                        secondAttachStarted?.complete(Unit)
+                        releaseSecondAttach.await()
+                    }
+                    attachFailure?.let { throw it }
+                }
                 "prompt.submit" -> {
-                    promptFailure?.let { throw it }
+                    promptFailure?.let {
+                        if (disconnectOnPromptFailure) {
+                            mutableState.value = GatewayConnectionState.Disconnected("lost")
+                        }
+                        throw it
+                    }
                     promptText = params["text"]?.toString()?.trim('"')
                 }
                 "session.resume" -> return buildJsonObject {

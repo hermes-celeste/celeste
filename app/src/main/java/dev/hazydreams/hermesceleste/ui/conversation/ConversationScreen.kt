@@ -129,6 +129,7 @@ internal fun ConversationScreen(
     val canCompose = turnState == TurnState.Idle || turnState == TurnState.Reconnecting
     val canSend = turnState == TurnState.Idle &&
         (draft.isNotBlank() || (attachments.isNotEmpty() && imageOnlyCapability == ImageOnlyCapabilityState.Supported)) &&
+        (attachments.isEmpty() || attachmentCapability != AttachmentCapabilityState.Unsupported) &&
         attachments.all { it.transfer == AttachmentTransferState.Ready || it.transfer == AttachmentTransferState.Staged }
     val transcriptKeys = remember(messages) { transcriptItemKeys(messages) }
     val visibleMessageCount = messages.size + if (streamingText.isNotBlank()) 1 else 0

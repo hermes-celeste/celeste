@@ -50,6 +50,26 @@ class AttachmentReducerTest {
         assertTrue(AttachmentReducer.accepts(operation, owner, "runtime-1", 8, attachment))
         assertFalse(AttachmentReducer.accepts(operation, owner.copy(profileId = "work"), "runtime-1", 8, attachment))
         assertFalse(AttachmentReducer.accepts(operation, owner, "runtime-2", 8, attachment))
+        assertTrue(
+            AttachmentReducer.accepts(
+                operation,
+                owner,
+                "runtime-2",
+                8,
+                attachment,
+                allowRuntimeChangeAfterStoredOwnerCheck = true,
+            ),
+        )
+        assertFalse(
+            AttachmentReducer.accepts(
+                operation,
+                owner.copy(profileId = "work"),
+                "runtime-2",
+                8,
+                attachment,
+                allowRuntimeChangeAfterStoredOwnerCheck = true,
+            ),
+        )
         assertFalse(AttachmentReducer.accepts(operation, owner, "runtime-1", 9, attachment))
         assertFalse(AttachmentReducer.accepts(operation, owner, "runtime-1", 8, attachment.copy(generation = 9)))
     }

@@ -156,9 +156,10 @@ object AttachmentReducer {
         runtimeSessionId: String?,
         editorGeneration: Long,
         attachment: AttachmentDraft,
+        allowRuntimeChangeAfterStoredOwnerCheck: Boolean = false,
     ): Boolean =
         operation.draftOwner == owner &&
-            operation.runtimeSessionIdAtStart == runtimeSessionId &&
+            (allowRuntimeChangeAfterStoredOwnerCheck || operation.runtimeSessionIdAtStart == runtimeSessionId) &&
             operation.editorGeneration == editorGeneration &&
             operation.attachmentId == attachment.id &&
             operation.attachmentGeneration == attachment.generation &&

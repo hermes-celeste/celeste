@@ -140,6 +140,12 @@ data class AttachmentCapabilityAdvertisement(
 
 class AttachmentMediaUnavailable(message: String = "Image unavailable") : IOException(message)
 
+data class ImageMediaReference(
+    val normalizedGatewayOrigin: String,
+    val profileId: String,
+    val serverReference: String,
+)
+
 suspend fun GatewayConnection.attachImageBytes(
     owner: AttachmentSessionOwner,
     bytes: ByteArray,
