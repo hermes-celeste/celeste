@@ -949,8 +949,13 @@ class CelesteViewModelTest {
             "tool.start",
             """{"name":"terminal","tool_call_id":"call-incomplete"}""",
         )
+        viewModel.state.first { state ->
+            state.agentActivity?.items.orEmpty()
+                .filterIsInstance<ToolActivity>()
+                .singleOrNull()
+                ?.phase == ToolPhase.Running
+        }
         gateway.emit("message.complete", """{"status":"complete"}""")
-        advanceUntilIdle()
         viewModel.state.first { state ->
             state.agentActivity?.items.orEmpty()
                 .filterIsInstance<ToolActivity>()
