@@ -65,7 +65,6 @@ internal data class SessionScope(
 internal data class SessionCatalogRequest(
     val scope: SessionScope,
     val originGeneration: Long,
-    val profileGeneration: Long,
     val requestGeneration: Long,
     val connectionAttempt: Long,
 )

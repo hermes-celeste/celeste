@@ -225,7 +225,6 @@ class SessionCatalogTest {
         SessionCatalogRequest(
             scope = scope,
             originGeneration = 1,
-            profileGeneration = 1,
             requestGeneration = requestGeneration,
             connectionAttempt = 1,
         )

@@ -358,6 +358,39 @@ class CelesteViewModelTest {
     }
 
     @Test
+    fun openingAuthenticationFailureClosesGatewayAndRequiresSignIn() = runTest {
+        val gateway = FakeGateway()
+        val dashboard = FakeDashboard(gateway, authRequired = true)
+        val store = InMemoryConnectionStore()
+        val viewModel = CelesteViewModel(
+            dashboard = dashboard,
+            connectionStore = store,
+        )
+        viewModel.updateDashboardUrl("https://hermes.test")
+        viewModel.findDashboard()
+        advanceUntilIdle()
+        viewModel.updateUsername("celeste")
+        viewModel.updatePassword("synthetic-password")
+        viewModel.loadSessions()
+        advanceUntilIdle()
+        assertTrue(store.load()?.secret != null)
+
+        gateway.connectFailure = AuthenticationRejected("Hermes rejected the conversation gateway.")
+        viewModel.openSession(dashboard.session)
+        advanceUntilIdle()
+
+        assertEquals(ConnectionPhase.AuthenticationRequired, viewModel.state.value.connectionPhase)
+        assertNull(viewModel.state.value.sessions)
+        assertEquals(SessionCatalogStatus.NotReady, viewModel.state.value.sessionCatalog.phase)
+        assertNull(viewModel.state.value.activeSummary)
+        assertEquals("Hermes needs sign-in.", viewModel.state.value.errorMessage)
+        assertNull(store.load()?.secret)
+        assertFalse(store.load()?.descriptor?.autoLoginEnabled ?: true)
+        assertEquals(GatewayConnectionState.Closed, gateway.state.value)
+        assertEquals(1, gateway.closeCount)
+    }
+
+    @Test
     fun newConversationAuthenticationFailureClosesGatewayAndRequiresSignIn() = runTest {
         val gateway = FakeGateway().apply {
             createFailure = AuthenticationRejected("Hermes rejected new conversation creation.")
@@ -434,6 +467,49 @@ class CelesteViewModelTest {
 
         assertEquals("shared", viewModel.state.value.sessionQuery)
         assertEquals(listOf("stored-42"), viewModel.state.value.sessionCatalog.filteredRows.map(StoredSession::id))
+    }
+
+    @Test
+    fun creationProfileChangeDoesNotLeaveDebouncedUnscopedSearchInFlight() = runTest {
+        val dashboard = FakeDashboard(FakeGateway())
+        val viewModel = connectedViewModel(dashboard)
+
+        viewModel.updateSessionQuery("work")
+        assertTrue(viewModel.state.value.sessionCatalog.queryInFlight)
+
+        viewModel.selectProfile("work")
+        advanceUntilIdle()
+
+        assertEquals("work", viewModel.state.value.selectedProfile)
+        assertFalse(viewModel.state.value.sessionCatalog.queryInFlight)
+        assertEquals(
+            listOf("stored-work"),
+            viewModel.state.value.sessionCatalog.filteredRows.map(StoredSession::id),
+        )
+    }
+
+    @Test
+    fun creationProfileChangeDoesNotInvalidateAnInitialUnscopedCatalogLoad() = runTest {
+        val dashboard = FakeDashboard(FakeGateway())
+        val viewModel = connectedViewModel(dashboard)
+        viewModel.selectProfile("work")
+
+        dashboard.sessionListGate = CompletableDeferred()
+        viewModel.loadSessions()
+        assertEquals(ConnectionPhase.LoadingSessions, viewModel.state.value.connectionPhase)
+        assertEquals(SessionCatalogStatus.Loading, viewModel.state.value.sessionCatalog.phase)
+        assertFalse(viewModel.state.value.sessionCatalog.queryInFlight)
+
+        viewModel.selectProfile("default")
+        dashboard.sessionListGate?.complete(Unit)
+        advanceUntilIdle()
+
+        assertEquals(ConnectionPhase.Connected, viewModel.state.value.connectionPhase)
+        assertEquals("default", viewModel.state.value.selectedProfile)
+        assertEquals(
+            listOf("stored-42", "stored-work", "ambiguous-profile"),
+            viewModel.state.value.sessions?.map(StoredSession::id),
+        )
     }
 
     @Test

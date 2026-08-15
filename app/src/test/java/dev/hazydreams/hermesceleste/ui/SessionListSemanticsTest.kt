@@ -96,7 +96,6 @@ class SessionListSemanticsTest {
     private fun request(scope: SessionScope, generation: Long) = SessionCatalogRequest(
         scope = scope,
         originGeneration = 1,
-        profileGeneration = 1,
         requestGeneration = generation,
         connectionAttempt = 1,
     )

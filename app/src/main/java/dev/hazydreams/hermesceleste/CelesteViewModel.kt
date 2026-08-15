@@ -108,7 +108,6 @@ private data class OpeningToken(
     val key: SessionKey,
     val connectionAttempt: Long,
     val originGeneration: Long,
-    val profileGeneration: Long,
     val previousState: CelesteUiState,
     val previousKey: SessionKey?,
     val previousRuntimeId: String?,
@@ -198,7 +197,6 @@ internal class CelesteViewModel(
         // Profile selection is deliberately creation-only. session.list is not
         // profile-scoped on the mounted Hermes contract, so changing this
         // control must not relabel, filter, or refresh the loaded catalog.
-        cancelOpening()
         cancelNewConversation()
         profileGeneration += 1
         mutableState.value = mutableState.value.copy(selectedProfile = selected.name)
@@ -250,7 +248,6 @@ internal class CelesteViewModel(
         val snapshot = mutableState.value
         val connection = snapshot.probe ?: return
         val attempt = beginConnectionAttempt()
-        val selectedProfileGeneration = profileGeneration
         val initialScope = SessionScope.unscoped(connection.baseUrl)
         dashboard.clearAuthentication()
         mutableState.value = snapshot.copy(
@@ -295,7 +292,6 @@ internal class CelesteViewModel(
                     selectedCredential = selectedCredential,
                     preferredProfile = snapshot.selectedProfile,
                 )
-                if (profileGeneration != selectedProfileGeneration) throw CancellationException()
                 val descriptor = when {
                     connection.authRequired -> SavedConnectionDescriptor(
                         baseUrl = connection.baseUrl,
@@ -329,7 +325,7 @@ internal class CelesteViewModel(
                 }
                 RememberedDashboard(loaded, descriptor, persistenceError)
             }.onSuccess { remembered ->
-                if (!isCurrentConnectionAttempt(attempt) || profileGeneration != selectedProfileGeneration) return@onSuccess
+                if (!isCurrentConnectionAttempt(attempt)) return@onSuccess
                 credential = remembered.loaded.credential
                 currentDescriptor = remembered.descriptor
                 publishConnectedDashboard(
@@ -343,7 +339,7 @@ internal class CelesteViewModel(
                     },
                 )
             }.onFailure { error ->
-                if (!isCurrentConnectionAttempt(attempt) || profileGeneration != selectedProfileGeneration) return@onFailure
+                if (!isCurrentConnectionAttempt(attempt)) return@onFailure
                 dashboard.clearAuthentication()
                 mutableState.value = mutableState.value.copy(
                     connectionPhase = ConnectionPhase.ManualSetup,
@@ -638,7 +634,9 @@ internal class CelesteViewModel(
         sessionToken: String = "",
         errorMessage: String? = null,
     ) {
-        val selectedProfile = loaded.selectedProfile
+        val selectedProfile = loaded.profiles.firstOrNull {
+            it.name.equals(mutableState.value.selectedProfile, ignoreCase = true)
+        }?.name ?: loaded.selectedProfile
         val scope = SessionScope.unscoped(mutableState.value.probe?.baseUrl.orEmpty())
         catalogScope = scope
         val catalog = if (scope == null) {
@@ -735,7 +733,6 @@ internal class CelesteViewModel(
         val rows = nextCatalog.rows
         val scope = nextCatalog.scope
         val originAtStart = originGeneration
-        val profileAtStart = profileGeneration
         val catalogRequestAtStart = catalogRequestGeneration
         val connectionAttemptAtStart = connectionAttempt
         sessionSearchJob = viewModelScope.launch {
@@ -747,7 +744,6 @@ internal class CelesteViewModel(
             if (
                 generation != sessionQueryGeneration ||
                 originAtStart != originGeneration ||
-                profileAtStart != profileGeneration ||
                 catalogRequestAtStart != catalogRequestGeneration ||
                 connectionAttemptAtStart != connectionAttempt ||
                 current.sessionCatalog.scope != scope ||
@@ -792,7 +788,6 @@ internal class CelesteViewModel(
         val request = SessionCatalogRequest(
             scope = scope,
             originGeneration = originGeneration,
-            profileGeneration = profileGeneration,
             requestGeneration = ++catalogRequestGeneration,
             connectionAttempt = connectionAttempt,
         )
@@ -895,7 +890,6 @@ internal class CelesteViewModel(
             key = key,
             connectionAttempt = attempt,
             originGeneration = originGeneration,
-            profileGeneration = profileGeneration,
             previousState = snapshot,
             previousKey = activeSessionKey,
             previousRuntimeId = currentRuntimeSessionId,
@@ -960,10 +954,20 @@ internal class CelesteViewModel(
                 )
             } catch (error: Throwable) {
                 if (openingToken?.id == activeToken.id) {
-                    rollbackOpening(
-                        activeToken,
-                        error.message?.takeIf { error !is CancellationException },
-                    )
+                    if (error is AuthenticationRejected) {
+                        activeToken.previousGateway
+                            ?.takeUnless { it === activeToken.candidateGateway }
+                            ?.close()
+                        invalidateReusableAuthentication(
+                            descriptor = currentDescriptor,
+                            probe = connection,
+                        )
+                    } else {
+                        rollbackOpening(
+                            activeToken,
+                            error.message?.takeIf { error !is CancellationException },
+                        )
+                    }
                 }
             } finally {
                 if (openingToken?.id == activeToken.id && errorCandidateIsClosed(activeToken)) {
@@ -986,8 +990,7 @@ internal class CelesteViewModel(
             gateway === token.candidateGateway &&
             activeSessionKey == token.key &&
             connectionAttempt == token.connectionAttempt &&
-            originGeneration == token.originGeneration &&
-            profileGeneration == token.profileGeneration
+            originGeneration == token.originGeneration
 
     private fun errorCandidateIsClosed(token: OpeningToken): Boolean =
         token.candidateGateway != null && token.candidateGateway !== gateway
