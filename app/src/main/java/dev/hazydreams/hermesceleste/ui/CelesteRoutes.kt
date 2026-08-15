@@ -86,6 +86,7 @@ internal fun CelesteRoutes(ui: CelesteUiState, viewModel: CelesteViewModel) {
                     draft = ui.draft,
                     attachments = ui.attachments,
                     attachmentCapability = ui.attachmentCapability,
+                    imageOnlyCapability = ui.imageOnlyCapability,
                     attachmentNotice = ui.attachmentNotice,
                     turnState = ui.turnState,
                     loadingMessage = ui.loadingMessage,

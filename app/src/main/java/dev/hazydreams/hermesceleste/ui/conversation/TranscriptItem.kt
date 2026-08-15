@@ -1,5 +1,9 @@
 package dev.hazydreams.hermesceleste.ui.conversation
 
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import android.util.LruCache
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
@@ -16,11 +20,14 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.produceState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 
@@ -40,8 +47,19 @@ import dev.hazydreams.hermesceleste.ui.CelesteMuted
 import dev.hazydreams.hermesceleste.ui.CelestePanelRaised
 import dev.hazydreams.hermesceleste.ui.CelestePaper
 import dev.hazydreams.hermesceleste.ui.CelesteSoftBlue
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 internal const val STREAMING_TRANSCRIPT_KEY = "streaming:assistant"
+
+private val transcriptPreviewCache = object : LruCache<String, Bitmap>(4 * 1024) {
+    override fun sizeOf(key: String, value: Bitmap): Int =
+        (value.rowBytes * value.height / 1024).coerceAtLeast(1)
+
+    override fun entryRemoved(evicted: Boolean, key: String, oldValue: Bitmap, newValue: Bitmap?) {
+        if (evicted && oldValue !== newValue && !oldValue.isRecycled) oldValue.recycle()
+    }
+}
 
 internal fun transcriptItemKeys(messages: List<ConversationMessage>): List<String> {
     val occurrences = mutableMapOf<String, Int>()
@@ -129,7 +147,7 @@ private fun AttachmentList(attachments: List<MessageAttachment>) {
                         .background(CelestePaper, RoundedCornerShape(8.dp)),
                     contentAlignment = Alignment.Center,
                 ) {
-                    Text("▧", color = CelesteBlue, fontSize = 21.sp)
+                    TranscriptAttachmentThumbnail(attachment)
                 }
                 Spacer(Modifier.size(9.dp))
                 Column(Modifier.weight(1f)) {
@@ -138,6 +156,36 @@ private fun AttachmentList(attachments: List<MessageAttachment>) {
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun TranscriptAttachmentThumbnail(attachment: MessageAttachment) {
+    val bitmap by produceState<Bitmap?>(
+        initialValue = null,
+        key1 = attachment.id,
+        key2 = attachment.previewBytes,
+    ) {
+        val bytes = attachment.previewBytes ?: return@produceState
+        val cached = synchronized(transcriptPreviewCache) { transcriptPreviewCache.get(attachment.id) }
+        value = cached ?: withContext(Dispatchers.Default) {
+            BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+        }?.also { decoded ->
+            synchronized(transcriptPreviewCache) { transcriptPreviewCache.put(attachment.id, decoded) }
+        }
+    }
+    if (bitmap != null) {
+        Image(
+            bitmap = requireNotNull(bitmap).asImageBitmap(),
+            contentDescription = null,
+            modifier = Modifier.size(42.dp),
+        )
+    } else {
+        Text(
+            text = if (attachment.preview == AttachmentPreviewState.Pending) "…" else "▧",
+            color = CelesteBlue,
+            fontSize = 21.sp,
+        )
     }
 }
 

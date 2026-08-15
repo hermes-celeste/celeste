@@ -22,9 +22,9 @@ import dev.hazydreams.hermesceleste.network.GatewayConnection
 import dev.hazydreams.hermesceleste.network.GatewayConnectionState
 import dev.hazydreams.hermesceleste.network.GatewayCredential
 import dev.hazydreams.hermesceleste.network.GatewayEvent
+import dev.hazydreams.hermesceleste.network.GatewayRequestTimeout
 import dev.hazydreams.hermesceleste.network.GatewayRpcException
 import dev.hazydreams.hermesceleste.network.StoredSession
-import java.io.ByteArrayInputStream
 import java.io.File
 import java.io.InputStream
 import java.io.IOException
@@ -39,9 +39,9 @@ import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
+import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
-import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import org.junit.After
@@ -103,6 +103,46 @@ class CelesteViewModelAttachmentTest {
         assertEquals("Keep this caption", viewModel.state.value.draft)
         assertEquals(AttachmentTransferState.Failed, viewModel.state.value.attachments.single().transfer)
         assertEquals(AttachmentCapabilityState.Unsupported, viewModel.state.value.attachmentCapability)
+    }
+
+    @Test
+    fun timeoutDuringUploadIsUnknownAndNeverFallsBackToTextOnlySend() = runTest {
+        val gateway = AttachmentGateway().apply {
+            attachFailure = GatewayRequestTimeout("image.attach_bytes", IOException("timed out"))
+        }
+        val store = FakeAttachmentStore()
+        val viewModel = openConversation(gateway, store)
+
+        viewModel.updateDraft("Keep the image")
+        viewModel.beginAttachmentPicker()
+        viewModel.onAttachmentPickerResult(listOf(Uri.parse("content://image-1")))
+        advanceUntilIdle()
+        viewModel.sendMessage()
+        advanceUntilIdle()
+
+        assertTrue("prompt.submit" !in gateway.methods)
+        assertEquals("Keep the image", viewModel.state.value.draft)
+        assertEquals(AttachmentTransferState.Unknown, viewModel.state.value.attachments.single().transfer)
+        assertEquals(TurnState.Idle, viewModel.state.value.turnState)
+    }
+
+    @Test
+    fun timeoutDuringSubmitReconcilesTheStoredSessionWithoutResending() = runTest {
+        val gateway = AttachmentGateway().apply {
+            promptFailure = GatewayRequestTimeout("prompt.submit", IOException("timed out"))
+        }
+        val store = FakeAttachmentStore()
+        val viewModel = openConversation(gateway, store)
+        gateway.resumeMessages = """[{"id":"authoritative-user","role":"user","text":"Keep this caption"}]"""
+
+        viewModel.updateDraft("Keep this caption")
+        viewModel.sendMessage()
+        advanceUntilIdle()
+
+        assertEquals(1, gateway.methods.count { it == "prompt.submit" })
+        assertEquals("", viewModel.state.value.draft)
+        assertTrue(viewModel.state.value.messages.any { it.id == "authoritative-user" })
+        assertEquals(TurnState.Idle, viewModel.state.value.turnState)
     }
 
     private suspend fun openConversation(
@@ -176,19 +216,24 @@ class CelesteViewModelAttachmentTest {
         override val events = MutableSharedFlow<GatewayEvent>(extraBufferCapacity = 8)
         val methods = mutableListOf<String>()
         var attachFailure: Throwable? = null
+        var promptFailure: Throwable? = null
         var promptText: String? = null
+        var resumeMessages: String = "[]"
 
         override suspend fun connect() { mutableState.value = GatewayConnectionState.Connected }
         override suspend fun request(method: String, params: JsonObject, timeoutMillis: Long): JsonElement {
             methods += method
             when (method) {
                 "image.attach_bytes" -> attachFailure?.let { throw it }
-                "prompt.submit" -> promptText = params["text"]?.toString()?.trim('"')
+                "prompt.submit" -> {
+                    promptFailure?.let { throw it }
+                    promptText = params["text"]?.toString()?.trim('"')
+                }
                 "session.resume" -> return buildJsonObject {
                     put("session_id", "runtime-1")
                     put("resumed", "stored-1")
                     put("running", false)
-                    put("messages", JsonArray(emptyList()))
+                    put("messages", Json.parseToJsonElement(resumeMessages))
                 }
             }
             return when (method) {

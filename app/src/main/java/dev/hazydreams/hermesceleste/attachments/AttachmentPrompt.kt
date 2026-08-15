@@ -32,28 +32,31 @@ fun normalizeImageReferences(rawText: String): NormalizedImageReferences {
     val retained = mutableListOf<String>()
     val references = mutableListOf<String>()
     rawText.split('\n').forEach { line ->
-        val trimmed = line.trim()
-        if (trimmed.startsWith("@image:")) {
-            val rawReference = trimmed.removePrefix("@image:").trim()
-            val reference = if (rawReference.length >= 2 &&
-                rawReference.first() == '`' && rawReference.last() == '`'
-            ) {
-                rawReference.substring(1, rawReference.length - 1)
-            } else {
-                rawReference
-            }
-            if (reference.isNotBlank()) references += reference
+        val reference = parseImageDirective(line)
+        if (reference != null) {
+            references += reference
         } else {
             retained += line
         }
-    }
-    if (references.isNotEmpty()) {
-        retained.removeAll { it.trim() == "[screenshot]" }
     }
     return NormalizedImageReferences(
         visibleText = retained.joinToString("\n").trim(),
         references = references,
     )
+}
+
+private fun parseImageDirective(line: String): String? {
+    val trimmed = line.trim()
+    if (!trimmed.startsWith("@image:")) return null
+    val rawReference = trimmed.removePrefix("@image:").trim()
+    if (rawReference.isBlank()) return null
+    if (rawReference.first() == '`') {
+        if (rawReference.length < 2 || rawReference.last() != '`') return null
+        return rawReference.substring(1, rawReference.length - 1).takeIf(String::isNotBlank)
+    }
+    // Unquoted references cannot contain whitespace; imageDirective quotes those.
+    if (rawReference.any(Char::isWhitespace) || rawReference.contains('`')) return null
+    return rawReference
 }
 
 fun messageAttachmentFromReference(
@@ -72,11 +75,9 @@ fun messageAttachmentFromReference(
         "gif" -> "image/gif"
         "webp" -> "image/webp"
         "bmp" -> "image/bmp"
-        "heic", "heif" -> "image/heic"
-        "avif" -> "image/avif"
         else -> "image/png"
     },
     byteSize = 0L,
     serverReference = reference,
-    preview = AttachmentPreviewState.Unavailable,
+    preview = AttachmentPreviewState.Pending,
 )

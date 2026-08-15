@@ -91,6 +91,23 @@ class AttachmentValidatorTest {
         assertTrue(second.file.exists())
     }
 
+    @Test
+    fun rejectsSignatureOnlyAndTruncatedImagePayloads() {
+        val malformed = listOf(
+            byteArrayOf(0x89.toByte(), 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a),
+            byteArrayOf(0xff.toByte(), 0xd8.toByte(), 0xff.toByte(), 0xd9.toByte()),
+            "GIF89a".encodeToByteArray() + ByteArray(8) + byteArrayOf(0x3b),
+            "RIFF".encodeToByteArray() + byteArrayOf(12, 0, 0, 0) +
+                "WEBP".encodeToByteArray() + "VP8 ".encodeToByteArray() + byteArrayOf(0, 0, 0, 0),
+        )
+
+        malformed.forEach { bytes ->
+            assertThrows(AttachmentValidationException::class.java) {
+                AttachmentValidator.validate(bytes)
+            }
+        }
+    }
+
     private companion object {
         val pngBytes = Base64.getDecoder().decode(
             "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",

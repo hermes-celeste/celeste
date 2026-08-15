@@ -10,6 +10,8 @@ import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonElement
@@ -46,9 +48,17 @@ class GatewayRpcException(
     message: String,
 ) : IOException(message)
 
+class GatewayRequestTimeout(
+    val method: String,
+    cause: Throwable,
+) : IOException("Hermes timed out while waiting for $method.", cause)
+
 interface GatewayConnection {
     val state: StateFlow<GatewayConnectionState>
     val events: SharedFlow<GatewayEvent>
+
+    val readyPayload: JsonObject?
+        get() = null
 
     suspend fun connect()
 
@@ -88,13 +98,19 @@ class HermesGateway(
     @Volatile
     private var intentionalClose = false
 
+    @Volatile
+    private var latestReadyPayload: JsonObject? = null
+
     override val state: StateFlow<GatewayConnectionState> = mutableState
     override val events: SharedFlow<GatewayEvent> = mutableEvents
+    override val readyPayload: JsonObject?
+        get() = latestReadyPayload
 
     override suspend fun connect(): Unit = connectMutex.withLock {
         if (mutableState.value == GatewayConnectionState.Connected && socket != null) return
 
         intentionalClose = false
+        latestReadyPayload = null
         socket?.cancel()
         socket = null
         failPending(IOException("Hermes connection was replaced."))
@@ -130,6 +146,9 @@ class HermesGateway(
                     ?.let { it as? JsonPrimitive }
                     ?.contentOrNull
                 if (root["method"]?.jsonPrimitive?.contentOrNull == "event" && eventType == "gateway.ready") {
+                    latestReadyPayload = root["params"]
+                        ?.let { it as? JsonObject }
+                        ?.get("payload") as? JsonObject
                     socket = webSocket
                     mutableState.value = GatewayConnectionState.Connected
                     opened.complete(Unit)
@@ -194,6 +213,7 @@ class HermesGateway(
         }
 
         val id = "android-${requestCounter.incrementAndGet()}"
+        currentCoroutineContext().ensureActive()
         val deferred = CompletableDeferred<JsonElement>()
         pending[id] = deferred
         val frame = buildJsonObject {
@@ -209,6 +229,8 @@ class HermesGateway(
 
         return try {
             withTimeout(timeoutMillis) { deferred.await() }
+        } catch (error: kotlinx.coroutines.TimeoutCancellationException) {
+            throw GatewayRequestTimeout(method, error)
         } finally {
             pending.remove(id)
         }

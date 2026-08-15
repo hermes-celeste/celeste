@@ -1,9 +1,13 @@
 package dev.hazydreams.hermesceleste.network
 
+import dev.hazydreams.hermesceleste.attachments.AttachmentCapabilityState
+import dev.hazydreams.hermesceleste.attachments.ImageOnlyCapabilityState
 import dev.hazydreams.hermesceleste.attachments.MAX_ATTACHMENT_BYTES
 import java.io.IOException
 import java.util.Base64
 import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonNull
@@ -85,9 +89,13 @@ suspend fun GatewayConnection.resumeStoredSession(storedSessionId: String): Resu
     )
 }
 
-suspend fun GatewayConnection.submitPrompt(runtimeSessionId: String, text: String): JsonObject {
+suspend fun GatewayConnection.submitPrompt(
+    runtimeSessionId: String,
+    text: String,
+    allowEmptyCaption: Boolean = false,
+): JsonObject {
     require(runtimeSessionId.isNotBlank()) { "No Hermes conversation is open." }
-    require(text.isNotBlank()) { "Write a message first." }
+    require(allowEmptyCaption || text.isNotBlank()) { "Write a message first." }
     return request(
         method = "prompt.submit",
         params = buildJsonObject {
@@ -125,6 +133,11 @@ enum class AttachmentFailureClass {
     AuthRequired,
 }
 
+data class AttachmentCapabilityAdvertisement(
+    val upload: AttachmentCapabilityState = AttachmentCapabilityState.Unknown,
+    val imageOnly: ImageOnlyCapabilityState = ImageOnlyCapabilityState.Unknown,
+)
+
 class AttachmentMediaUnavailable(message: String = "Image unavailable") : IOException(message)
 
 suspend fun GatewayConnection.attachImageBytes(
@@ -137,15 +150,17 @@ suspend fun GatewayConnection.attachImageBytes(
     require(bytes.isNotEmpty()) { "Image is empty." }
     require(bytes.size.toLong() <= MAX_ATTACHMENT_BYTES) { "Image is too large." }
     val safeName = safeAttachmentFilename(filename, mimeType)
-    val result = request(
-        method = "image.attach_bytes",
-        params = buildJsonObject {
+    val params = withContext(Dispatchers.IO) {
+        buildJsonObject {
             put("session_id", owner.requestSessionId())
             put("content_base64", Base64.getEncoder().encodeToString(bytes))
             if (safeName != null) put("filename", safeName)
-            // The current Hermes method has no idempotency/client-id field. Keep
-            // the seam for a future contract, but never claim it is honored.
-        },
+            // The current Hermes method has no idempotency/client-id field.
+        }
+    }
+    val result = request(
+        method = "image.attach_bytes",
+        params = params,
         timeoutMillis = 180_000,
     ).asObject("Hermes returned no image attachment status.")
     val reference = result.string("path")?.takeIf(String::isNotBlank)
@@ -181,11 +196,39 @@ fun classifyAttachmentFailure(error: Throwable): AttachmentFailureClass = when {
     error is AuthenticationRejected -> AttachmentFailureClass.AuthRequired
     error is GatewayRpcException && error.code == -32601 -> AttachmentFailureClass.Unsupported
     error is GatewayRpcException && error.code in setOf(4016, 4017, 4018) -> AttachmentFailureClass.Definitive
+    error is GatewayRpcException && error.code in setOf(401, 403) -> AttachmentFailureClass.AuthRequired
     error is GatewayRpcException && error.message.orEmpty().contains("method not found", ignoreCase = true) ->
         AttachmentFailureClass.Unsupported
+    error is GatewayRpcException && error.message.orEmpty().let {
+        it.contains("origin", ignoreCase = true) ||
+            (it.contains("profile", ignoreCase = true) && it.contains("mismatch", ignoreCase = true))
+    } -> AttachmentFailureClass.AuthRequired
+    error is GatewayRpcException -> AttachmentFailureClass.Unknown
     error is TimeoutCancellationException || error is IOException -> AttachmentFailureClass.Unknown
     else -> AttachmentFailureClass.Definitive
 }
+
+fun decodeAttachmentCapability(payload: JsonObject): AttachmentCapabilityAdvertisement {
+    val capabilities = payload["capabilities"] as? JsonObject ?: return AttachmentCapabilityAdvertisement()
+    val attachment = capabilities["attachments"] as? JsonObject ?: return AttachmentCapabilityAdvertisement()
+    val upload = booleanCapability(attachment["supported"])
+    val imageOnly = booleanCapability(attachment["image_only"])
+    return AttachmentCapabilityAdvertisement(
+        upload = when (upload) {
+            true -> AttachmentCapabilityState.Supported
+            false -> AttachmentCapabilityState.Unsupported
+            null -> AttachmentCapabilityState.Unknown
+        },
+        imageOnly = when (imageOnly) {
+            true -> ImageOnlyCapabilityState.Supported
+            false -> ImageOnlyCapabilityState.Unsupported
+            null -> ImageOnlyCapabilityState.Unknown
+        },
+    )
+}
+
+private fun booleanCapability(element: JsonElement?): Boolean? =
+    runCatching { element?.jsonPrimitive?.booleanOrNull }.getOrNull()
 
 private fun safeAttachmentFilename(filename: String?, mimeType: String): String? {
     val extension = when (mimeType.lowercase()) {
@@ -194,8 +237,6 @@ private fun safeAttachmentFilename(filename: String?, mimeType: String): String?
         "image/gif" -> ".gif"
         "image/webp" -> ".webp"
         "image/bmp" -> ".bmp"
-        "image/heic" -> ".heic"
-        "image/avif" -> ".avif"
         else -> ".img"
     }
     val base = filename

@@ -1,8 +1,10 @@
 package dev.hazydreams.hermesceleste.ui.conversation
 
 import android.content.ContentResolver
+import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.net.Uri
+import android.util.LruCache
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
@@ -49,6 +51,8 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -67,6 +71,7 @@ import dev.hazydreams.hermesceleste.attachments.AttachmentCapabilityState
 import dev.hazydreams.hermesceleste.attachments.AttachmentDraft
 import dev.hazydreams.hermesceleste.attachments.AttachmentPreviewState
 import dev.hazydreams.hermesceleste.attachments.AttachmentTransferState
+import dev.hazydreams.hermesceleste.attachments.ImageOnlyCapabilityState
 import dev.hazydreams.hermesceleste.attachments.MAX_PENDING_ATTACHMENTS
 import dev.hazydreams.hermesceleste.TurnState
 import dev.hazydreams.hermesceleste.network.ConversationMessage
@@ -85,6 +90,8 @@ import dev.hazydreams.hermesceleste.ui.CelestePaper
 
 import dev.hazydreams.hermesceleste.ui.StatusMessage
 import java.util.UUID
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 @Composable
 internal fun ConversationScreen(
@@ -94,6 +101,7 @@ internal fun ConversationScreen(
     draft: String,
     attachments: List<AttachmentDraft> = emptyList(),
     attachmentCapability: AttachmentCapabilityState = AttachmentCapabilityState.Unknown,
+    imageOnlyCapability: ImageOnlyCapabilityState = ImageOnlyCapabilityState.Unknown,
     attachmentNotice: String? = null,
     turnState: TurnState,
     loadingMessage: String?,
@@ -120,7 +128,7 @@ internal fun ConversationScreen(
     val focusManager = LocalFocusManager.current
     val canCompose = turnState == TurnState.Idle || turnState == TurnState.Reconnecting
     val canSend = turnState == TurnState.Idle &&
-        draft.isNotBlank() &&
+        (draft.isNotBlank() || (attachments.isNotEmpty() && imageOnlyCapability == ImageOnlyCapabilityState.Supported)) &&
         attachments.all { it.transfer == AttachmentTransferState.Ready || it.transfer == AttachmentTransferState.Staged }
     val transcriptKeys = remember(messages) { transcriptItemKeys(messages) }
     val visibleMessageCount = messages.size + if (streamingText.isNotBlank()) 1 else 0
@@ -228,6 +236,7 @@ internal fun ConversationScreen(
                 if (attachments.isNotEmpty()) {
                     ComposerAttachmentRail(
                         attachments = attachments,
+                        enabled = canCompose,
                         onRemove = onRemoveAttachment,
                         onRetry = onRetryAttachment,
                     )
@@ -367,6 +376,7 @@ internal fun ConversationScreen(
 @Composable
 private fun ComposerAttachmentRail(
     attachments: List<AttachmentDraft>,
+    enabled: Boolean,
     onRemove: (UUID) -> Unit,
     onRetry: (UUID) -> Unit,
 ) {
@@ -380,6 +390,7 @@ private fun ComposerAttachmentRail(
             ComposerAttachmentCard(
                 index = index,
                 attachment = attachment,
+                enabled = enabled,
                 onRemove = { onRemove(attachment.id) },
                 onRetry = { onRetry(attachment.id) },
             )
@@ -391,6 +402,7 @@ private fun ComposerAttachmentRail(
 private fun ComposerAttachmentCard(
     index: Int,
     attachment: AttachmentDraft,
+    enabled: Boolean,
     onRemove: () -> Unit,
     onRetry: () -> Unit,
 ) {
@@ -434,12 +446,14 @@ private fun ComposerAttachmentCard(
             ) {
                 TextButton(
                     onClick = onRetry,
+                    enabled = enabled,
                     contentPadding = PaddingValues(horizontal = 5.dp, vertical = 2.dp),
                     modifier = Modifier.semantics { contentDescription = "Retry image ${index + 1}" },
                 ) { Text("Retry", color = CelesteBlue, fontSize = 11.sp) }
             }
             TextButton(
                 onClick = onRemove,
+                enabled = enabled,
                 contentPadding = PaddingValues(horizontal = 5.dp, vertical = 2.dp),
                 modifier = Modifier.semantics { contentDescription = "Remove image ${index + 1}" },
             ) { Text("Remove", color = CelesteCoral, fontSize = 11.sp) }
@@ -447,11 +461,30 @@ private fun ComposerAttachmentCard(
     }
 }
 
+private val composerPreviewCache = object : LruCache<String, Bitmap>(4 * 1024) {
+    override fun sizeOf(key: String, value: Bitmap): Int =
+        (value.rowBytes * value.height / 1024).coerceAtLeast(1)
+
+    override fun entryRemoved(evicted: Boolean, key: String, oldValue: Bitmap, newValue: Bitmap?) {
+        if (evicted && oldValue !== newValue && !oldValue.isRecycled) oldValue.recycle()
+    }
+}
+
 @Composable
 private fun AttachmentThumbnail(attachment: AttachmentDraft) {
-    val bitmap = remember(attachment.previewBytes) {
-        attachment.previewBytes?.let { bytes ->
-            BitmapFactory.decodeByteArray(bytes, 0, bytes.size)?.asImageBitmap()
+    val bitmap by produceState<Bitmap?>(
+        initialValue = null,
+        key1 = attachment.id,
+        key2 = attachment.previewBytes,
+    ) {
+        val bytes = attachment.previewBytes ?: return@produceState
+        val cached = synchronized(composerPreviewCache) { composerPreviewCache.get(attachment.id.toString()) }
+        value = cached ?: withContext(Dispatchers.Default) {
+            BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+        }?.also { decoded ->
+            synchronized(composerPreviewCache) {
+                composerPreviewCache.put(attachment.id.toString(), decoded)
+            }
         }
     }
     Box(
@@ -462,7 +495,7 @@ private fun AttachmentThumbnail(attachment: AttachmentDraft) {
     ) {
         if (bitmap != null) {
             Image(
-                bitmap = bitmap,
+                bitmap = requireNotNull(bitmap).asImageBitmap(),
                 contentDescription = null,
                 modifier = Modifier.size(54.dp),
             )

@@ -1,9 +1,12 @@
 package dev.hazydreams.hermesceleste.network
 
 import dev.hazydreams.hermesceleste.attachments.MessageAttachment
+import dev.hazydreams.hermesceleste.attachments.AttachmentValidator
+import dev.hazydreams.hermesceleste.attachments.MAX_ATTACHMENT_BYTES
 import dev.hazydreams.hermesceleste.attachments.messageAttachmentFromReference
 import dev.hazydreams.hermesceleste.attachments.normalizeImageReferences
 import java.io.IOException
+import java.util.Base64
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.coroutines.resume
@@ -137,11 +140,7 @@ interface DashboardService {
         credential: GatewayCredential,
     ): List<DashboardProfile>
 
-    /**
-     * Profile-scoped preview seam. The current Hermes source exposes no
-     * authenticated media route for @image refs, so callers get a safe
-     * unavailable result instead of being handed a raw filesystem URL.
-     */
+    /** Authenticated, profile-scoped preview seam; implementations return bytes only. */
     suspend fun readImageMedia(
         baseUrl: String,
         credential: GatewayCredential,
@@ -382,6 +381,56 @@ class DashboardClient(
         val profiles = rows.map(::decodeProfile).distinctBy(DashboardProfile::name)
         if (profiles.any(DashboardProfile::isDefault)) profiles
         else listOf(DashboardProfile(name = "default", isDefault = true)) + profiles
+    }
+
+    override suspend fun readImageMedia(
+        baseUrl: String,
+        credential: GatewayCredential,
+        profileId: String,
+        serverReference: String,
+    ): ByteArray = withContext(Dispatchers.IO) {
+        require(profileId.isNotBlank()) { "A Hermes profile is required for image previews." }
+        val reference = serverReference.trim()
+        require(reference.isNotBlank()) { "An image reference is required." }
+        require(!reference.contains("\u0000") && !reference.contains("://")) {
+            "The image reference does not belong to this dashboard."
+        }
+        require(reference.split('/').none { it == ".." }) {
+            "The image reference does not belong to this dashboard."
+        }
+        val url = DashboardUrlPolicy.normalize(baseUrl).let { normalized ->
+            normalized.toHttpUrl().newBuilder()
+                .addPathSegment("api")
+                .addPathSegment("files")
+                .addPathSegment("read")
+                .addQueryParameter("path", reference)
+                .addQueryParameter("profile", profileId)
+                .build()
+        }
+        val request = Request.Builder()
+            .url(url)
+            .header("Accept", "application/json")
+            .apply {
+                if (credential is GatewayCredential.StaticToken) {
+                    header("X-Hermes-Session-Token", credential.value.trim())
+                }
+            }
+            .get()
+            .build()
+        val root = executeJson(request, "Hermes image preview") as? JsonObject
+            ?: throw InvalidDashboardResponse("Hermes image preview returned an unexpected response.")
+        val dataUrl = root["data_url"]?.jsonPrimitive?.contentOrNull
+            ?.takeIf { it.startsWith("data:image/", ignoreCase = true) && ";base64," in it }
+            ?: throw InvalidDashboardResponse("Hermes image preview returned no image data.")
+        val encoded = dataUrl.substringAfter(',', missingDelimiterValue = "")
+        val bytes = runCatching { Base64.getDecoder().decode(encoded) }
+            .getOrElse { throw InvalidDashboardResponse("Hermes image preview returned invalid image data.", it) }
+        if (bytes.isEmpty() || bytes.size.toLong() > MAX_ATTACHMENT_BYTES) {
+            throw InvalidDashboardResponse("Hermes image preview exceeded the client image limit.")
+        }
+        runCatching { AttachmentValidator.validate(bytes, displayName = "transcript-image") }
+            .getOrElse { throw AttachmentMediaUnavailable() }
+        bytes
     }
 
     override suspend fun logout(baseUrl: String) = withContext(Dispatchers.IO) {

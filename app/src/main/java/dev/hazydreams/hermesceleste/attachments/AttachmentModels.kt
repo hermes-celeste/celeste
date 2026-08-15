@@ -4,6 +4,7 @@ import java.util.UUID
 
 const val MAX_PENDING_ATTACHMENTS = 4
 const val MAX_ATTACHMENT_BYTES = 24L * 1024L * 1024L
+const val MAX_ATTACHMENT_RETRIES = 3
 
 enum class AttachmentSource {
     PhotoPicker,
@@ -30,6 +31,12 @@ enum class AttachmentCapabilityState {
     Unsupported,
     TransientFailure,
     AuthRequired,
+}
+
+enum class ImageOnlyCapabilityState {
+    Unknown,
+    Supported,
+    Unsupported,
 }
 
 enum class AttachmentErrorKind(
@@ -97,6 +104,7 @@ data class MessageAttachment(
     val byteSize: Long,
     val serverReference: String?,
     val preview: AttachmentPreviewState,
+    val previewBytes: ByteArray? = null,
 )
 
 data class ComposerDraft(

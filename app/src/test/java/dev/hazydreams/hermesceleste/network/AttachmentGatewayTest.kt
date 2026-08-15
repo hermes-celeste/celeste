@@ -2,6 +2,8 @@ package dev.hazydreams.hermesceleste.network
 
 import java.io.IOException
 import java.util.Base64
+import dev.hazydreams.hermesceleste.attachments.AttachmentCapabilityState
+import dev.hazydreams.hermesceleste.attachments.ImageOnlyCapabilityState
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.runBlocking
@@ -63,6 +65,34 @@ class AttachmentGatewayTest {
             AttachmentFailureClass.Definitive,
             classifyAttachmentFailure(GatewayRpcException(4018, "image too large")),
         )
+    }
+
+    @Test
+    fun onlyExplicitNestedCapabilityAdvertisementCanEnableImageOnlySending() {
+        val unknown = decodeAttachmentCapability(
+            buildJsonObject { put("supports_empty_caption", true) },
+        )
+        assertEquals(AttachmentCapabilityState.Unknown, unknown.upload)
+        assertEquals(ImageOnlyCapabilityState.Unknown, unknown.imageOnly)
+
+        val advertised = decodeAttachmentCapability(
+            buildJsonObject {
+                put(
+                    "capabilities",
+                    buildJsonObject {
+                        put(
+                            "attachments",
+                            buildJsonObject {
+                                put("supported", true)
+                                put("image_only", true)
+                            },
+                        )
+                    },
+                )
+            },
+        )
+        assertEquals(AttachmentCapabilityState.Supported, advertised.upload)
+        assertEquals(ImageOnlyCapabilityState.Supported, advertised.imageOnly)
     }
 
     @Test

@@ -129,13 +129,13 @@ class FileAttachmentStagingStore(
                 }
                 output.fd.sync()
             }
-            val header = FileInputStream(temporary).use { it.readNBytes(HEADER_BYTES) }
-            val validated = AttachmentValidator.validateMetadata(
-                byteSize = temporary.length(),
-                header = header,
-                declaredMimeType = declaredMimeType,
-                displayName = displayName,
-            )
+            val validated = FileInputStream(temporary).use {
+                AttachmentValidator.validate(
+                    input = it,
+                    declaredMimeType = declaredMimeType,
+                    displayName = displayName,
+                )
+            }
             Files.move(
                 temporary.toPath(),
                 destination.toPath(),
@@ -192,7 +192,6 @@ class FileAttachmentStagingStore(
 
     private companion object {
         const val COPY_BUFFER_SIZE = 16 * 1024
-        const val HEADER_BYTES = 64
         val LOCAL_ID_REGEX = Regex("[0-9a-fA-F-]{36}")
 
         fun createPreview(file: File): ByteArray? {
