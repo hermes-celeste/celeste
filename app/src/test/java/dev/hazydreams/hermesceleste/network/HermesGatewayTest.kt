@@ -23,6 +23,7 @@ import okhttp3.WebSocketListener
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -120,6 +121,47 @@ class HermesGatewayTest {
         gateway.close()
 
         assertFalse(gateway.supportsSessionChangeEvents)
+    }
+
+    @Test
+    fun unsupportedSessionListIsCachedWithoutClosingTheHealthyGateway() = runBlocking {
+        val requests = AtomicInteger(0)
+        server.enqueue(
+            MockResponse.Builder()
+                .webSocketUpgrade(
+                    object : WebSocketListener() {
+                        override fun onOpen(webSocket: WebSocket, response: Response) {
+                            webSocket.send(gatewayReadyFrame)
+                        }
+
+                        override fun onMessage(webSocket: WebSocket, text: String) {
+                            val request = Json.parseToJsonElement(text).jsonObject
+                            if (request["method"]?.jsonPrimitive?.content == "session.list") {
+                                requests.incrementAndGet()
+                                webSocket.send(
+                                    """{"jsonrpc":"2.0","id":${request["id"]},"error":{"code":-32601,"message":"method unavailable"}}""",
+                                )
+                            }
+                        }
+                    },
+                )
+                .build(),
+        )
+
+        val gateway = gateway()
+        gateway.connect()
+
+        assertThrows(UnsupportedGatewaySessionList::class.java) {
+            runBlocking { gateway.listStoredSessionPage() }
+        }
+        assertThrows(UnsupportedGatewaySessionList::class.java) {
+            runBlocking { gateway.listStoredSessionPage() }
+        }
+
+        assertEquals(1, requests.get())
+        assertEquals(GatewayConnectionState.Connected, gateway.state.value)
+        assertEquals(GatewaySessionListCapability.UNSUPPORTED, gateway.sessionListCapability)
+        gateway.close()
     }
 
     @Test

@@ -21,6 +21,11 @@ data class CreatedSession(
     val profile: String?,
 )
 
+class UnsupportedGatewaySessionList(
+    message: String = "Hermes does not support conversation listing on this Gateway generation.",
+    cause: Throwable? = null,
+) : IOException(message, cause)
+
 suspend fun GatewayConnection.createSession(profile: String): CreatedSession {
     val selectedProfile = profile.trim().ifEmpty { "default" }
     val result = request(
@@ -87,16 +92,25 @@ suspend fun GatewayConnection.listStoredSessionPage(
     limit: Int = 200,
 ): SessionListPage {
     val boundedLimit = limit.coerceIn(1, 200)
-    val result = request(
-        method = "session.list",
-        params = buildJsonObject {
-            put("limit", boundedLimit)
-            if (profile.isNotBlank() && !profile.equals("all", ignoreCase = true)) {
-                put("profile", profile)
-            }
-        },
-        timeoutMillis = 8_000,
-    ).asObject("Hermes returned no session list.")
+    if (sessionListCapability == GatewaySessionListCapability.UNSUPPORTED) {
+        throw UnsupportedGatewaySessionList()
+    }
+    val result = try {
+        request(
+            method = "session.list",
+            params = buildJsonObject {
+                put("limit", boundedLimit)
+                if (profile.isNotBlank() && !profile.equals("all", ignoreCase = true)) {
+                    put("profile", profile)
+                }
+            },
+            timeoutMillis = 8_000,
+        ).asObject("Hermes returned no session list.")
+    } catch (error: GatewayRpcException) {
+        if (error.code != -32601) throw error
+        updateSessionListCapability(GatewaySessionListCapability.UNSUPPORTED)
+        throw UnsupportedGatewaySessionList(cause = error)
+    }
     val rows = result["sessions"] as? JsonArray
         ?: throw IOException("Hermes returned no session list.")
     val sessions = rows.mapNotNull { element ->
@@ -115,6 +129,7 @@ suspend fun GatewayConnection.listStoredSessionPage(
             SessionOrdering.SERVER_ORDER
         },
     )
+        .also { updateSessionListCapability(GatewaySessionListCapability.SUPPORTED) }
 }
 
 suspend fun GatewayConnection.submitPrompt(runtimeSessionId: String, text: String): JsonObject {

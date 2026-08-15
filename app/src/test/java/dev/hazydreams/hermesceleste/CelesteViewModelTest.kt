@@ -15,6 +15,7 @@ import dev.hazydreams.hermesceleste.network.GatewayConnectionState
 import dev.hazydreams.hermesceleste.network.GatewayCredential
 import dev.hazydreams.hermesceleste.network.GatewayEvent
 import dev.hazydreams.hermesceleste.network.SessionListPage
+import dev.hazydreams.hermesceleste.network.SessionListCompatibilityFailure
 import dev.hazydreams.hermesceleste.network.SessionOrdering
 import dev.hazydreams.hermesceleste.network.StoredSession
 import kotlinx.coroutines.CompletableDeferred
@@ -381,6 +382,32 @@ class CelesteViewModelTest {
     }
 
     @Test
+    fun invalidationArrivingDuringRefreshSchedulesOneFollowUpGeneration() = runTest {
+        val gateway = FakeGateway()
+        val dashboard = FakeDashboard(gateway)
+        val viewModel = openConversation(gateway, dashboard)
+        advanceUntilIdle()
+        val callsBefore = dashboard.listPageCalls
+        val gate = CompletableDeferred<SessionListPage>()
+        dashboard.listPageGate = gate
+
+        viewModel.onForeground()
+        runCurrent()
+        assertEquals(callsBefore + 1, dashboard.listPageCalls)
+
+        gateway.emit("sessions.changed")
+        advanceTimeBy(500)
+        runCurrent()
+        assertEquals(callsBefore + 1, dashboard.listPageCalls)
+
+        gate.complete(SessionListPage(sessions = listOf(dashboard.session), ordering = SessionOrdering.SERVER_ORDER))
+        advanceUntilIdle()
+
+        assertEquals(callsBefore + 2, dashboard.listPageCalls)
+        viewModel.leaveConversation()
+    }
+
+    @Test
     fun visibleConversationListPollsAndBackgroundStopsThePoll() = runTest {
         val gateway = FakeGateway()
         val dashboard = FakeDashboard(gateway)
@@ -443,7 +470,7 @@ class CelesteViewModelTest {
     }
 
     @Test
-    fun foregroundHealthCheckReplacesAStaleSocketAndResumes() = runTest {
+    fun foregroundRefreshUsesResumeHealthCheckInsteadOfGatewaySessionList() = runTest {
         val gateway = FakeGateway()
         val viewModel = openConversation(gateway)
         gateway.failHealthCheck = true
@@ -451,30 +478,49 @@ class CelesteViewModelTest {
         viewModel.onForeground()
         advanceUntilIdle()
 
-        assertEquals(2, gateway.connectCount)
-        assertEquals(1, gateway.methods.count { it == "session.list" })
+        assertEquals(1, gateway.connectCount)
+        assertEquals(0, gateway.methods.count { it == "session.list" })
         assertEquals(2, gateway.methods.count { it == "session.resume" })
         assertEquals(TurnState.Idle, viewModel.state.value.turnState)
         viewModel.leaveConversation()
     }
 
     @Test
-    fun foregroundHealthCheckReconcilesTheTypedGatewayListWhenRestRefreshFails() = runTest {
+    fun transientRestRefreshRetainsRowsAndErrorWithoutUsingGatewayList() = runTest {
         val gateway = FakeGateway()
         val dashboard = FakeDashboard(gateway)
         val viewModel = openConversation(gateway, dashboard)
         advanceUntilIdle()
 
         dashboard.listPageFailure = IOException("REST temporarily unavailable")
+
+        viewModel.onForeground()
+        advanceUntilIdle()
+
+        assertEquals("Shared conversation", viewModel.state.value.sessions?.single()?.title)
+        assertEquals("REST temporarily unavailable", viewModel.state.value.errorMessage)
+        assertEquals(0, gateway.methods.count { it == "session.list" })
+        viewModel.leaveConversation()
+    }
+
+    @Test
+    fun onlyPermanentListCompatibilityUsesTheGatewayFallbackPage() = runTest {
+        val gateway = FakeGateway()
+        val dashboard = FakeDashboard(gateway)
+        val viewModel = openConversation(gateway, dashboard)
+        advanceUntilIdle()
+
+        dashboard.listPageFailure = SessionListCompatibilityFailure("legacy list only")
         gateway.sessionListPayload = Json.parseToJsonElement(
-            """{"sessions":[{"id":"stored-42","title":"Gateway refresh","started_at":1,"last_active":200,"message_count":3,"source":"desktop","profile":"default"}]}""",
+            """{"sessions":[{"id":"stored-42","title":"Gateway fallback","started_at":1,"last_active":200,"message_count":3,"source":"desktop","profile":"default"}]}""",
         ) as JsonObject
 
         viewModel.onForeground()
         advanceUntilIdle()
 
-        assertEquals("Gateway refresh", viewModel.state.value.sessions?.single()?.title)
+        assertEquals("Gateway fallback", viewModel.state.value.sessions?.single()?.title)
         assertEquals(1, gateway.methods.count { it == "session.list" })
+        assertEquals(TurnState.Idle, viewModel.state.value.turnState)
         viewModel.leaveConversation()
     }
 
@@ -502,6 +548,39 @@ class CelesteViewModelTest {
 
         assertEquals(1L, viewModel.state.value.sessionRefreshAnnouncementToken)
         assertEquals("Updated in list", viewModel.state.value.sessions?.single()?.title)
+    }
+
+    @Test
+    fun heartbeatOnlyRefreshDoesNotAnnounceAndDestinationChangeConsumesEvents() = runTest {
+        val gateway = FakeGateway()
+        val dashboard = FakeDashboard(gateway)
+        val viewModel = openConversation(gateway, dashboard)
+        advanceUntilIdle()
+
+        dashboard.sessionPage = SessionListPage(
+            sessions = listOf(dashboard.session.copy(lastActive = 2.0)),
+            ordering = SessionOrdering.AUTHORITATIVE_RECENCY,
+        )
+        viewModel.leaveConversation()
+        advanceUntilIdle()
+        assertEquals(0L, viewModel.state.value.sessionRefreshAnnouncementToken)
+
+        dashboard.sessionPage = dashboard.sessionPage?.copy(
+            sessions = listOf(dashboard.session.copy(lastActive = 3.0)),
+        )
+        viewModel.setConversationsDestinationVisible(true)
+        advanceUntilIdle()
+        assertEquals(0L, viewModel.state.value.sessionRefreshAnnouncementToken)
+
+        dashboard.sessionPage = dashboard.sessionPage?.copy(
+            sessions = listOf(dashboard.session.copy(title = "Meaningful update", lastActive = 4.0)),
+        )
+        viewModel.setConversationsDestinationVisible(true)
+        advanceUntilIdle()
+        assertEquals(1L, viewModel.state.value.sessionRefreshAnnouncementToken)
+
+        viewModel.setConversationsDestinationVisible(false)
+        assertEquals(0L, viewModel.state.value.sessionRefreshAnnouncementToken)
     }
 
     @Test

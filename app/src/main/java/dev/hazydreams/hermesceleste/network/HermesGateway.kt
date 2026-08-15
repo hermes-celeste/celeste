@@ -47,6 +47,12 @@ class GatewayRpcException(
     message: String,
 ) : IOException(message)
 
+enum class GatewaySessionListCapability {
+    UNKNOWN,
+    SUPPORTED,
+    UNSUPPORTED,
+}
+
 interface GatewayConnection {
     val state: StateFlow<GatewayConnectionState>
     val events: SharedFlow<GatewayEvent>
@@ -54,6 +60,13 @@ interface GatewayConnection {
     /** True only when gateway.ready advertised the optional invalidation event. */
     val supportsSessionChangeEvents: Boolean
         get() = false
+
+    /** Capability is scoped to this Gateway connection generation. */
+    val sessionListCapability: GatewaySessionListCapability
+        get() = GatewaySessionListCapability.UNKNOWN
+
+    /** Transport implementations may cache a method-not-found result per generation. */
+    fun updateSessionListCapability(capability: GatewaySessionListCapability) = Unit
 
     suspend fun connect()
 
@@ -96,16 +109,26 @@ class HermesGateway(
     @Volatile
     private var sessionChangeEventsSupported = false
 
+    @Volatile
+    private var mutableSessionListCapability = GatewaySessionListCapability.UNKNOWN
+
     override val state: StateFlow<GatewayConnectionState> = mutableState
     override val events: SharedFlow<GatewayEvent> = mutableEvents
     override val supportsSessionChangeEvents: Boolean
         get() = sessionChangeEventsSupported
+    override val sessionListCapability: GatewaySessionListCapability
+        get() = mutableSessionListCapability
+
+    override fun updateSessionListCapability(capability: GatewaySessionListCapability) {
+        mutableSessionListCapability = capability
+    }
 
     override suspend fun connect(): Unit = connectMutex.withLock {
         if (mutableState.value == GatewayConnectionState.Connected && socket != null) return
 
         intentionalClose = false
         sessionChangeEventsSupported = false
+        mutableSessionListCapability = GatewaySessionListCapability.UNKNOWN
         socket?.cancel()
         socket = null
         failPending(IOException("Hermes connection was replaced."))
@@ -235,6 +258,7 @@ class HermesGateway(
     override fun close() {
         intentionalClose = true
         sessionChangeEventsSupported = false
+        mutableSessionListCapability = GatewaySessionListCapability.UNKNOWN
         socketGeneration.incrementAndGet()
         val active = socket
         socket = null
@@ -282,6 +306,7 @@ class HermesGateway(
     ) {
         socket = null
         sessionChangeEventsSupported = false
+        mutableSessionListCapability = GatewaySessionListCapability.UNKNOWN
         if (!intentionalClose) mutableState.value = GatewayConnectionState.Disconnected(reason)
         if (!opened.isCompleted) opened.completeExceptionally(error)
         failPending(error)

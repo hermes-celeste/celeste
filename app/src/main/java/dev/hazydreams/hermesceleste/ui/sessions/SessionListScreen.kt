@@ -76,6 +76,16 @@ internal fun sessionRowKey(session: StoredSession): String =
 internal fun shouldReduceMotion(animationDurationScale: Float): Boolean =
     !animationDurationScale.isFinite() || animationDurationScale <= 0f
 
+internal fun focusedRowKeyAfterFocusChange(
+    currentKey: String?,
+    rowKey: String,
+    isFocused: Boolean,
+): String? = when {
+    isFocused -> rowKey
+    currentKey == rowKey -> null
+    else -> currentKey
+}
+
 @Composable
 private fun rememberReducedMotion(): Boolean {
     val context = LocalContext.current
@@ -149,7 +159,7 @@ internal fun SessionListScreen(
             }
         }
 
-        val focusedKey = focusedRowKey
+        val focusedKey = focusedRowKey?.takeIf { key -> previousKeys?.contains(key) == true }
         val focusedIndex = focusedKey?.let(rowKeys::indexOf) ?: -1
         if (focusedIndex >= 0) {
             if (listState.layoutInfo.visibleItemsInfo.none { it.index == focusedIndex }) {
@@ -288,7 +298,11 @@ internal fun SessionListScreen(
                             .focusRequester(focusRequester)
                             .focusable()
                             .onFocusChanged { focusState ->
-                                if (focusState.isFocused) focusedRowKey = rowKey
+                                focusedRowKey = focusedRowKeyAfterFocusChange(
+                                    currentKey = focusedRowKey,
+                                    rowKey = rowKey,
+                                    isFocused = focusState.isFocused,
+                                )
                             }
                             .semantics(mergeDescendants = true) {
                                 contentDescription = accessibleLabel

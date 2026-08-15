@@ -221,9 +221,10 @@ class DashboardClientTest {
         server.enqueue(MockResponse.Builder().code(404).build())
         server.enqueue(rpcErrorWebSocket(code = -32601))
 
-        assertThrows(InvalidDashboardResponse::class.java) {
+        val firstFailure = runCatching {
             runBlocking { client.listSessionPage(baseUrl, GatewayCredential.None) }
-        }
+        }.exceptionOrNull()
+        assertTrue(firstFailure is SessionListCompatibilityFailure)
         assertThrows(InvalidDashboardResponse::class.java) {
             runBlocking { client.listSessionPage(baseUrl, GatewayCredential.None) }
         }

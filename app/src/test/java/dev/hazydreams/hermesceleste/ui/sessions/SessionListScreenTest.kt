@@ -70,6 +70,16 @@ class SessionListScreenTest {
         assertTrue(shouldReduceMotion(Float.NaN))
     }
 
+    @Test
+    fun focusLossClearsOnlyTheRowThatWasTracked() {
+        val focused = sessionRowKey(session("focused"))
+        val other = sessionRowKey(session("other"))
+
+        assertEquals(null, focusedRowKeyAfterFocusChange(focused, focused, isFocused = false))
+        assertEquals(other, focusedRowKeyAfterFocusChange(other, focused, isFocused = false))
+        assertEquals(focused, focusedRowKeyAfterFocusChange(other, focused, isFocused = true))
+    }
+
     private fun session(
         id: String,
         title: String = id,

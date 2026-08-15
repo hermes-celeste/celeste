@@ -184,7 +184,17 @@ class TransportUnavailable(
     internal val statusCode: Int? = null,
 ) : DashboardFailure(message, cause)
 
-class InvalidDashboardResponse(message: String, cause: Throwable? = null) : DashboardFailure(message, cause)
+open class InvalidDashboardResponse(message: String, cause: Throwable? = null) : DashboardFailure(message, cause)
+
+/**
+ * Both bounded conversation-list protocols are unavailable for this
+ * authentication generation. This is a compatibility result, not a
+ * transient dashboard failure.
+ */
+class SessionListCompatibilityFailure(
+    message: String,
+    cause: Throwable? = null,
+) : InvalidDashboardResponse(message, cause)
 
 class DashboardRpcException(
     val code: Int?,
@@ -317,6 +327,7 @@ class DashboardClient(
     private val capabilityGeneration = AtomicLong(0L)
     private val restSessionListUnsupportedGenerations = ConcurrentHashMap<String, Long>()
     private val rpcSessionListUnsupportedGenerations = ConcurrentHashMap<String, Long>()
+    private val capabilityLock = Any()
 
     override suspend fun probe(rawBaseUrl: String): DashboardProbeResult = withContext(Dispatchers.IO) {
         val baseUrl = DashboardUrlPolicy.normalize(rawBaseUrl)
@@ -373,7 +384,8 @@ class DashboardClient(
         limit: Int,
     ): List<StoredSession> {
         val normalizedBaseUrl = DashboardUrlPolicy.normalize(baseUrl)
-        if (isRpcSessionListUnsupported(normalizedBaseUrl)) {
+        val requestCapabilityGeneration = capabilityGenerationSnapshot()
+        if (isRpcSessionListUnsupported(normalizedBaseUrl, requestCapabilityGeneration)) {
             throw incompatibleSessionListFailure()
         }
         val authParameter = resolveWebSocketCredential(normalizedBaseUrl, credential)
@@ -382,7 +394,7 @@ class DashboardClient(
             withTimeout(15_000) { requestSessionList(wsUrl, limit.coerceIn(1, 500)) }
         } catch (error: DashboardRpcException) {
             if (error.code != -32601) throw error
-            invalidateRpcSessionList(normalizedBaseUrl)
+            invalidateRpcSessionList(normalizedBaseUrl, requestCapabilityGeneration)
             throw incompatibleSessionListFailure(error)
         }
     }
@@ -397,7 +409,8 @@ class DashboardClient(
         val normalizedBaseUrl = DashboardUrlPolicy.normalize(baseUrl)
         val boundedLimit = limit.coerceIn(1, 200)
         val boundedOffset = offset.coerceAtLeast(0)
-        if (!isRestSessionListUnsupported(normalizedBaseUrl)) {
+        val requestCapabilityGeneration = capabilityGenerationSnapshot()
+        if (!isRestSessionListUnsupported(normalizedBaseUrl, requestCapabilityGeneration)) {
             try {
                 return withContext(Dispatchers.IO) {
                     requestRestSessionPage(
@@ -410,13 +423,13 @@ class DashboardClient(
                 }
             } catch (error: TransportUnavailable) {
                 if (error.statusCode != 404 && error.statusCode != 405) throw error
-                invalidateRestSessionList(normalizedBaseUrl)
+                invalidateRestSessionList(normalizedBaseUrl, requestCapabilityGeneration)
             } catch (_: UnsupportedSessionListCapability) {
-                invalidateRestSessionList(normalizedBaseUrl)
+                invalidateRestSessionList(normalizedBaseUrl, requestCapabilityGeneration)
             }
         }
 
-        if (isRpcSessionListUnsupported(normalizedBaseUrl)) {
+        if (isRpcSessionListUnsupported(normalizedBaseUrl, requestCapabilityGeneration)) {
             throw incompatibleSessionListFailure()
         }
         return try {
@@ -435,7 +448,7 @@ class DashboardClient(
             }
         } catch (error: DashboardRpcException) {
             if (error.code != -32601) throw error
-            invalidateRpcSessionList(normalizedBaseUrl)
+            invalidateRpcSessionList(normalizedBaseUrl, requestCapabilityGeneration)
             throw incompatibleSessionListFailure(error)
         }
     }
@@ -511,27 +524,48 @@ class DashboardClient(
     }
 
     private fun resetCapabilityGeneration() {
-        restSessionListUnsupportedGenerations.clear()
-        rpcSessionListUnsupportedGenerations.clear()
-        capabilityGeneration.incrementAndGet()
+        synchronized(capabilityLock) {
+            restSessionListUnsupportedGenerations.clear()
+            rpcSessionListUnsupportedGenerations.clear()
+            capabilityGeneration.incrementAndGet()
+        }
     }
 
-    private fun isRestSessionListUnsupported(origin: String): Boolean =
-        restSessionListUnsupportedGenerations[origin] == capabilityGeneration.get()
-
-    private fun isRpcSessionListUnsupported(origin: String): Boolean =
-        rpcSessionListUnsupportedGenerations[origin] == capabilityGeneration.get()
-
-    private fun invalidateRestSessionList(origin: String) {
-        restSessionListUnsupportedGenerations[origin] = capabilityGeneration.get()
+    /** Capture once at request start; an old request must not write into a new auth generation. */
+    private fun capabilityGenerationSnapshot(): Long = synchronized(capabilityLock) {
+        capabilityGeneration.get()
     }
 
-    private fun invalidateRpcSessionList(origin: String) {
-        rpcSessionListUnsupportedGenerations[origin] = capabilityGeneration.get()
+    private fun isRestSessionListUnsupported(origin: String, generation: Long): Boolean =
+        synchronized(capabilityLock) {
+            capabilityGeneration.get() == generation &&
+                restSessionListUnsupportedGenerations[origin] == generation
+        }
+
+    private fun isRpcSessionListUnsupported(origin: String, generation: Long): Boolean =
+        synchronized(capabilityLock) {
+            capabilityGeneration.get() == generation &&
+                rpcSessionListUnsupportedGenerations[origin] == generation
+        }
+
+    private fun invalidateRestSessionList(origin: String, generation: Long) {
+        synchronized(capabilityLock) {
+            if (capabilityGeneration.get() == generation) {
+                restSessionListUnsupportedGenerations[origin] = generation
+            }
+        }
+    }
+
+    private fun invalidateRpcSessionList(origin: String, generation: Long) {
+        synchronized(capabilityLock) {
+            if (capabilityGeneration.get() == generation) {
+                rpcSessionListUnsupportedGenerations[origin] = generation
+            }
+        }
     }
 
     private fun incompatibleSessionListFailure(cause: Throwable? = null): InvalidDashboardResponse =
-        InvalidDashboardResponse(
+        SessionListCompatibilityFailure(
             "Hermes does not provide a compatible conversation list.",
             cause,
         )

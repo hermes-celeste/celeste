@@ -28,8 +28,10 @@ import dev.hazydreams.hermesceleste.network.PendingLocalActivity
 import dev.hazydreams.hermesceleste.network.ResumedSession
 import dev.hazydreams.hermesceleste.network.SessionIdentity
 import dev.hazydreams.hermesceleste.network.SessionListPage
+import dev.hazydreams.hermesceleste.network.SessionListCompatibilityFailure
 import dev.hazydreams.hermesceleste.network.SessionOrdering
 import dev.hazydreams.hermesceleste.network.StoredSession
+import dev.hazydreams.hermesceleste.network.UnsupportedGatewaySessionList
 import dev.hazydreams.hermesceleste.network.boolean
 import dev.hazydreams.hermesceleste.network.createSession
 import dev.hazydreams.hermesceleste.network.deduplicateSessions
@@ -113,6 +115,38 @@ private data class LocalActivityOperation(
     val contextGeneration: Long,
 )
 
+private data class SessionRefreshToken(
+    val requestGeneration: Long,
+    val contextGeneration: Long,
+    val connectionAttempt: Long,
+    val origin: String,
+    val profile: String,
+)
+
+private sealed interface SessionRefreshOutcome {
+    data class Success(
+        val token: SessionRefreshToken,
+        val changed: Boolean,
+    ) : SessionRefreshOutcome
+
+    data class PermanentCompatibility(
+        val token: SessionRefreshToken,
+        val error: SessionListCompatibilityFailure,
+    ) : SessionRefreshOutcome
+
+    data class TransientFailure(
+        val token: SessionRefreshToken,
+        val error: Throwable,
+    ) : SessionRefreshOutcome
+
+    data class AuthenticationFailure(
+        val token: SessionRefreshToken,
+        val error: AuthenticationRejected,
+    ) : SessionRefreshOutcome
+
+    data object Stale : SessionRefreshOutcome
+}
+
 internal class CelesteViewModel(
     private val dashboard: DashboardService = DashboardClient(),
     private val connectionStore: ConnectionStore = InMemoryConnectionStore(),
@@ -134,6 +168,9 @@ internal class CelesteViewModel(
     private var sessionRefreshJob: Job? = null
     private var sessionInvalidationJob: Job? = null
     private var sessionPollJob: Job? = null
+    private var sessionRefreshInFlight = false
+    private var sessionRefreshPending = false
+    private var pendingSessionRefreshProfile: String? = null
     private var connectionJob: Job? = null
     private var connectionAttempt = 0L
     private var sessionRefreshGeneration = 0L
@@ -617,6 +654,7 @@ internal class CelesteViewModel(
             errorMessage = errorMessage ?: loaded.sessionPage.errors
                 .takeIf { it.isNotEmpty() }
                 ?.let { "Some Hermes profiles could not refresh." },
+            sessionRefreshAnnouncementToken = 0L,
         )
         sessionListScopeProfile = "all"
         startSessionPollingIfNeeded()
@@ -654,6 +692,8 @@ internal class CelesteViewModel(
         sessionInvalidationJob = null
         sessionPollJob?.cancel()
         sessionPollJob = null
+        sessionRefreshPending = false
+        pendingSessionRefreshProfile = null
     }
 
     private fun beginSessionContextChange() {
@@ -662,6 +702,7 @@ internal class CelesteViewModel(
         cancelSessionListWork()
         sessionListOrdering = SessionOrdering.SERVER_ORDER
         pendingLocalActivity.clear()
+        mutableState.value = mutableState.value.copy(sessionRefreshAnnouncementToken = 0L)
     }
 
     fun openSession(summary: StoredSession) {
@@ -679,6 +720,7 @@ internal class CelesteViewModel(
             turnState = TurnState.Synchronizing,
             loadingMessage = "Opening ${summary.title.ifBlank { "conversation" }}…",
             errorMessage = null,
+            sessionRefreshAnnouncementToken = 0L,
         )
 
         val newGateway = dashboard.createGateway(connection.baseUrl, activeCredential)
@@ -719,6 +761,7 @@ internal class CelesteViewModel(
             turnState = TurnState.Synchronizing,
             loadingMessage = "Starting a new $selectedProfile conversation…",
             errorMessage = null,
+            sessionRefreshAnnouncementToken = 0L,
         )
 
         val newGateway = dashboard.createGateway(connection.baseUrl, activeCredential)
@@ -797,6 +840,9 @@ internal class CelesteViewModel(
     fun setConversationsDestinationVisible(visible: Boolean) {
         destinationVisibilityReported = true
         conversationsDestinationVisible = visible
+        if (!visible && mutableState.value.sessionRefreshAnnouncementToken != 0L) {
+            mutableState.value = mutableState.value.copy(sessionRefreshAnnouncementToken = 0L)
+        }
         if (visible && appInForeground && mutableState.value.activeSummary == null) {
             scheduleSessionRefresh(profile = sessionListScopeProfile)
             startSessionPollingIfNeeded()
@@ -958,6 +1004,9 @@ internal class CelesteViewModel(
         foregroundCheckJob?.cancel()
         foregroundCheckJob = null
         cancelSessionListWork()
+        if (mutableState.value.sessionRefreshAnnouncementToken != 0L) {
+            mutableState.value = mutableState.value.copy(sessionRefreshAnnouncementToken = 0L)
+        }
         val descriptor = currentDescriptor ?: return
         if (descriptor.authMode != SavedAuthMode.ProviderSession) return
         if (credential != GatewayCredential.CookieSession) return
@@ -999,42 +1048,70 @@ internal class CelesteViewModel(
             return
         }
         foregroundCheckJob = viewModelScope.launch {
-            val refresh = runCatching {
-                val restRefreshed = refreshSessionListNow(profile = sessionListScopeProfile)
-                if (gateway === activeGateway) {
-                    val gatewayPage = activeGateway.listStoredSessionPage(
-                        profile = sessionListScopeProfile,
-                        limit = SESSION_PAGE_LIMIT,
-                    )
-                    if (!restRefreshed && mutableState.value.sessions != null) {
-                        // REST remains the preferred source. If it was unavailable,
-                        // reconcile the typed gateway result instead of discarding it.
+            var outcome: SessionRefreshOutcome = SessionRefreshOutcome.Stale
+            var fallbackPublished = false
+            try {
+                outcome = refreshSessionListNow(profile = sessionListScopeProfile)
+                if (outcome is SessionRefreshOutcome.PermanentCompatibility && gateway === activeGateway) {
+                    val token = outcome.token
+                    val gatewayPage = try {
+                        activeGateway.listStoredSessionPage(
+                            profile = sessionListScopeProfile,
+                            limit = SESSION_PAGE_LIMIT,
+                        )
+                    } catch (error: CancellationException) {
+                        throw error
+                    } catch (_: UnsupportedGatewaySessionList) {
+                        null
+                    } catch (_: Throwable) {
+                        null
+                    }
+                    if (
+                        gatewayPage != null &&
+                        gateway === activeGateway &&
+                        isCurrentRefresh(token) &&
+                        mutableState.value.sessions != null
+                    ) {
                         publishSessionPage(
                             page = gatewayPage,
-                            origin = normalizeOrigin(mutableState.value.probe?.baseUrl.orEmpty()),
-                            profile = sessionListScopeProfile,
+                            origin = token.origin,
+                            profile = token.profile,
                             clearErrorOnSuccess = true,
                         )
-                    }
-                    if (currentSessionCanResume) {
-                        reconcile(activeGateway, storedSessionId)
+                        fallbackPublished = true
                     }
                 }
-            }
-            if (refresh.exceptionOrNull() is CancellationException) {
+                val refreshError = mutableState.value.errorMessage
+                if (gateway === activeGateway && currentSessionCanResume) {
+                    reconcile(activeGateway, storedSessionId)
+                }
+                if (
+                    gateway === activeGateway &&
+                    !fallbackPublished &&
+                    (outcome is SessionRefreshOutcome.TransientFailure ||
+                        outcome is SessionRefreshOutcome.PermanentCompatibility) &&
+                    refreshError != null
+                ) {
+                    // Resume reconciliation clears conversation errors, but a
+                    // list failure must remain visible until its own recovery.
+                    mutableState.value = mutableState.value.copy(errorMessage = refreshError)
+                }
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: Throwable) {
+                if (gateway === activeGateway) {
+                    val wasRunning = mutableState.value.turnState == TurnState.Running
+                    activeGateway.close()
+                    mutableState.value = mutableState.value.copy(
+                        turnState = TurnState.Reconnecting,
+                        errorMessage = error.message ?: "Reconnecting to Hermes…",
+                    )
+                    scheduleReconnect(wasRunning = wasRunning, immediate = true)
+                }
+            } finally {
+                finishSessionRefresh()
                 foregroundCheckJob = null
-                return@launch
             }
-            if (refresh.isFailure && gateway === activeGateway) {
-                val wasRunning = mutableState.value.turnState == TurnState.Running
-                activeGateway.close()
-                mutableState.value = mutableState.value.copy(
-                    turnState = TurnState.Reconnecting,
-                    errorMessage = refresh.exceptionOrNull()?.message ?: "Reconnecting to Hermes…",
-                )
-                scheduleReconnect(wasRunning = wasRunning, immediate = true)
-            }
-            foregroundCheckJob = null
         }
     }
 
@@ -1296,6 +1373,31 @@ internal class CelesteViewModel(
         )
     }
 
+    /**
+     * Activity timestamps are intentionally absent from this comparison: a
+     * heartbeat may update last_active without changing anything a user needs
+     * announced. Reordering, membership, and visible/server-owned row fields
+     * remain meaningful changes.
+     */
+    private fun hasMeaningfulSessionChange(
+        previous: List<StoredSession>,
+        current: List<StoredSession>,
+        origin: String,
+    ): Boolean {
+        if (previous.size != current.size) return true
+        if (previous.map { sessionIdentity(origin, it) } != current.map { sessionIdentity(origin, it) }) {
+            return true
+        }
+        return previous.zip(current).any { (before, after) ->
+            before.title != after.title ||
+                before.preview != after.preview ||
+                before.messageCount != after.messageCount ||
+                before.source != after.source ||
+                before.profile != after.profile ||
+                validEpochSeconds(before.startedAt) != validEpochSeconds(after.startedAt)
+        }
+    }
+
     private fun publishSessionPage(
         page: SessionListPage,
         origin: String,
@@ -1321,8 +1423,13 @@ internal class CelesteViewModel(
             } ?: summary
         }
         val changed = projected != current.sessions || updatedActive != active
+        val meaningfulChanged = hasMeaningfulSessionChange(
+            previous = current.sessions.orEmpty(),
+            current = projected,
+            origin = origin,
+        )
         val announcementToken = if (
-            announce && changed && conversationsDestinationVisible && appInForeground
+            announce && meaningfulChanged && conversationsDestinationVisible && appInForeground
         ) {
             current.sessionRefreshAnnouncementToken + 1
         } else {
@@ -1358,62 +1465,102 @@ internal class CelesteViewModel(
             }
             return
         }
-        if (sessionRefreshJob?.isActive == true) return
+        if (sessionRefreshJob?.isActive == true || sessionRefreshInFlight) {
+            sessionRefreshPending = true
+            pendingSessionRefreshProfile = profile
+            return
+        }
         sessionRefreshJob = viewModelScope.launch {
-            refreshSessionListNow(profile)
+            try {
+                refreshSessionListNow(profile)
+            } finally {
+                sessionRefreshJob = null
+                finishSessionRefresh()
+            }
         }
     }
 
-    private suspend fun refreshSessionListNow(profile: String): Boolean {
+    private fun finishSessionRefresh() {
+        if (!sessionRefreshPending) return
+        val profile = pendingSessionRefreshProfile ?: sessionListScopeProfile
+        sessionRefreshPending = false
+        pendingSessionRefreshProfile = null
+        sessionInvalidationJob?.cancel()
+        sessionInvalidationJob = null
+        scheduleSessionRefresh(profile = profile)
+    }
+
+    private fun isCurrentRefresh(token: SessionRefreshToken): Boolean {
+        val current = mutableState.value
+        return token.requestGeneration == sessionRefreshGeneration &&
+            token.contextGeneration == sessionContextGeneration &&
+            token.connectionAttempt == connectionAttempt &&
+            normalizeOrigin(current.probe?.baseUrl.orEmpty()) == token.origin &&
+            sessionListScopeProfile.equals(token.profile, ignoreCase = true)
+    }
+
+    private suspend fun refreshSessionListNow(profile: String): SessionRefreshOutcome {
         val snapshot = mutableState.value
-        val probe = snapshot.probe ?: return false
-        val activeCredential = credential ?: return false
+        val probe = snapshot.probe ?: return SessionRefreshOutcome.Stale
+        val activeCredential = credential ?: return SessionRefreshOutcome.Stale
         val origin = normalizeOrigin(probe.baseUrl)
         val requestedProfile = profile.trim().ifEmpty { "all" }
-        val requestGeneration = ++sessionRefreshGeneration
-        val contextGeneration = sessionContextGeneration
-        val attempt = connectionAttempt
-        val result: Result<SessionListPage> = try {
-            Result.success(
-                dashboard.listSessionPage(
-                    baseUrl = probe.baseUrl,
-                    credential = activeCredential,
-                    profile = requestedProfile,
-                    limit = SESSION_PAGE_LIMIT,
-                    offset = 0,
-                ),
-            )
-        } catch (error: CancellationException) {
-            throw error
-        } catch (error: Throwable) {
-            Result.failure(error)
-        }
-        val page = result.getOrNull()
-        val current = mutableState.value
-        val stillCurrent = requestGeneration == sessionRefreshGeneration &&
-            contextGeneration == sessionContextGeneration &&
-            attempt == connectionAttempt &&
-            normalizeOrigin(current.probe?.baseUrl.orEmpty()) == origin &&
-            sessionListScopeProfile.equals(requestedProfile, ignoreCase = true)
-        if (!stillCurrent) return false
-        if (page == null) {
-            val error = result.exceptionOrNull()
-            if (error is CancellationException) throw error
-            if (error is AuthenticationRejected) {
-                invalidateReusableAuthentication(currentDescriptor, current.probe)
-            } else {
-                mutableState.value = current.copy(
-                    errorMessage = error?.message ?: "Could not refresh Hermes conversations.",
-                )
-            }
-            return false
-        }
-        publishSessionPage(
-            page = page,
+        val token = SessionRefreshToken(
+            requestGeneration = ++sessionRefreshGeneration,
+            contextGeneration = sessionContextGeneration,
+            connectionAttempt = connectionAttempt,
             origin = origin,
             profile = requestedProfile,
         )
-        return true
+        sessionRefreshInFlight = true
+        try {
+            val result: Result<SessionListPage> = try {
+                Result.success(
+                    dashboard.listSessionPage(
+                        baseUrl = probe.baseUrl,
+                        credential = activeCredential,
+                        profile = requestedProfile,
+                        limit = SESSION_PAGE_LIMIT,
+                        offset = 0,
+                    ),
+                )
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: Throwable) {
+                Result.failure(error)
+            }
+            val page = result.getOrNull()
+            if (!isCurrentRefresh(token)) return SessionRefreshOutcome.Stale
+            if (page == null) {
+                val error = result.exceptionOrNull()
+                if (error is CancellationException) throw error
+                if (error is AuthenticationRejected) {
+                    invalidateReusableAuthentication(currentDescriptor, mutableState.value.probe)
+                    return SessionRefreshOutcome.AuthenticationFailure(token, error)
+                }
+                if (error is SessionListCompatibilityFailure) {
+                    mutableState.value = mutableState.value.copy(
+                        errorMessage = error.message ?: "Hermes does not provide a compatible conversation list.",
+                    )
+                    return SessionRefreshOutcome.PermanentCompatibility(token, error)
+                }
+                mutableState.value = mutableState.value.copy(
+                    errorMessage = error?.message ?: "Could not refresh Hermes conversations.",
+                )
+                return SessionRefreshOutcome.TransientFailure(
+                    token = token,
+                    error = error ?: IOException("Could not refresh Hermes conversations."),
+                )
+            }
+            val changed = publishSessionPage(
+                page = page,
+                origin = origin,
+                profile = requestedProfile,
+            )
+            return SessionRefreshOutcome.Success(token, changed)
+        } finally {
+            sessionRefreshInFlight = false
+        }
     }
 
     private fun startSessionPollingIfNeeded() {
