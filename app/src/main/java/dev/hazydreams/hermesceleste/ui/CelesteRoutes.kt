@@ -109,6 +109,7 @@ internal fun CelesteRoutes(ui: CelesteUiState, viewModel: CelesteViewModel) {
                 loadingMessage = ui.loadingMessage,
                 errorMessage = ui.errorMessage,
                 sessionRefreshAnnouncementToken = ui.sessionRefreshAnnouncementToken,
+                nowSeconds = System.currentTimeMillis() / 1000.0,
                 onProfileSelected = viewModel::selectProfile,
                 onNewConversation = viewModel::createNewConversation,
                 onSessionSelected = viewModel::openSession,

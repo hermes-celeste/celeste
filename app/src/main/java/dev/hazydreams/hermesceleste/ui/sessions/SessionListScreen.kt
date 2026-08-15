@@ -129,6 +129,7 @@ internal fun SessionListScreen(
     loadingMessage: String?,
     errorMessage: String?,
     sessionRefreshAnnouncementToken: Long = 0L,
+    nowSeconds: Double,
     onProfileSelected: (String) -> Unit,
     onNewConversation: () -> Unit,
     onSessionSelected: (StoredSession) -> Unit,
@@ -284,7 +285,6 @@ internal fun SessionListScreen(
                 ) { _, session ->
                     val rowKey = sessionRowKey(session)
                     val focusRequester = focusRequesters.getValue(rowKey)
-                    val nowSeconds = System.currentTimeMillis() / 1000.0
                     val activityLabel = relativeActivityLabel(
                         session = session,
                         nowSeconds = nowSeconds,

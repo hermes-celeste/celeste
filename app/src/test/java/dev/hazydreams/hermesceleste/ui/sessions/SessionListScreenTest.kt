@@ -2,6 +2,7 @@ package dev.hazydreams.hermesceleste.ui.sessions
 
 import dev.hazydreams.hermesceleste.network.DashboardProfile
 import dev.hazydreams.hermesceleste.network.StoredSession
+import dev.hazydreams.hermesceleste.network.relativeActivityLabel
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
@@ -30,6 +31,13 @@ class SessionListScreenTest {
         )
 
         assertEquals("Build plan. Active 1 hours ago. WORK profile. 4 messages", label)
+    }
+
+    @Test
+    fun activityCopyUsesTheInjectedPresentationTime() {
+        val session = session(id = "stable", lastActive = 1_000.0)
+
+        assertEquals("Active 1 hours ago", relativeActivityLabel(session, nowSeconds = 4_600.0))
     }
 
     @Test

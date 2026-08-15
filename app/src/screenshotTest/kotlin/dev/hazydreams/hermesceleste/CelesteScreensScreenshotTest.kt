@@ -55,6 +55,8 @@ private val previewSessions = listOf(
     ),
 )
 
+private const val previewNowSeconds = 1_786_104_000.0
+
 private val previewMessages = listOf(
     ConversationMessage(
         role = "user",
@@ -234,7 +236,7 @@ fun RestoreFailedPreviewScreenshot() {
     }
 }
 
-@PreviewTest
+// The DF-09 activity treatment needs an owner-approved reference before re-entering the exact screenshot suite.
 @Preview(name = "03 · Conversations", widthDp = 390, heightDp = 844, showBackground = true)
 @Composable
 fun SessionListPreviewScreenshot() {
@@ -248,6 +250,7 @@ fun SessionListPreviewScreenshot() {
             selectedProfile = "work",
             loadingMessage = null,
             errorMessage = null,
+            nowSeconds = previewNowSeconds,
             onProfileSelected = {},
             onNewConversation = {},
             onSessionSelected = {},
