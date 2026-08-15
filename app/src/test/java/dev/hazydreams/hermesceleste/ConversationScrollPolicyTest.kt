@@ -4,6 +4,7 @@ import dev.hazydreams.hermesceleste.ui.conversation.ConversationScrollPolicy
 import dev.hazydreams.hermesceleste.ui.conversation.ScrollCommand
 import dev.hazydreams.hermesceleste.ui.conversation.activeBottomOcclusionPx
 import dev.hazydreams.hermesceleste.ui.conversation.hasUsableViewportGeometry
+import dev.hazydreams.hermesceleste.ui.conversation.hasSettledViewportGeometry
 import dev.hazydreams.hermesceleste.ui.conversation.ScrollPolicyInput
 import dev.hazydreams.hermesceleste.ui.conversation.terminalBottomClearancePx
 import org.junit.Assert.assertEquals
@@ -46,6 +47,26 @@ class ConversationScrollPolicyTest {
         assertFalse(hasUsableViewportGeometry(0, 0, 400))
         assertFalse(hasUsableViewportGeometry(120, 400, 400))
         assertTrue(hasUsableViewportGeometry(120, 0, 400))
+    }
+
+    @Test
+    fun zeroOrStaleInsetKeepsOtherwiseUsableGeometryPending() {
+        assertFalse(
+            hasSettledViewportGeometry(
+                dockHeightPx = 120,
+                viewportStartOffsetPx = 0,
+                viewportEndOffsetPx = 400,
+                bottomInsetsSettled = false,
+            ),
+        )
+        assertTrue(
+            hasSettledViewportGeometry(
+                dockHeightPx = 120,
+                viewportStartOffsetPx = 0,
+                viewportEndOffsetPx = 400,
+                bottomInsetsSettled = true,
+            ),
+        )
     }
 
     @Test

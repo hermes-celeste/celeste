@@ -29,6 +29,23 @@ internal fun hasUsableViewportGeometry(
     viewportEndOffsetPx: Int,
 ): Boolean = dockHeightPx > 0 && viewportEndOffsetPx > viewportStartOffsetPx
 
+/**
+ * A stable-looking layout is not enough during an IME transition. Android can
+ * briefly report a zero or stale occlusion while the list has already produced
+ * usable bounds, so callers must keep the transition pending until the inset
+ * source reports a settled sample too.
+ */
+internal fun hasSettledViewportGeometry(
+    dockHeightPx: Int,
+    viewportStartOffsetPx: Int,
+    viewportEndOffsetPx: Int,
+    bottomInsetsSettled: Boolean,
+): Boolean = bottomInsetsSettled && hasUsableViewportGeometry(
+    dockHeightPx = dockHeightPx,
+    viewportStartOffsetPx = viewportStartOffsetPx,
+    viewportEndOffsetPx = viewportEndOffsetPx,
+)
+
 internal class ConversationScrollPolicy(
     private val nearBottomThresholdDp: Float = 40f,
 ) {

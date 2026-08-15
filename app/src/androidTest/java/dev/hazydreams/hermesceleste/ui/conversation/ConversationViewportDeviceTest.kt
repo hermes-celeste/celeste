@@ -6,6 +6,7 @@ import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.ui.test.assertHasScrollAction
+import androidx.compose.ui.test.assertDoesNotExist
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.getUnclippedBoundsInRoot
 import androidx.compose.ui.test.hasSetTextAction
@@ -13,6 +14,7 @@ import androidx.compose.ui.test.onNode
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performScrollToIndex
 import androidx.compose.ui.test.performTextInput
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.test.ext.junit.runners.AndroidJUnit4
@@ -154,6 +156,125 @@ class ConversationViewportDeviceTest {
         assertTerminalClearsDock()
     }
 
+    @Test
+    fun repeatedAndCancelledImeTransitionsRetryUntilInsetsSettle() {
+        updateContent {
+            setContentInsets(bottom = 320, settled = false)
+        }
+        updateContent {
+            setContentInsets(bottom = 0, settled = false)
+        }
+        updateContent {
+            setContentInsets(bottom = 48, settled = true)
+        }
+
+        composeRule.onNodeWithContentDescription("Message composer").assertIsDisplayed()
+        assertTerminalClearsDock()
+    }
+
+    @Test
+    fun streamingAndTallRowsFollowLatestButPreserveAHistoryReader() {
+        composeRule.onNodeWithContentDescription("Terminal transcript row").assertIsDisplayed()
+
+        updateContent {
+            setContentStreamingText(longStreamingText())
+        }
+        composeRule.onNodeWithContentDescription("Terminal transcript row").assertIsDisplayed()
+        assertTerminalClearsDock()
+
+        val transcript = composeRule.onNodeWithContentDescription("Conversation transcript")
+        transcript.performScrollToIndex(5)
+        composeRule.waitForIdle()
+        composeRule.onNodeWithText(syntheticRowText(5)).assertIsDisplayed()
+
+        updateContent {
+            setContentStreamingText(longStreamingText() + " newer delta")
+        }
+        composeRule.onNodeWithText(syntheticRowText(5)).assertIsDisplayed()
+        composeRule.onNodeWithContentDescription("Jump to latest").assertIsDisplayed()
+    }
+
+    @Test
+    fun removedHistoryAnchorFallsBackSafelyAndKeepsJumpRecoveryAvailable() {
+        composeRule.onNodeWithContentDescription("Conversation transcript")
+            .performScrollToIndex(18)
+        composeRule.waitForIdle()
+
+        updateContent {
+            setContentMessages(syntheticMessages.take(4))
+            setContentProjectionGeneration(1L)
+        }
+
+        composeRule.onNodeWithContentDescription("Terminal transcript row").assertIsDisplayed()
+        composeRule.onNodeWithContentDescription("Jump to latest").assertIsDisplayed()
+        composeRule.onNodeWithContentDescription("Jump to latest").performClick()
+        composeRule.waitForIdle()
+        composeRule.onNodeWithContentDescription("Terminal transcript row").assertIsDisplayed()
+        composeRule.onNodeWithContentDescription("Jump to latest").assertDoesNotExist()
+    }
+
+    @Test
+    fun reconnectProjectionGenerationCancelsStaleTransitionAndPreservesHistory() {
+        composeRule.onNodeWithContentDescription("Conversation transcript")
+            .performScrollToIndex(6)
+        composeRule.waitForIdle()
+        composeRule.onNodeWithText(syntheticRowText(6)).assertIsDisplayed()
+
+        updateContent {
+            setContentInsets(bottom = 320, settled = false)
+            setContentProjectionGeneration(1L)
+        }
+        updateContent {
+            setContentProjectionGeneration(2L)
+            setContentInsets(bottom = 48, settled = true)
+        }
+
+        composeRule.onNodeWithText(syntheticRowText(6)).assertIsDisplayed()
+    }
+
+    @Test
+    fun switchingSessionsDisposesPendingJumpWorkBeforeRenderingTheNewList() {
+        composeRule.onNodeWithContentDescription("Conversation transcript")
+            .performScrollToIndex(4)
+        composeRule.waitForIdle()
+        composeRule.onNodeWithContentDescription("Jump to latest").performClick()
+
+        updateContent {
+            setContentSummary(
+                syntheticSummary.copy(
+                    id = "instrumentation-session-two",
+                    title = "Second synthetic conversation",
+                ),
+            )
+            setContentMessages(syntheticMessages.takeLast(6))
+        }
+
+        composeRule.onNodeWithText("Second synthetic conversation").assertIsDisplayed()
+        composeRule.onNodeWithText("Synthetic conversation").assertDoesNotExist()
+        composeRule.onNodeWithContentDescription("Terminal transcript row").assertIsDisplayed()
+    }
+
+    @Test
+    fun reconnectErrorKeepsDraftAndRetryActionReachable() {
+        composeRule.onNodeWithContentDescription("Conversation transcript")
+            .performScrollToIndex(5)
+        composeRule.waitForIdle()
+        updateContent {
+            setContentDraft("draft survives reconnect")
+            setContentTurnState(TurnState.Reconnecting)
+            setContentStatus(
+                loading = "Reconnecting to Hermes…",
+                error = "Synthetic reconnect error",
+            )
+        }
+
+        composeRule.onNodeWithText("draft survives reconnect").assertIsDisplayed()
+        composeRule.onNodeWithText("Synthetic reconnect error").assertIsDisplayed()
+        composeRule.onNodeWithText(syntheticRowText(5)).assertIsDisplayed()
+        composeRule.onNodeWithText("Retry").performClick()
+        assertEquals(1, composeRule.activity.reconnectCalls)
+    }
+
     private fun setSyntheticContent(bottomInsetPx: Int, topInsetPx: Int = 0) {
         composeRule.setContent {
             HermesCelesteTheme {
@@ -178,6 +299,21 @@ class ConversationViewportDeviceTest {
         }
         composeRule.waitForIdle()
     }
+
+    private fun updateContent(update: ConversationViewportTestActivity.() -> Unit) {
+        composeRule.runOnUiThread {
+            composeRule.activity.update()
+        }
+        composeRule.waitForIdle()
+    }
+
+    private fun syntheticRowText(index: Int): String =
+        "Synthetic transcript row $index. This content exists only to exercise viewport geometry."
+
+    private fun longStreamingText(): String =
+        (0 until 80).joinToString(" ") { index ->
+            "Synthetic streaming paragraph $index grows the terminal row."
+        }
 
     private fun assertTerminalClearsDock() {
         val terminalBottom = composeRule.onNodeWithContentDescription("Terminal transcript row")

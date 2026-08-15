@@ -7,6 +7,7 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -43,11 +44,13 @@ import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.onDispose
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
@@ -93,8 +96,11 @@ import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlin.math.abs
+
+private const val GEOMETRY_RETRY_DELAY_MS = 96L
 
 @Composable
 internal fun conversationBottomOcclusionInsets(): WindowInsets =
@@ -102,6 +108,7 @@ internal fun conversationBottomOcclusionInsets(): WindowInsets =
         .union(WindowInsets.navigationBars)
         .union(WindowInsets.systemGestures)
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 internal fun ConversationScreen(
     summary: StoredSession,
@@ -119,6 +126,7 @@ internal fun ConversationScreen(
     projectionGeneration: Long = 0L,
     bottomOcclusion: WindowInsets? = null,
     safeDrawingInsets: WindowInsets? = null,
+    bottomOcclusionSettled: Boolean? = null,
 ) {
     val focusManager = LocalFocusManager.current
     val keyboardController = LocalSoftwareKeyboardController.current
@@ -127,6 +135,16 @@ internal fun ConversationScreen(
     val configuration = LocalConfiguration.current
     val activeBottomOcclusion = bottomOcclusion ?: conversationBottomOcclusionInsets()
     val activeSafeDrawingInsets = safeDrawingInsets ?: WindowInsets.safeDrawing
+    val activeBottomOcclusionSettled = bottomOcclusionSettled ?: if (bottomOcclusion == null) {
+        val currentImeBottom = WindowInsets.ime.getBottom(density)
+        val sourceImeBottom = WindowInsets.imeAnimationSource.getBottom(density)
+        val targetImeBottom = WindowInsets.imeAnimationTarget.getBottom(density)
+        currentImeBottom == sourceImeBottom && currentImeBottom == targetImeBottom
+    } else {
+        // Explicit inset seams are deterministic fixtures rather than the
+        // platform animation stream, so their caller owns the settled bit.
+        true
+    }
     val safeDrawingPadding = activeSafeDrawingInsets.asPaddingValues()
     val safeTopPadding = safeDrawingPadding.calculateTopPadding()
     val headerTopPadding = maxOf(34.dp - safeTopPadding, 10.dp)
@@ -231,6 +249,7 @@ internal fun ConversationScreen(
                     streamingText = streamingText,
                     projectionGeneration = projectionGeneration,
                     bottomOcclusion = activeBottomOcclusion,
+                    bottomInsetsSettled = activeBottomOcclusionSettled,
                     dockClearance = with(density) { dockHeightPx.toDp() },
                     safeTopInsetPx = activeSafeDrawingInsets.getTop(density),
                     safeLeftInsetPx = activeSafeDrawingInsets.getLeft(density, layoutDirection),
@@ -267,6 +286,7 @@ private fun ConversationViewport(
     streamingText: String,
     projectionGeneration: Long,
     bottomOcclusion: WindowInsets,
+    bottomInsetsSettled: Boolean,
     dockClearance: Dp,
     safeTopInsetPx: Int,
     safeLeftInsetPx: Int,
@@ -299,9 +319,21 @@ private fun ConversationViewport(
     var previousGeometry by remember(summaryId) { mutableStateOf<ViewportGeometry?>(null) }
     var previousItemKeys by remember(summaryId) { mutableStateOf<List<String>?>(null) }
     var previousProjectionGeneration by remember(summaryId) { mutableStateOf<Long?>(null) }
+    var geometryRetryTick by remember(summaryId) { mutableLongStateOf(0L) }
+
+    // rememberCoroutineScope() survives a summary-key change. Dispose the
+    // previous summary's explicit jump/restore job before its list state is
+    // discarded, otherwise a late completion can move the next conversation.
+    DisposableEffect(summaryId) {
+        onDispose {
+            activeScrollJob?.cancel()
+        }
+    }
+
     val geometry = ViewportGeometry(
         dockHeightPx = with(density) { dockClearance.roundToPx() },
         bottomInsetPx = bottomOcclusion.getBottom(density),
+        bottomInsetsSettled = bottomInsetsSettled,
         safeTopInsetPx = safeTopInsetPx,
         safeLeftInsetPx = safeLeftInsetPx,
         safeRightInsetPx = safeRightInsetPx,
@@ -439,7 +471,7 @@ private fun ConversationViewport(
         }
     }
 
-    LaunchedEffect(itemCount, summaryId, geometry, projectionGeneration) {
+    LaunchedEffect(itemCount, summaryId, geometry, projectionGeneration, geometryRetryTick) {
         if (initialProjectionHandled || itemCount == 0) return@LaunchedEffect
         snapshotFlow {
             listState.layoutInfo.totalItemsCount == itemCount &&
@@ -450,6 +482,8 @@ private fun ConversationViewport(
                 )
         }.filter { it }.first()
         if (!awaitStableUsableGeometry(listState, itemCount, geometry, bottomOcclusion, density)) {
+            delay(GEOMETRY_RETRY_DELAY_MS)
+            geometryRetryTick += 1
             return@LaunchedEffect
         }
         if (initialProjectionHandled) return@LaunchedEffect
@@ -510,7 +544,7 @@ private fun ConversationViewport(
         }
     }
 
-    LaunchedEffect(geometry, itemKeys, summaryId, projectionGeneration) {
+    LaunchedEffect(geometry, itemKeys, summaryId, projectionGeneration, geometryRetryTick) {
         val previous = previousGeometry
         val previousKeys = previousItemKeys
         val previousProjection = previousProjectionGeneration
@@ -520,9 +554,17 @@ private fun ConversationViewport(
         val geometryChanged = previous != null && previous != geometry
         val projectionChanged = previousKeys != null && previousKeys != itemKeys
         val generationChanged = previousProjection != null && previousProjection != projectionGeneration
-        if (!geometryChanged && !projectionChanged && !generationChanged) return@LaunchedEffect
+        val retryingPendingGeometry = transitionActive &&
+            !geometryChanged && !projectionChanged && !generationChanged
+        if (!geometryChanged && !projectionChanged && !generationChanged && !retryingPendingGeometry) {
+            return@LaunchedEffect
+        }
 
-        val generation = transitionGeneration + 1
+        val generation = if (retryingPendingGeometry) {
+            transitionGeneration
+        } else {
+            transitionGeneration + 1
+        }
         activeScrollJob?.cancel()
         activeScrollJob = null
         transitionGeneration = generation
@@ -539,11 +581,13 @@ private fun ConversationViewport(
             pendingAnchor = lastHistoryAnchor ?: captureAnchor()
         }
 
-        // Require two identical usable samples so a zero/stale inset or a
-        // cancelled animation is not treated as settled just because two
-        // frames elapsed.
+        // Keep this effect pending until two identical usable samples also
+        // report settled inset state. A zero/stale inset or cancelled IME
+        // animation must retry from a later sample, not clear the guard after
+        // a fixed frame budget and lose the pending restoration.
         if (!awaitStableUsableGeometry(listState, itemCount, geometry, bottomOcclusion, density)) {
-            transitionActive = false
+            delay(GEOMETRY_RETRY_DELAY_MS)
+            if (generation == transitionGeneration) geometryRetryTick += 1
             return@LaunchedEffect
         }
         if (generation != transitionGeneration) return@LaunchedEffect
@@ -777,6 +821,7 @@ private data class TranscriptAnchor(
 private data class ViewportGeometry(
     val dockHeightPx: Int,
     val bottomInsetPx: Int,
+    val bottomInsetsSettled: Boolean,
     val safeTopInsetPx: Int,
     val safeLeftInsetPx: Int,
     val safeRightInsetPx: Int,
@@ -840,6 +885,7 @@ private suspend fun restoreTranscriptAnchor(
 private data class GeometrySample(
     val dockHeightPx: Int,
     val bottomInsetPx: Int,
+    val bottomInsetsSettled: Boolean,
     val totalItemsCount: Int,
     val viewportStartOffset: Int,
     val viewportEndOffset: Int,
@@ -860,6 +906,7 @@ private suspend fun awaitStableUsableGeometry(
         val sample = GeometrySample(
             dockHeightPx = geometry.dockHeightPx,
             bottomInsetPx = bottomOcclusion.getBottom(density),
+            bottomInsetsSettled = geometry.bottomInsetsSettled,
             totalItemsCount = layoutInfo.totalItemsCount,
             viewportStartOffset = layoutInfo.viewportStartOffset,
             viewportEndOffset = layoutInfo.viewportEndOffset,
@@ -871,16 +918,21 @@ private suspend fun awaitStableUsableGeometry(
             stableFrames = 1
         }
         if (sample.totalItemsCount == itemCount &&
-            hasUsableViewportGeometry(
+            hasSettledViewportGeometry(
                 dockHeightPx = sample.dockHeightPx,
                 viewportStartOffsetPx = sample.viewportStartOffset,
                 viewportEndOffsetPx = sample.viewportEndOffset,
+                bottomInsetsSettled = sample.bottomInsetsSettled,
             ) &&
             stableFrames >= 2
         ) {
             return true
         }
     }
+    // Do not convert an invalid but stable sample into a completed transition.
+    // The keyed caller schedules another frame window after a short yield so
+    // cancelled/incomplete IME animations and late inset dispatch can recover
+    // without keeping the recomposer permanently busy.
     return false
 }
 
