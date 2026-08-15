@@ -10,6 +10,7 @@ import dev.hazydreams.hermesceleste.network.DashboardProbeResult
 import dev.hazydreams.hermesceleste.network.DashboardProfile
 import dev.hazydreams.hermesceleste.network.StoredSession
 import dev.hazydreams.hermesceleste.ui.HermesCelesteTheme
+import dev.hazydreams.hermesceleste.ui.conversation.ConversationActivityScope
 import dev.hazydreams.hermesceleste.ui.conversation.ConversationScreen
 import dev.hazydreams.hermesceleste.ui.gateway.ConnectionLoadingScreen
 import dev.hazydreams.hermesceleste.ui.gateway.ConnectionUnavailableScreen
@@ -355,11 +356,15 @@ private fun PreviewConversation(
 ) {
     ConversationScreen(
         summary = summary,
+        activityScope = ConversationActivityScope(
+            gatewayOrigin = "https://hermes.example",
+            profile = summary.profile,
+            sessionId = summary.id,
+        ),
         messages = messages,
         streamingText = streamingText,
         draft = draft,
         turnState = turnState,
-        loadingMessage = null,
         errorMessage = errorMessage,
         onDraftChange = {},
         onSend = {},

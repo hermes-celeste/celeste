@@ -37,11 +37,15 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
@@ -62,15 +66,16 @@ import dev.hazydreams.hermesceleste.ui.CelestePanel
 import dev.hazydreams.hermesceleste.ui.CelestePaper
 
 import dev.hazydreams.hermesceleste.ui.StatusMessage
+import kotlinx.coroutines.delay
 
 @Composable
 internal fun ConversationScreen(
     summary: StoredSession,
+    activityScope: ConversationActivityScope,
     messages: List<ConversationMessage>,
     streamingText: String,
     draft: String,
     turnState: TurnState,
-    loadingMessage: String?,
     errorMessage: String?,
     onDraftChange: (String) -> Unit,
     onSend: () -> Unit,
@@ -81,7 +86,39 @@ internal fun ConversationScreen(
     val listState = rememberLazyListState()
     val focusManager = LocalFocusManager.current
     val transcriptKeys = remember(messages) { transcriptItemKeys(messages) }
-    val visibleMessageCount = messages.size + if (streamingText.isNotBlank()) 1 else 0
+    val activity = selectConversationActivity(
+        scope = activityScope,
+        turnState = turnState,
+        messages = messages,
+        streamingText = streamingText,
+        errorMessage = errorMessage,
+    )
+    var debouncedWorkingKey by remember(activityScope.key) { mutableStateOf<String?>(null) }
+    LaunchedEffect(activity.owner?.key) {
+        debouncedWorkingKey = null
+        if (activity.owner?.kind == ActivityOwnerKind.Working) {
+            delay(NO_OUTPUT_ACTIVITY_DEBOUNCE_MILLIS)
+            debouncedWorkingKey = activity.owner.key
+        }
+    }
+    val visibleOwner = activity.owner?.takeUnless { owner ->
+        owner.kind == ActivityOwnerKind.Working && debouncedWorkingKey != owner.key
+    }
+    val pendingToolIndex = messages.withIndex()
+        .toList()
+        .asReversed()
+        .firstOrNull { (_, message) -> message.role == "tool" && message.pending }
+        ?.index
+    val interimAssistantIndex = messages.withIndex()
+        .toList()
+        .asReversed()
+        .firstOrNull { (_, message) ->
+            message.role == "assistant" && message.interim && message.text.isNotBlank()
+        }
+        ?.index
+    val visibleMessageCount = messages.size +
+        (if (streamingText.isNotBlank()) 1 else 0) +
+        (if (visibleOwner?.kind == ActivityOwnerKind.Working) 1 else 0)
     val safeDrawingInsets = WindowInsets.safeDrawing
     val headerTopPadding = maxOf(
         34.dp,
@@ -111,7 +148,7 @@ internal fun ConversationScreen(
                 Spacer(Modifier.weight(1f))
                 if (turnState == TurnState.Running || turnState == TurnState.Synchronizing) {
                     CircularProgressIndicator(
-                        modifier = Modifier.size(18.dp),
+                        modifier = Modifier.size(18.dp).clearAndSetSemantics {},
                         strokeWidth = 1.8.dp,
                         color = turnStateColor(turnState),
                     )
@@ -131,27 +168,27 @@ internal fun ConversationScreen(
                     )
                     Spacer(Modifier.size(7.dp))
                     Text(
-                        text = when (turnState) {
-                            TurnState.Idle -> "Connected"
-                            TurnState.Running -> "Responding"
-                            TurnState.Synchronizing -> "Synchronizing"
-                            TurnState.Reconnecting -> "Reconnecting"
-                        },
+                        text = if (turnState == TurnState.Reconnecting) "Disconnected" else "Connected",
                         color = CelesteMuted,
                         fontSize = 12.sp,
                     )
                 }
             }
 
-            if (loadingMessage != null || errorMessage != null) {
-                Column(
-                    modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 12.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    loadingMessage?.let { StatusMessage(it, CelesteBlue, showSpinner = true) }
-                    errorMessage?.let { StatusMessage(it, CelesteError) }
+            visibleOwner
+                ?.takeUnless { owner ->
+                    owner.kind == ActivityOwnerKind.Working ||
+                        owner.kind == ActivityOwnerKind.Streaming ||
+                        owner.kind == ActivityOwnerKind.Tool
                 }
-            }
+                ?.let { owner ->
+                    Column(
+                        modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 12.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        ConversationActivityStatus(owner)
+                    }
+                }
 
             LazyColumn(
                 state = listState,
@@ -162,14 +199,28 @@ internal fun ConversationScreen(
                 itemsIndexed(
                     items = messages,
                     key = { index, _ -> transcriptKeys[index] },
-                ) { _, message ->
-                    MessageBubble(message)
+                ) { index, message ->
+                    val itemOwner = when {
+                        visibleOwner?.kind == ActivityOwnerKind.Tool && index == pendingToolIndex -> visibleOwner
+                        visibleOwner?.kind == ActivityOwnerKind.Streaming &&
+                            streamingText.isBlank() && index == interimAssistantIndex -> visibleOwner
+                        else -> null
+                    }
+                    MessageBubble(message, activityOwner = itemOwner)
                 }
                 if (streamingText.isNotBlank()) {
-                    item(key = STREAMING_TRANSCRIPT_KEY) {
+                    item(key = "${activityScope.key}:$STREAMING_TRANSCRIPT_KEY") {
                         MessageBubble(
                             ConversationMessage(role = "assistant", text = streamingText, pending = true),
+                            activityOwner = visibleOwner?.takeIf {
+                                it.kind == ActivityOwnerKind.Streaming
+                            },
                         )
+                    }
+                }
+                if (visibleOwner?.kind == ActivityOwnerKind.Working) {
+                    item(key = visibleOwner.key) {
+                        ConversationActivityStatus(visibleOwner)
                     }
                 }
             }
@@ -190,12 +241,7 @@ internal fun ConversationScreen(
                     modifier = Modifier.fillMaxWidth(),
                     placeholder = {
                         Text(
-                            when (turnState) {
-                                TurnState.Idle -> "Message Hermes"
-                                TurnState.Running -> "Hermes is responding…"
-                                TurnState.Synchronizing -> "Synchronizing…"
-                                TurnState.Reconnecting -> "Keep drafting while Celeste reconnects…"
-                            },
+                            "Message Hermes",
                             color = CelesteMuted,
                         )
                     },
@@ -205,7 +251,10 @@ internal fun ConversationScreen(
                     keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
                     keyboardActions = KeyboardActions(
                         onSend = {
-                            if (draft.isNotBlank() && turnState == TurnState.Idle) {
+                            if (
+                                draft.isNotBlank() &&
+                                activity.composerAction == ConversationComposerAction.SendMessage
+                            ) {
                                 onSend()
                                 focusManager.clearFocus()
                             }
@@ -227,40 +276,40 @@ internal fun ConversationScreen(
                     horizontalArrangement = Arrangement.End,
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    Text(
-                        text = when (turnState) {
-                            TurnState.Idle -> ""
-                            TurnState.Running -> "Responding"
-                            TurnState.Synchronizing -> "Synchronizing"
-                            TurnState.Reconnecting -> "Draft saved here"
-                        },
-                        color = CelesteMuted,
-                        fontSize = 11.sp,
-                        modifier = Modifier.weight(1f),
-                    )
-                    when (turnState) {
-                        TurnState.Running -> OutlinedButton(
+                    Spacer(Modifier.weight(1f))
+                    when (activity.composerAction) {
+                        ConversationComposerAction.StopResponse -> OutlinedButton(
                             onClick = onInterrupt,
                             modifier = Modifier.height(46.dp),
                             shape = RoundedCornerShape(23.dp),
                             border = androidx.compose.foundation.BorderStroke(1.dp, CelesteCoral),
                             colors = ButtonDefaults.outlinedButtonColors(contentColor = CelesteCoral),
-                        ) { Text("Stop", fontWeight = FontWeight.SemiBold) }
+                        ) { Text(activity.composerAction.label, fontWeight = FontWeight.SemiBold) }
 
-                        TurnState.Reconnecting -> OutlinedButton(
+                        ConversationComposerAction.RetryConnection -> OutlinedButton(
                             onClick = onReconnect,
                             modifier = Modifier.height(46.dp),
                             shape = RoundedCornerShape(23.dp),
                             border = androidx.compose.foundation.BorderStroke(1.dp, CelesteBlue),
                             colors = ButtonDefaults.outlinedButtonColors(contentColor = CelesteBlue),
-                        ) { Text("Retry", fontWeight = FontWeight.SemiBold) }
+                        ) { Text(activity.composerAction.label, fontWeight = FontWeight.SemiBold) }
 
-                        else -> Button(
+                        ConversationComposerAction.Retry -> OutlinedButton(
+                            onClick = onReconnect,
+                            modifier = Modifier.height(46.dp),
+                            shape = RoundedCornerShape(23.dp),
+                            border = androidx.compose.foundation.BorderStroke(1.dp, CelesteError),
+                            colors = ButtonDefaults.outlinedButtonColors(contentColor = CelesteError),
+                        ) { Text(activity.composerAction.label, fontWeight = FontWeight.SemiBold) }
+
+                        ConversationComposerAction.SendMessage,
+                        ConversationComposerAction.Unavailable -> Button(
                             onClick = {
                                 onSend()
                                 focusManager.clearFocus()
                             },
-                            enabled = draft.isNotBlank() && turnState == TurnState.Idle,
+                            enabled = activity.composerAction == ConversationComposerAction.SendMessage &&
+                                draft.isNotBlank(),
                             modifier = Modifier.height(46.dp),
                             shape = RoundedCornerShape(23.dp),
                             colors = ButtonDefaults.buttonColors(
@@ -269,7 +318,7 @@ internal fun ConversationScreen(
                                 disabledContainerColor = CelesteHairline,
                                 disabledContentColor = CelesteMuted,
                             ),
-                        ) { Text("Send  →", fontWeight = FontWeight.Bold) }
+                        ) { Text(ConversationComposerAction.SendMessage.label, fontWeight = FontWeight.Bold) }
                     }
                 }
             }
@@ -282,3 +331,26 @@ private fun turnStateColor(turnState: TurnState): Color = when (turnState) {
     TurnState.Running -> CelesteGoldText
     TurnState.Synchronizing, TurnState.Reconnecting -> CelesteBlue
 }
+
+@Composable
+private fun ConversationActivityStatus(owner: ConversationActivityOwner) {
+    StatusMessage(
+        message = owner.label,
+        color = activityOwnerColor(owner),
+        showSpinner = owner.kind == ActivityOwnerKind.Synchronizing ||
+            owner.kind == ActivityOwnerKind.Working ||
+            owner.kind == ActivityOwnerKind.Reconnecting,
+        modifier = Modifier.conversationActivitySemantics(owner),
+    )
+}
+
+private fun activityOwnerColor(owner: ConversationActivityOwner): Color = when (owner.kind) {
+    ActivityOwnerKind.Error -> CelesteError
+    ActivityOwnerKind.Reconnecting -> CelesteBlue
+    ActivityOwnerKind.Synchronizing -> CelesteBlue
+    ActivityOwnerKind.Working -> CelesteGoldText
+    ActivityOwnerKind.Streaming -> CelesteCoral
+    ActivityOwnerKind.Tool -> CelesteGoldText
+}
+
+private const val NO_OUTPUT_ACTIVITY_DEBOUNCE_MILLIS = 250L

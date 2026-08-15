@@ -36,6 +36,7 @@ import androidx.compose.ui.unit.sp
 import dev.hazydreams.hermesceleste.CelesteUiState
 import dev.hazydreams.hermesceleste.CelesteViewModel
 import dev.hazydreams.hermesceleste.ConnectionPhase
+import dev.hazydreams.hermesceleste.ui.conversation.ConversationActivityScope
 import dev.hazydreams.hermesceleste.ui.conversation.ConversationScreen
 import dev.hazydreams.hermesceleste.ui.gateway.ConnectionLoadingScreen
 import dev.hazydreams.hermesceleste.ui.gateway.ConnectionUnavailableScreen
@@ -81,11 +82,15 @@ internal fun CelesteRoutes(ui: CelesteUiState, viewModel: CelesteViewModel) {
                 BackHandler(onBack = viewModel::leaveConversation)
                 ConversationScreen(
                     summary = activeSummary,
+                    activityScope = ConversationActivityScope(
+                        gatewayOrigin = ui.probe?.baseUrl ?: ui.dashboardUrl,
+                        profile = activeSummary.profile.ifBlank { ui.selectedProfile },
+                        sessionId = activeSummary.id,
+                    ),
                     messages = ui.messages,
                     streamingText = ui.streamingText,
                     draft = ui.draft,
                     turnState = ui.turnState,
-                    loadingMessage = ui.loadingMessage,
                     errorMessage = ui.errorMessage,
                     onDraftChange = viewModel::updateDraft,
                     onSend = viewModel::sendMessage,
@@ -282,8 +287,14 @@ internal fun EditorialDivider(modifier: Modifier = Modifier) {
 }
 
 @Composable
-internal fun StatusMessage(message: String, color: Color, showSpinner: Boolean = false) {
+internal fun StatusMessage(
+    message: String,
+    color: Color,
+    showSpinner: Boolean = false,
+    modifier: Modifier = Modifier,
+) {
     Row(
+        modifier = modifier,
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(9.dp),
     ) {

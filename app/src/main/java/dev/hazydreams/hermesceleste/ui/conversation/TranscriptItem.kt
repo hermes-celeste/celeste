@@ -50,11 +50,14 @@ internal fun transcriptItemKeys(messages: List<ConversationMessage>): List<Strin
 }
 
 @Composable
-internal fun MessageBubble(message: ConversationMessage) {
+internal fun MessageBubble(
+    message: ConversationMessage,
+    activityOwner: ConversationActivityOwner? = null,
+) {
     when (message.role) {
         "user" -> UserMessage(message)
-        "assistant" -> AssistantMessage(message)
-        else -> ToolMessage(message)
+        "assistant" -> AssistantMessage(message, activityOwner)
+        else -> ToolMessage(message, activityOwner)
     }
 }
 
@@ -84,7 +87,10 @@ private fun UserMessage(message: ConversationMessage) {
 }
 
 @Composable
-private fun AssistantMessage(message: ConversationMessage) {
+private fun AssistantMessage(
+    message: ConversationMessage,
+    activityOwner: ConversationActivityOwner?,
+) {
     val accent = CelesteCoral
     Column(
         modifier = Modifier
@@ -99,7 +105,7 @@ private fun AssistantMessage(message: ConversationMessage) {
             }
             .padding(start = 17.dp, end = 8.dp, top = 3.dp, bottom = 3.dp),
     ) {
-        MessageLabel("Hermes", accent, message.pending)
+        MessageLabel("Hermes", accent, message.pending, activityOwner)
         if (message.text.isNotBlank()) {
             Spacer(Modifier.height(8.dp))
             Text(
@@ -112,7 +118,10 @@ private fun AssistantMessage(message: ConversationMessage) {
 }
 
 @Composable
-private fun ToolMessage(message: ConversationMessage) {
+private fun ToolMessage(
+    message: ConversationMessage,
+    activityOwner: ConversationActivityOwner?,
+) {
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -124,6 +133,7 @@ private fun ToolMessage(message: ConversationMessage) {
             message.toolName?.replace('_', ' ') ?: "Tool",
             CelesteGoldText,
             message.pending,
+            activityOwner,
         )
         if (message.text.isNotBlank()) {
             Spacer(Modifier.height(6.dp))
@@ -137,8 +147,16 @@ private fun ToolMessage(message: ConversationMessage) {
 }
 
 @Composable
-private fun MessageLabel(label: String, color: Color, pending: Boolean) {
-    Row(verticalAlignment = Alignment.CenterVertically) {
+private fun MessageLabel(
+    label: String,
+    color: Color,
+    pending: Boolean,
+    activityOwner: ConversationActivityOwner? = null,
+) {
+    Row(
+        modifier = activityOwner?.let { Modifier.conversationActivitySemantics(it) } ?: Modifier,
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
         Text(
             text = label.uppercase(),
             color = color,
