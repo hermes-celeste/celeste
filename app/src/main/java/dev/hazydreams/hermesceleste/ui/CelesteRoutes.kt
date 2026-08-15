@@ -158,6 +158,7 @@ private fun GatewaySettingsRoute(
             connectionPhase = ui.connectionPhase,
             loadingMessage = ui.loadingMessage,
             errorMessage = ui.errorMessage,
+            assistantNameCleanupRetryOrigin = ui.assistantNameCleanupRetryOrigin,
         ),
         actions = GatewaySettingsActions(
             onUsernameChange = viewModel::updateUsername,
@@ -172,6 +173,7 @@ private fun GatewaySettingsRoute(
             onSignOut = viewModel::signOut,
             onForgetConnection = viewModel::forgetConnection,
             onBack = onBack,
+            onRetryAssistantNameCleanup = viewModel::retryAssistantNameCleanup,
         ),
     )
 }

@@ -18,6 +18,8 @@ import dev.hazydreams.hermesceleste.network.GatewayEvent
 import dev.hazydreams.hermesceleste.network.InvalidDashboardResponse
 import dev.hazydreams.hermesceleste.network.StoredSession
 import dev.hazydreams.hermesceleste.network.TransportUnavailable
+import dev.hazydreams.hermesceleste.presentation.AssistantNameKey
+import dev.hazydreams.hermesceleste.presentation.InMemoryAssistantNameStore
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -72,6 +74,51 @@ class CelesteViewModelAutoLoginTest {
         assertEquals(listOf("stored-1"), state.sessions?.map { it.id })
         assertNull(state.activeSummary)
         assertEquals(1, dashboard.probeCalls)
+    }
+
+    @Test
+    fun recreatedViewModelRestoresPersistedConnectionAndAssistantNameAtStartup() = runTest {
+        val connectionStore = InMemoryConnectionStore()
+        val assistantNameStore = InMemoryAssistantNameStore()
+        val firstDashboard = AutoLoginDashboard(openProbe)
+        val firstViewModel = CelesteViewModel(
+            dashboard = firstDashboard,
+            connectionStore = connectionStore,
+            assistantNameStore = assistantNameStore,
+        )
+        advanceUntilIdle()
+
+        firstViewModel.updateDashboardUrl("https://hermes.example.net")
+        firstViewModel.findDashboard()
+        advanceUntilIdle()
+        firstViewModel.loadSessions()
+        advanceUntilIdle()
+        firstViewModel.openAssistantNameEditor()
+        firstViewModel.updateAssistantNameDraft("Juno")
+        firstViewModel.saveAssistantName()
+        advanceUntilIdle()
+
+        assertEquals("https://hermes.example.net", connectionStore.load()?.descriptor?.baseUrl)
+        assertEquals("Juno", assistantNameStore.read("https://hermes.example.net", "default"))
+
+        val recreatedDashboard = AutoLoginDashboard(openProbe)
+        val recreatedViewModel = CelesteViewModel(
+            dashboard = recreatedDashboard,
+            connectionStore = connectionStore,
+            assistantNameStore = assistantNameStore,
+        )
+        advanceUntilIdle()
+
+        assertEquals(ConnectionPhase.Connected, recreatedViewModel.state.value.connectionPhase)
+        assertEquals("https://hermes.example.net", recreatedViewModel.state.value.dashboardUrl)
+        assertEquals("Juno", recreatedViewModel.state.value.assistantDisplayName)
+        assertEquals(
+            AssistantNameKey("https://hermes.example.net", "default"),
+            recreatedViewModel.state.value.assistantNameKey,
+        )
+        assertEquals(listOf("stored-1"), recreatedViewModel.state.value.sessions?.map { it.id })
+        assertNull(recreatedViewModel.state.value.activeSummary)
+        assertEquals(1, recreatedDashboard.probeCalls)
     }
 
     @Test

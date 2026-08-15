@@ -92,6 +92,7 @@ internal data class CelesteUiState(
     val selectedProfile: String = "default",
     val assistantDisplayName: String = DEFAULT_ASSISTANT_NAME,
     val assistantNameKey: AssistantNameKey? = null,
+    val assistantNameCleanupRetryOrigin: String? = null,
     val assistantNameEditor: AssistantNameEditState = AssistantNameEditState(),
     val activeSummary: StoredSession? = null,
     val messages: List<ConversationMessage> = emptyList(),
@@ -147,7 +148,7 @@ internal class CelesteViewModel(
     private var assistantNameSaveJob: Job? = null
     private var currentDescriptor: SavedConnectionDescriptor? = null
     private var pendingAssistantNameContext: AssistantNameContext? = null
-    private var pendingAssistantNameCleanupOrigin: String? = null
+    private val pendingAssistantNameCleanupOrigins = linkedSetOf<String>()
     private var reconnectAttempts = 0
     private var reconciling = false
     private var currentSessionCanResume = true
@@ -347,6 +348,17 @@ internal class CelesteViewModel(
     ): Boolean =
         assistantNameContextGeneration == generation && mutableState.value.assistantNameKey == key
 
+    private fun assistantNameOriginFor(state: CelesteUiState): String? =
+        state.assistantNameKey?.origin
+            ?: AssistantNameKey.from(
+                state.probe?.baseUrl ?: currentDescriptor?.baseUrl ?: state.dashboardUrl,
+                state.selectedProfile,
+            )?.origin
+
+    private fun cleanupRetryOrigin(preferredOrigin: String? = null): String? =
+        preferredOrigin?.takeIf { it in pendingAssistantNameCleanupOrigins }
+            ?: pendingAssistantNameCleanupOrigins.firstOrNull()
+
     fun findDashboard() {
         val rawUrl = mutableState.value.dashboardUrl
         if (rawUrl.isBlank()) return
@@ -503,7 +515,10 @@ internal class CelesteViewModel(
         credential = null
         currentDescriptor = null
         dashboard.clearAuthentication()
-        mutableState.value = CelesteUiState(connectionPhase = ConnectionPhase.ManualSetup)
+        mutableState.value = CelesteUiState(
+            connectionPhase = ConnectionPhase.ManualSetup,
+            assistantNameCleanupRetryOrigin = cleanupRetryOrigin(),
+        )
     }
 
     fun signOut() {
@@ -548,14 +563,9 @@ internal class CelesteViewModel(
 
     fun forgetConnection() {
         val snapshot = mutableState.value
-        val forgottenOrigin = pendingAssistantNameCleanupOrigin
-            ?: snapshot.assistantNameKey?.origin
-            ?: AssistantNameKey.from(
-                snapshot.probe?.baseUrl ?: currentDescriptor?.baseUrl ?: snapshot.dashboardUrl,
-                "default",
-            )?.origin
+        val forgottenOrigin = assistantNameOriginFor(snapshot)
         if (forgottenOrigin != null) {
-            pendingAssistantNameCleanupOrigin = forgottenOrigin
+            pendingAssistantNameCleanupOrigins += forgottenOrigin
         }
         val activeCredential = credential
         val attempt = beginConnectionAttempt()
@@ -566,6 +576,7 @@ internal class CelesteViewModel(
         mutableState.value = CelesteUiState(
             connectionPhase = ConnectionPhase.ManualSetup,
             loadingMessage = "Forgetting this connection…",
+            assistantNameCleanupRetryOrigin = cleanupRetryOrigin(),
         )
         connectionJob = viewModelScope.launch {
             val error = connectionStoreMutex.withLock {
@@ -577,7 +588,7 @@ internal class CelesteViewModel(
                 }
             }
             if (assistantNameError == null && forgottenOrigin != null) {
-                pendingAssistantNameCleanupOrigin = null
+                pendingAssistantNameCleanupOrigins -= forgottenOrigin
             }
             if (activeCredential == GatewayCredential.CookieSession && snapshot.probe != null) {
                 runCatching { dashboard.logout(snapshot.probe.baseUrl) }
@@ -586,12 +597,46 @@ internal class CelesteViewModel(
             if (!isCurrentConnectionAttempt(attempt)) return@launch
             mutableState.value = CelesteUiState(
                 connectionPhase = ConnectionPhase.ManualSetup,
+                assistantNameCleanupRetryOrigin = cleanupRetryOrigin(
+                    preferredOrigin = forgottenOrigin.takeIf { assistantNameError != null },
+                ),
                 errorMessage = when {
                     assistantNameError != null -> {
                         "Celeste could not remove the local assistant name. Try again."
                     }
                     error != null -> "Celeste could not remove the saved connection. Try again."
                     else -> null
+                },
+            )
+        }
+    }
+
+    fun retryAssistantNameCleanup() {
+        val retryOrigin = cleanupRetryOrigin(mutableState.value.assistantNameCleanupRetryOrigin)
+            ?: return
+        val attempt = beginConnectionAttempt()
+        mutableState.value = mutableState.value.copy(
+            loadingMessage = "Removing the local assistant name…",
+            errorMessage = null,
+            assistantNameCleanupRetryOrigin = retryOrigin,
+        )
+        connectionJob = viewModelScope.launch {
+            val error = assistantNameStoreMutex.withLock {
+                runCatching { assistantNameStore.clearOrigin(retryOrigin) }.exceptionOrNull()
+            }
+            if (error == null) {
+                pendingAssistantNameCleanupOrigins -= retryOrigin
+            }
+            if (!isCurrentConnectionAttempt(attempt)) return@launch
+            mutableState.value = mutableState.value.copy(
+                loadingMessage = null,
+                assistantNameCleanupRetryOrigin = cleanupRetryOrigin(
+                    preferredOrigin = retryOrigin.takeIf { error != null },
+                ),
+                errorMessage = if (error == null) {
+                    null
+                } else {
+                    "Celeste could not remove the local assistant name. Try again."
                 },
             )
         }
@@ -611,6 +656,7 @@ internal class CelesteViewModel(
         mutableState.value = CelesteUiState(
             connectionPhase = ConnectionPhase.CheckingSavedConnection,
             loadingMessage = "Checking this device…",
+            assistantNameCleanupRetryOrigin = cleanupRetryOrigin(),
         )
         connectionJob = viewModelScope.launch {
             val savedResult = connectionStoreMutex.withLock {
@@ -652,6 +698,7 @@ internal class CelesteViewModel(
             savedAuthMode = descriptor.authMode,
             username = descriptor.username.orEmpty(),
             loadingMessage = "Reconnecting to your Hermes…",
+            assistantNameCleanupRetryOrigin = cleanupRetryOrigin(),
         )
         dashboard.clearAuthentication()
         runCatching {
@@ -729,6 +776,7 @@ internal class CelesteViewModel(
                     dashboardUrl = descriptor.baseUrl,
                     savedAuthMode = descriptor.authMode,
                     username = descriptor.username.orEmpty(),
+                    assistantNameCleanupRetryOrigin = cleanupRetryOrigin(),
                     errorMessage = error.message ?: "Could not reconnect to Hermes.",
                 )
             }
@@ -810,6 +858,7 @@ internal class CelesteViewModel(
         probe = probe,
         savedAuthMode = descriptor?.authMode,
         username = descriptor?.username.orEmpty(),
+        assistantNameCleanupRetryOrigin = cleanupRetryOrigin(),
         errorMessage = errorMessage,
     )
 

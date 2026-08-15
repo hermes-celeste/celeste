@@ -414,11 +414,61 @@ class CelesteViewModelTest {
         assertEquals("Juno", assistantNames.read("http://hermes.test:9119", "default"))
 
         assistantNames.failClears = false
-        viewModel.forgetConnection()
+        viewModel.retryAssistantNameCleanup()
         advanceUntilIdle()
 
         assertNull(assistantNames.read("http://hermes.test:9119", "default"))
         assertEquals("Atlas", assistantNames.read("https://other.example", "default"))
+    }
+
+    @Test
+    fun failedForgetCleanupStaysScopedAcrossOriginSwitchAndExposesRetry() = runTest {
+        val firstOrigin = "http://hermes.test:9119"
+        val secondOrigin = "https://other.example"
+        val gateway = FakeGateway()
+        val dashboard = FakeDashboard(gateway)
+        val assistantNames = ClearFailingAssistantNameStore()
+        assistantNames.write(firstOrigin, "default", "Juno")
+        assistantNames.write(secondOrigin, "default", "Atlas")
+        val viewModel = CelesteViewModel(
+            dashboard = dashboard,
+            assistantNameStore = assistantNames,
+            reconnectDelayMillis = { _, _ -> 0L },
+        )
+
+        viewModel.updateDashboardUrl(firstOrigin)
+        viewModel.findDashboard()
+        viewModel.loadSessions()
+        advanceUntilIdle()
+
+        assistantNames.failingOrigin = firstOrigin
+        viewModel.forgetConnection()
+        advanceUntilIdle()
+
+        assertEquals(firstOrigin, viewModel.state.value.assistantNameCleanupRetryOrigin)
+        assertEquals("Juno", assistantNames.read(firstOrigin, "default"))
+        assertEquals("Atlas", assistantNames.read(secondOrigin, "default"))
+
+        assistantNames.failingOrigin = null
+        viewModel.updateDashboardUrl(secondOrigin)
+        viewModel.findDashboard()
+        viewModel.loadSessions()
+        advanceUntilIdle()
+        assertEquals(secondOrigin, viewModel.state.value.assistantNameKey?.origin)
+        assertEquals("Atlas", viewModel.state.value.assistantDisplayName)
+
+        viewModel.forgetConnection()
+        advanceUntilIdle()
+
+        assertNull(assistantNames.read(secondOrigin, "default"))
+        assertEquals("Juno", assistantNames.read(firstOrigin, "default"))
+        assertEquals(firstOrigin, viewModel.state.value.assistantNameCleanupRetryOrigin)
+
+        viewModel.retryAssistantNameCleanup()
+        advanceUntilIdle()
+
+        assertNull(assistantNames.read(firstOrigin, "default"))
+        assertNull(viewModel.state.value.assistantNameCleanupRetryOrigin)
     }
 
     @Test
@@ -638,6 +688,7 @@ class CelesteViewModelTest {
     private class ClearFailingAssistantNameStore : AssistantNameStore {
         private val delegate = InMemoryAssistantNameStore()
         var failClears = false
+        var failingOrigin: String? = null
 
         override suspend fun read(origin: String, profile: String): String? =
             delegate.read(origin, profile)
@@ -647,7 +698,7 @@ class CelesteViewModelTest {
         }
 
         override suspend fun clearOrigin(origin: String) {
-            if (failClears) throw IOException("synthetic local cleanup failure")
+            if (failClears || origin == failingOrigin) throw IOException("synthetic local cleanup failure")
             delegate.clearOrigin(origin)
         }
     }
