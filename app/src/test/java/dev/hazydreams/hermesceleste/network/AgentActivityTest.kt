@@ -68,6 +68,43 @@ class AgentActivityTest {
     }
 
     @Test
+    fun sanitizerRecursivelyRedactsTransportCredentialJsonKeys() {
+        val detail = sanitizeActivityDetail(
+            """
+            {"outer":[
+              {"Authorization":"synthetic-authorization"},
+              {"proxy-authorization":"synthetic-proxy-authorization"},
+              {"Cookie":"synthetic-cookie"},
+              {"set-cookie":["synthetic-set-cookie"]}
+            ]}
+            """.trimIndent(),
+            maxCodePoints = 1_000,
+        )
+
+        val embedded = sanitizeActivityDetail(
+            "wrapper {\"headers\":{\"authorization\":\"synthetic-embedded-authorization\"}}",
+            maxCodePoints = 1_000,
+        )
+
+        assertTrue(detail.wasRedacted)
+        assertTrue(embedded.wasRedacted)
+        listOf(
+            detail,
+            embedded,
+        ).forEach { sanitized ->
+            listOf(
+                "synthetic-authorization",
+                "synthetic-proxy-authorization",
+                "synthetic-cookie",
+                "synthetic-set-cookie",
+                "synthetic-embedded-authorization",
+            ).forEach { secret -> assertFalse(sanitized.text.contains(secret)) }
+        }
+        assertTrue(detail.text.contains("[redacted]"))
+        assertTrue(embedded.text.contains("[redacted]"))
+    }
+
+    @Test
     fun exactToolIdPairsCompletionAndKeepsToolSeparateFromReasoning() {
         var projection = initialActivityProjection(
             originKey = "https://hermes.test/",
@@ -416,6 +453,34 @@ class AgentActivityTest {
         assertEquals(CorrelationQuality.LegacyName, tool.correlation)
         assertEquals(ActivitySource.Legacy, projection.source)
         assertEquals(ActivityCapabilityState.LegacyToolOnly, projection.capability)
+    }
+
+    @Test
+    fun idlessToolStartReplayDoesNotCreateAnotherOccurrence() {
+        val projection = initialActivityProjection(
+            originKey = "https://hermes.test",
+            profile = "default",
+            storedSessionId = "stored-42",
+            runtimeSessionId = "runtime-7",
+        )
+        val start = event(
+            type = "tool.start",
+            sessionId = "runtime-7",
+            payload = buildJsonObject {
+                put("name", "terminal")
+                put("args", "<tool-input>")
+            },
+        )
+
+        val first = reduceActivityEvent(projection, start, now = now)
+        val replay = reduceActivityEvent(first, start, now = now.plusSeconds(1))
+
+        assertEquals(first, replay)
+        assertEquals(1, replay.items.filterIsInstance<ToolActivity>().size)
+        assertEquals(
+            CorrelationQuality.LegacyName,
+            (replay.items.single() as ToolActivity).correlation,
+        )
     }
 
     @Test

@@ -237,6 +237,73 @@ class CelesteViewModelTest {
     }
 
     @Test
+    fun finalAssistantContentRemovesEmbeddedLongServerReasoning() = runTest {
+        val gateway = FakeGateway()
+        val viewModel = openConversation(gateway)
+        val disclosed = "<long-server-summary>" + "x".repeat(13_000)
+
+        gateway.emit(
+            "reasoning.available",
+            buildJsonObject {
+                put("text", disclosed)
+                put("verbose", true)
+            }.toString(),
+        )
+        gateway.emit(
+            "message.complete",
+            buildJsonObject {
+                put("content", "<assistant-before>\n$disclosed\n<assistant-after>")
+                put("status", "complete")
+            }.toString(),
+        )
+        advanceUntilIdle()
+
+        val state = viewModel.state.value
+        assertEquals(
+            "<assistant-before>\n<assistant-after>",
+            state.messages.single { it.role == "assistant" }.text,
+        )
+        val reasoning = state.agentActivity?.items
+            ?.filterIsInstance<ServerReasoningActivity>()
+            ?.single()
+        assertTrue(reasoning?.text?.wasTruncated == true)
+        assertTrue(reasoning?.text?.text?.contains("<long-server-summary>") == true)
+        viewModel.leaveConversation()
+    }
+
+    @Test
+    fun embeddedReasoningInInterimContentIsRemovedWhenFinalSettles() = runTest {
+        val gateway = FakeGateway()
+        val viewModel = openConversation(gateway)
+
+        gateway.emit(
+            "reasoning.available",
+            """{"text":"<server-summary>","verbose":true}""",
+        )
+        gateway.emit(
+            "message.interim",
+            """{"text":"<server-summary>\n<assistant-content>"}""",
+        )
+        gateway.emit(
+            "message.complete",
+            """{"content":"<server-summary>\n<assistant-content>","status":"complete"}""",
+        )
+        advanceUntilIdle()
+
+        assertEquals(
+            listOf("<assistant-content>"),
+            viewModel.state.value.messages.filter { it.role == "assistant" }.map { it.text },
+        )
+        assertEquals(
+            1,
+            viewModel.state.value.agentActivity?.items
+                ?.filterIsInstance<ServerReasoningActivity>()
+                ?.size,
+        )
+        viewModel.leaveConversation()
+    }
+
+    @Test
     fun sendsAndReducesStreamingEventsWithoutDuplicatingCompletion() = runTest {
         val gateway = FakeGateway()
         val viewModel = openConversation(gateway)

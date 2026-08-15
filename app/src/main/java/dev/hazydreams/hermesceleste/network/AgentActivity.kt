@@ -216,13 +216,13 @@ private val sessionTokenHeaderPattern = Regex(
     "(?im)(\\b(?:x[-_]?hermes[-_])?session[-_]?token\\s*[:=]\\s*)[^\\s,;]+",
 )
 private val credentialAssignmentPattern = Regex(
-    "(?i)(\\b(?:api[_-]?key|api[_-]?secret|access[_-]?token|refresh[_-]?token|auth[_-]?token|session[_-]?token|id[_-]?token|client[_-]?secret|password|passwd|secret|credential|private[_-]?key|token)\\s*[:=]\\s*[\\\"']?)[^\\\"'\\s,}&]+",
+    "(?i)(\\b(?:api[_-]?key|api[_-]?secret|access[_-]?token|refresh[_-]?token|auth[_-]?token|session[_-]?token|id[_-]?token|client[_-]?secret|password|passwd|secret|credential|private[_-]?key|token|authorization|proxy[-_]?authorization|cookie|set[-_]?cookie)\\s*[:=]\\s*[\\\"']?)[^\\\"'\\s,}&]+",
 )
 private val quotedCredentialAssignmentPattern = Regex(
-    """(?i)([\"'](?:api[_-]?key|api[_-]?secret|access[_-]?token|refresh[_-]?token|auth[_-]?token|session[_-]?token|id[_-]?token|client[_-]?secret|password|passwd|secret|credential|private[_-]?key|token|key)[\"']\s*:\s*)(\"(?:\\.|[^\"\\])*\"|[^,}\]\s]+)""",
+    """(?i)([\"'](?:api[_-]?key|api[_-]?secret|access[_-]?token|refresh[_-]?token|auth[_-]?token|session[_-]?token|id[_-]?token|client[_-]?secret|password|passwd|secret|credential|private[_-]?key|token|key|authorization|proxy[-_]?authorization|cookie|set[-_]?cookie)[\"']\s*:\s*)(\"(?:\\.|[^\"\\])*\"|[^,}\]\s]+)""",
 )
 private val credentialJsonKeyPattern = Regex(
-    "(?i)^(?:api[_-]?key|api[_-]?secret|access[_-]?token|refresh[_-]?token|auth[_-]?token|session[_-]?token|id[_-]?token|client[_-]?secret|password|passwd|secret|credential|private[_-]?key|token|key)$",
+    "(?i)^(?:api[_-]?key|api[_-]?secret|access[_-]?token|refresh[_-]?token|auth[_-]?token|session[_-]?token|id[_-]?token|client[_-]?secret|password|passwd|secret|credential|private[_-]?key|token|key|authorization|proxy[-_]?authorization|cookie|set[-_]?cookie)$",
 )
 private val credentialQueryPattern = Regex(
     "(?i)([?&](?:api[_-]?key|api[_-]?secret|access[_-]?token|refresh[_-]?token|auth[_-]?token|session[_-]?token|id[_-]?token|client[_-]?secret|password|secret|credential|token|key)=)[^&#\\s]+",
@@ -606,6 +606,19 @@ internal object AgentActivityReducer {
             limit = TOOL_ACTIVITY_DETAIL_LIMIT,
         )
         val items = projection.items.toMutableList()
+        if (!legacy && callId == null) {
+            // An ID-less replay has no protocol identity. Treat an identical
+            // active name/input occurrence as the same official start; legacy
+            // aliases retain their occurrence queue for ambiguity handling.
+            val replay = items.any { item ->
+                item is ToolActivity &&
+                    item.callId == null &&
+                    item.name == name &&
+                    item.phase.isInFlight() &&
+                    item.input?.text == input?.text
+            }
+            if (replay) return projection
+        }
         val activeCandidates = if (callId == null) {
             items.withIndex().filter { (_, item) ->
                 item is ToolActivity && item.name == name && item.phase.isInFlight()

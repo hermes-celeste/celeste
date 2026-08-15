@@ -17,6 +17,7 @@ import dev.hazydreams.hermesceleste.network.DashboardProfile
 import dev.hazydreams.hermesceleste.network.DashboardProbeResult
 import dev.hazydreams.hermesceleste.network.DashboardService
 import dev.hazydreams.hermesceleste.network.DashboardUrlPolicy
+import dev.hazydreams.hermesceleste.network.DisplayedDetail
 import dev.hazydreams.hermesceleste.network.GatewayConnection
 import dev.hazydreams.hermesceleste.network.GatewayConnectionState
 import dev.hazydreams.hermesceleste.network.GatewayCredential
@@ -1317,16 +1318,25 @@ internal class CelesteViewModel(
         }
         val currentMessages = mutableState.value.messages
         val previous = currentMessages.lastOrNull()
+        val previousTextForMerge = previous
+            ?.takeIf { it.role == "assistant" && it.interim }
+            ?.let { deduplicateReasoningFromFinalContent(it.text) }
+            ?: previous?.text
         val continuesInterim = !interim &&
             previous?.role == "assistant" &&
             previous.interim &&
             finalText.isNotBlank() &&
-            (finalText.startsWith(previous.text) || previous.text.startsWith(finalText))
+            (finalText.startsWith(previousTextForMerge.orEmpty()) ||
+                previousTextForMerge.orEmpty().startsWith(finalText))
         val messages = when {
             !interim && previous?.let(::isReasoningOnlyInterim) == true && finalText.isBlank() ->
                 currentMessages.dropLast(1)
             continuesInterim -> currentMessages.dropLast(1) + previous.copy(
-                text = if (finalText.length >= previous.text.length) finalText else previous.text,
+                text = if (finalText.length >= previousTextForMerge.orEmpty().length) {
+                    finalText
+                } else {
+                    previousTextForMerge.orEmpty()
+                },
                 interim = false,
             )
             finalText.isNotBlank() && previous?.let { it.role == "assistant" && it.text == finalText } != true ->
@@ -1348,29 +1358,68 @@ internal class CelesteViewModel(
         var content = raw
         val reasoningDetails = mutableState.value.agentActivity?.items
             .filterIsInstance<ServerReasoningActivity>()
-            .map { it.text.text.trim() }
-            .filter(String::isNotBlank)
-            .distinct()
-            .sortedByDescending { it.length }
-        reasoningDetails.forEach { reasoning ->
-            val normalized = content.trim()
-            content = when {
-                normalized == reasoning -> ""
-                normalized.startsWith(reasoning) -> normalized.removePrefix(reasoning).trimStart()
-                normalized.endsWith(reasoning) -> normalized.removeSuffix(reasoning).trimEnd()
-                else -> content
-            }
+            .map(ServerReasoningActivity::text)
+            .filter { it.text.isNotBlank() }
+            .distinctBy { it.text }
+            .sortedByDescending { it.text.length }
+        reasoningDetails.forEach { detail ->
+            content = removeDisclosedReasoning(content, detail)
         }
-        return content
+        return content.trimEnd()
+    }
+
+    private fun removeDisclosedReasoning(content: String, detail: DisplayedDetail): String {
+        var result = removeExactReasoningOccurrences(content, detail.text.trim())
+        if (!detail.wasTruncated) return result
+
+        // The projection intentionally retains only a bounded prefix. If the
+        // final assistant field repeats the full disclosed body, use the safe
+        // prefix plus its original code-point count to remove that occurrence
+        // without retaining the undisplayed tail locally.
+        val marker = " … truncated (original length: ${detail.originalLength} chars)"
+        val prefix = detail.text.removeSuffix(marker)
+        if (prefix.isBlank()) return result
+        var start = result.indexOf(prefix)
+        while (start >= 0) {
+            val end = runCatching {
+                result.offsetByCodePoints(start, detail.originalLength)
+            }.getOrNull()
+            if (end == null) break
+            result = joinAfterReasoningRemoval(result, start, end)
+            start = result.indexOf(prefix)
+        }
+        return result
+    }
+
+    private fun removeExactReasoningOccurrences(content: String, reasoning: String): String {
+        if (reasoning.isBlank()) return content
+        var result = content
+        var start = result.indexOf(reasoning)
+        while (start >= 0) {
+            result = joinAfterReasoningRemoval(result, start, start + reasoning.length)
+            start = result.indexOf(reasoning)
+        }
+        return result
+    }
+
+    private fun joinAfterReasoningRemoval(content: String, start: Int, end: Int): String {
+        val before = content.substring(0, start)
+        val after = content.substring(end)
+        val hasLineBreak = before.takeLastWhile(Char::isWhitespace).any { it == '\n' || it == '\r' } ||
+            after.takeWhile(Char::isWhitespace).any { it == '\n' || it == '\r' }
+        val cleanBefore = before.trimEnd()
+        val cleanAfter = after.trimStart()
+        val separator = if (cleanBefore.isNotEmpty() && cleanAfter.isNotEmpty()) {
+            if (hasLineBreak) "\n" else " "
+        } else {
+            ""
+        }
+        return cleanBefore + separator + cleanAfter
     }
 
     private fun isReasoningOnlyInterim(message: ConversationMessage): Boolean {
         if (message.role != "assistant" || !message.interim) return false
-        val text = message.text.trim()
-        return mutableState.value.agentActivity?.items
-            ?.filterIsInstance<ServerReasoningActivity>()
-            ?.any { it.text.text.trim() == text && text.isNotBlank() }
-            == true
+        return deduplicateReasoningFromFinalContent(message.text).isBlank()
     }
 
     private suspend fun recreateBlankSession(
