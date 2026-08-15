@@ -2,7 +2,11 @@ package dev.hazydreams.hermesceleste
 
 import java.io.IOException
 
+import dev.hazydreams.hermesceleste.connection.ConnectionStore
 import dev.hazydreams.hermesceleste.connection.InMemoryConnectionStore
+import dev.hazydreams.hermesceleste.connection.ReusableSecret
+import dev.hazydreams.hermesceleste.connection.SavedConnectionDescriptor
+import dev.hazydreams.hermesceleste.connection.StoredConnection
 import dev.hazydreams.hermesceleste.network.AuthenticationMaterial
 import dev.hazydreams.hermesceleste.network.AuthenticationRejected
 import dev.hazydreams.hermesceleste.network.AuthProvider
@@ -31,6 +35,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.resetMain
+import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
 import kotlinx.coroutines.withContext
@@ -383,6 +388,41 @@ class CelesteViewModelTest {
     }
 
     @Test
+    fun foregroundReloadDoesNotCancelAnInFlightAssistantNameSave() = runTest {
+        val gateway = FakeGateway()
+        val dashboard = FakeDashboard(gateway)
+        val assistantNames = BlockingWriteAssistantNameStore("Juno")
+        val viewModel = CelesteViewModel(
+            dashboard = dashboard,
+            assistantNameStore = assistantNames,
+            reconnectDelayMillis = { _, _ -> 0L },
+        )
+
+        viewModel.updateDashboardUrl("http://hermes.test:9119")
+        viewModel.findDashboard()
+        viewModel.loadSessions()
+        advanceUntilIdle()
+        viewModel.openAssistantNameEditor()
+        viewModel.updateAssistantNameDraft("Nova")
+
+        assistantNames.blockNextWrite()
+        viewModel.saveAssistantName()
+        runCurrent()
+        assertTrue(viewModel.state.value.assistantNameEditor.isSaving)
+
+        viewModel.onForeground()
+        runCurrent()
+        assertTrue(viewModel.state.value.assistantNameEditor.isSaving)
+
+        assistantNames.releaseWrite()
+        advanceUntilIdle()
+
+        assertEquals("Nova", viewModel.state.value.assistantDisplayName)
+        assertFalse(viewModel.state.value.assistantNameEditor.isOpen)
+        assertEquals("Nova", assistantNames.read("http://hermes.test:9119", "default"))
+    }
+
+    @Test
     fun signOutRetainsAliasesButForgetClearsOnlyTheCurrentOrigin() = runTest {
         val gateway = FakeGateway()
         val dashboard = FakeDashboard(gateway)
@@ -469,6 +509,45 @@ class CelesteViewModelTest {
 
         assertNull(assistantNames.read(firstOrigin, "default"))
         assertNull(viewModel.state.value.assistantNameCleanupRetryOrigin)
+    }
+
+    @Test
+    fun connectionForgetFailureRemainsRetryableAfterLocalAliasCleanup() = runTest {
+        val gateway = FakeGateway()
+        val dashboard = FakeDashboard(gateway)
+        val connectionStore = FailingForgetConnectionStore()
+        val assistantNames = InMemoryAssistantNameStore()
+        assistantNames.write("http://hermes.test:9119", "default", "Juno")
+        val viewModel = CelesteViewModel(
+            dashboard = dashboard,
+            connectionStore = connectionStore,
+            assistantNameStore = assistantNames,
+            reconnectDelayMillis = { _, _ -> 0L },
+        )
+
+        viewModel.updateDashboardUrl("http://hermes.test:9119")
+        viewModel.findDashboard()
+        viewModel.loadSessions()
+        advanceUntilIdle()
+
+        viewModel.forgetConnection()
+        advanceUntilIdle()
+
+        assertNull(assistantNames.read("http://hermes.test:9119", "default"))
+        assertTrue(viewModel.state.value.connectionForgetRetryPending)
+        assertEquals(
+            "Celeste could not remove the saved connection. Try again.",
+            viewModel.state.value.errorMessage,
+        )
+        assertTrue(connectionStore.load() != null)
+
+        connectionStore.failForget = false
+        viewModel.retryConnectionCleanup()
+        advanceUntilIdle()
+
+        assertNull(connectionStore.load())
+        assertFalse(viewModel.state.value.connectionForgetRetryPending)
+        assertNull(viewModel.state.value.errorMessage)
     }
 
     @Test
@@ -665,6 +744,37 @@ class CelesteViewModelTest {
         }
     }
 
+    private class BlockingWriteAssistantNameStore(
+        initialValue: String,
+    ) : AssistantNameStore {
+        private var storedValue: String? = initialValue
+        private var blockWrites = false
+        private var release = CompletableDeferred<Unit>()
+
+        override suspend fun read(origin: String, profile: String): String? = storedValue
+
+        override suspend fun write(origin: String, profile: String, name: String?) {
+            if (blockWrites) {
+                blockWrites = false
+                withContext(NonCancellable) { release.await() }
+            }
+            storedValue = name
+        }
+
+        override suspend fun clearOrigin(origin: String) {
+            storedValue = null
+        }
+
+        fun blockNextWrite() {
+            release = CompletableDeferred()
+            blockWrites = true
+        }
+
+        fun releaseWrite() {
+            release.complete(Unit)
+        }
+    }
+
     private class ReadFailingAssistantNameStore(
         private val message: String,
     ) : AssistantNameStore {
@@ -700,6 +810,29 @@ class CelesteViewModelTest {
         override suspend fun clearOrigin(origin: String) {
             if (failClears || origin == failingOrigin) throw IOException("synthetic local cleanup failure")
             delegate.clearOrigin(origin)
+        }
+    }
+
+    private class FailingForgetConnectionStore : ConnectionStore {
+        private val delegate = InMemoryConnectionStore()
+        var failForget = true
+
+        override suspend fun load(): StoredConnection? = delegate.load()
+
+        override suspend fun replace(
+            descriptor: SavedConnectionDescriptor,
+            secret: ReusableSecret?,
+        ) {
+            delegate.replace(descriptor, secret)
+        }
+
+        override suspend fun clearSecret() {
+            delegate.clearSecret()
+        }
+
+        override suspend fun forget() {
+            if (failForget) throw IOException("synthetic saved-connection cleanup failure")
+            delegate.forget()
         }
     }
 

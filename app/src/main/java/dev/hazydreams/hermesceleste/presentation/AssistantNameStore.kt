@@ -140,6 +140,12 @@ internal interface AssistantNameStore {
     suspend fun clearOrigin(origin: String)
 }
 
+internal interface AssistantNameRecordStorage {
+    fun readRecords(): String?
+
+    fun commitRecords(encoded: String?): Boolean
+}
+
 @Serializable
 internal data class AssistantNameRecord(
     val version: Int,
@@ -239,15 +245,20 @@ internal class InMemoryAssistantNameStore(
 }
 
 internal class AndroidAssistantNameStore(
-    context: Context,
+    private val recordStorage: AssistantNameRecordStorage,
     private val json: Json = Json { ignoreUnknownKeys = false },
-    private val diagnostics: AssistantNameDiagnostics = LogcatAssistantNameDiagnostics,
+    private val diagnostics: AssistantNameDiagnostics = NoOpAssistantNameDiagnostics,
 ) : AssistantNameStore {
-    private val applicationContext = context.applicationContext
-    private val preferences = applicationContext.getSharedPreferences(
-        PREFERENCES_NAME,
-        Context.MODE_PRIVATE,
+    constructor(
+        context: Context,
+        json: Json = Json { ignoreUnknownKeys = false },
+        diagnostics: AssistantNameDiagnostics = LogcatAssistantNameDiagnostics,
+    ) : this(
+        recordStorage = SharedPreferencesAssistantNameRecordStorage(context),
+        json = json,
+        diagnostics = diagnostics,
     )
+
     private val mutex = Mutex()
 
     override suspend fun read(origin: String, profile: String): String? = withContext(Dispatchers.IO) {
@@ -289,20 +300,35 @@ internal class AndroidAssistantNameStore(
     }
 
     private fun readRecords(): List<AssistantNameRecord> {
-        val encoded = preferences.getString(KEY_RECORDS, null) ?: return emptyList()
+        val encoded = recordStorage.readRecords() ?: return emptyList()
         return decodeAssistantNameRecords(encoded, json, diagnostics)
     }
 
     private fun commitRecords(records: List<AssistantNameRecord>) {
         commitAssistantNameRecords(records, json) { encoded ->
-            val editor = preferences.edit()
-            if (encoded == null) {
-                editor.remove(KEY_RECORDS)
-            } else {
-                editor.putString(KEY_RECORDS, encoded)
-            }
-            editor.commit()
+            recordStorage.commitRecords(encoded)
         }
+    }
+}
+
+private class SharedPreferencesAssistantNameRecordStorage(
+    context: Context,
+) : AssistantNameRecordStorage {
+    private val preferences = context.applicationContext.getSharedPreferences(
+        PREFERENCES_NAME,
+        Context.MODE_PRIVATE,
+    )
+
+    override fun readRecords(): String? = preferences.getString(KEY_RECORDS, null)
+
+    override fun commitRecords(encoded: String?): Boolean {
+        val editor = preferences.edit()
+        if (encoded == null) {
+            editor.remove(KEY_RECORDS)
+        } else {
+            editor.putString(KEY_RECORDS, encoded)
+        }
+        return editor.commit()
     }
 
     private companion object {

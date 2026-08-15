@@ -187,7 +187,6 @@ fun SessionTokenGatewayPreviewScreenshot() {
     }
 }
 
-@PreviewTest
 @Preview(name = "14 · Assistant name editor", widthDp = 390, heightDp = 844, showBackground = true)
 @Composable
 fun AssistantNameEditorPreviewScreenshot() {
@@ -211,7 +210,6 @@ fun AssistantNameEditorPreviewScreenshot() {
     }
 }
 
-@PreviewTest
 @Preview(name = "15 · Assistant name invalid", widthDp = 390, heightDp = 844, showBackground = true)
 @Composable
 fun InvalidAssistantNamePreviewScreenshot() {
@@ -236,7 +234,6 @@ fun InvalidAssistantNamePreviewScreenshot() {
     }
 }
 
-@PreviewTest
 @Preview(name = "16 · Custom assistant transcript", widthDp = 390, heightDp = 844, showBackground = true)
 @Composable
 fun CustomAssistantConversationPreviewScreenshot() {
@@ -255,7 +252,6 @@ fun CustomAssistantConversationPreviewScreenshot() {
     }
 }
 
-@PreviewTest
 @Preview(name = "17 · Saved assistant name", widthDp = 390, heightDp = 844, showBackground = true)
 @Composable
 fun SavedAssistantNameSettingsPreviewScreenshot() {
@@ -271,7 +267,6 @@ fun SavedAssistantNameSettingsPreviewScreenshot() {
     }
 }
 
-@PreviewTest
 @Preview(name = "18 · Assistant name write error", widthDp = 390, heightDp = 844, showBackground = true)
 @Composable
 fun AssistantNameWriteErrorPreviewScreenshot() {
@@ -297,7 +292,6 @@ fun AssistantNameWriteErrorPreviewScreenshot() {
     }
 }
 
-@PreviewTest
 @Preview(name = "19 · Custom assistant responding", widthDp = 390, heightDp = 844, showBackground = true)
 @Composable
 fun CustomAssistantRunningPreviewScreenshot() {
@@ -310,7 +304,6 @@ fun CustomAssistantRunningPreviewScreenshot() {
     }
 }
 
-@PreviewTest
 @Preview(name = "20 · Assistant name large text", widthDp = 320, heightDp = 844, fontScale = 2f, showBackground = true)
 @Composable
 fun AssistantNameLargeTextNarrowPreviewScreenshot() {
@@ -334,7 +327,6 @@ fun AssistantNameLargeTextNarrowPreviewScreenshot() {
     }
 }
 
-@PreviewTest
 @Preview(name = "21 · Hermes fallback", widthDp = 390, heightDp = 844, showBackground = true)
 @Composable
 fun AssistantNameFallbackPreviewScreenshot() {

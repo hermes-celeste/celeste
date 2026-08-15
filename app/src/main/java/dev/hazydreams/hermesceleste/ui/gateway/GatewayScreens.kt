@@ -97,6 +97,7 @@ internal data class GatewaySettingsUiState(
     val loadingMessage: String?,
     val errorMessage: String?,
     val assistantNameCleanupRetryOrigin: String? = null,
+    val connectionForgetRetryPending: Boolean = false,
 )
 
 internal data class GatewaySettingsActions(
@@ -110,6 +111,7 @@ internal data class GatewaySettingsActions(
     val onForgetConnection: () -> Unit,
     val onBack: (() -> Unit)?,
     val onRetryAssistantNameCleanup: () -> Unit = {},
+    val onRetryConnectionCleanup: () -> Unit = {},
 )
 
 @Composable
@@ -599,6 +601,18 @@ internal fun GatewaySettingsScreen(
                     modifier = Modifier.fillMaxWidth(),
                 ) {
                     Text("Retry local cleanup", color = CelesteBlue)
+                }
+            }
+
+            if (state.connectionForgetRetryPending &&
+                state.assistantNameCleanupRetryOrigin == null &&
+                loadingMessage == null
+            ) {
+                TextButton(
+                    onClick = actions.onRetryConnectionCleanup,
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Text("Retry saved-connection cleanup", color = CelesteBlue)
                 }
             }
 

@@ -6,8 +6,10 @@ import dev.hazydreams.hermesceleste.presentation.ASSISTANT_NAME_STORE_VERSION
 import dev.hazydreams.hermesceleste.presentation.AssistantNameDiagnostic
 import dev.hazydreams.hermesceleste.presentation.AssistantNameDiagnostics
 import dev.hazydreams.hermesceleste.presentation.AssistantNameKey
+import dev.hazydreams.hermesceleste.presentation.AssistantNameRecordStorage
 import dev.hazydreams.hermesceleste.presentation.AssistantNameRecord
 import dev.hazydreams.hermesceleste.presentation.AssistantNameRecordCommitter
+import dev.hazydreams.hermesceleste.presentation.AndroidAssistantNameStore
 import dev.hazydreams.hermesceleste.presentation.commitAssistantNameRecords
 import dev.hazydreams.hermesceleste.presentation.decodeAssistantNameRecords
 import dev.hazydreams.hermesceleste.presentation.InMemoryAssistantNameStore
@@ -69,6 +71,44 @@ class AssistantNameStoreTest {
             // Expected.
         }
         assertNull(store.read("https://gateway.example", "default"))
+    }
+
+    @Test
+    fun androidStorePersistsAcrossRecreatedInstancesAndClearsOnlyOneOrigin() = runTest {
+        val storage = FakeAssistantNameRecordStorage()
+        val first = AndroidAssistantNameStore(storage)
+        first.write("https://gateway.example/hermes", "default", "Juno")
+        first.write("https://gateway.example/other", "default", "Atlas")
+
+        val recreated = AndroidAssistantNameStore(storage)
+        assertEquals("Juno", recreated.read("https://gateway.example/hermes/", "default"))
+        assertEquals("Atlas", recreated.read("https://gateway.example/other", "default"))
+
+        recreated.clearOrigin("https://gateway.example/hermes")
+
+        assertNull(recreated.read("https://gateway.example/hermes", "default"))
+        assertEquals("Atlas", AndroidAssistantNameStore(storage).read("https://gateway.example/other", "default"))
+    }
+
+    @Test
+    fun androidStoreSurfacesStorageFailuresWithoutReplacingTheLastCommittedPayload() = runTest {
+        val storage = FakeAssistantNameRecordStorage()
+        val store = AndroidAssistantNameStore(storage)
+        store.write("https://gateway.example", "default", "Juno")
+
+        storage.failCommit = true
+        val writeFailure = runCatching {
+            store.write("https://gateway.example", "default", "Nova")
+        }.exceptionOrNull()
+
+        assertTrue(writeFailure is IOException)
+        assertEquals("Juno", AndroidAssistantNameStore(storage).read("https://gateway.example", "default"))
+
+        storage.failRead = true
+        val readFailure = runCatching {
+            store.read("https://gateway.example", "default")
+        }.exceptionOrNull()
+        assertTrue(readFailure is IOException)
     }
 
     @Test
@@ -145,5 +185,22 @@ class AssistantNameStoreTest {
         assertTrue(diagnostics.contains(AssistantNameDiagnostic.MalformedPayload))
         assertTrue(diagnostics.none { it.code.contains("Juno") })
         assertTrue(diagnostics.none { it.code.contains("private") })
+    }
+
+    private class FakeAssistantNameRecordStorage : AssistantNameRecordStorage {
+        var persistedRecords: String? = null
+        var failRead = false
+        var failCommit = false
+
+        override fun readRecords(): String? {
+            if (failRead) throw IOException("synthetic record read failure")
+            return persistedRecords
+        }
+
+        override fun commitRecords(encoded: String?): Boolean {
+            if (failCommit) return false
+            persistedRecords = encoded
+            return true
+        }
     }
 }

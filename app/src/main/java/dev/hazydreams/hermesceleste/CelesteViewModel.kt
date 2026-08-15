@@ -93,6 +93,7 @@ internal data class CelesteUiState(
     val assistantDisplayName: String = DEFAULT_ASSISTANT_NAME,
     val assistantNameKey: AssistantNameKey? = null,
     val assistantNameCleanupRetryOrigin: String? = null,
+    val connectionForgetRetryPending: Boolean = false,
     val assistantNameEditor: AssistantNameEditState = AssistantNameEditState(),
     val activeSummary: StoredSession? = null,
     val messages: List<ConversationMessage> = emptyList(),
@@ -144,11 +145,14 @@ internal class CelesteViewModel(
     private val connectionStoreMutex = Mutex()
     private val assistantNameStoreMutex = Mutex()
     private var assistantNameContextGeneration = 0L
+    private var assistantNameReadGeneration = 0L
+    private var assistantNameSaveGeneration = 0L
     private var assistantNameReadJob: Job? = null
     private var assistantNameSaveJob: Job? = null
     private var currentDescriptor: SavedConnectionDescriptor? = null
     private var pendingAssistantNameContext: AssistantNameContext? = null
     private val pendingAssistantNameCleanupOrigins = linkedSetOf<String>()
+    private var pendingConnectionForget = false
     private var reconnectAttempts = 0
     private var reconciling = false
     private var currentSessionCanResume = true
@@ -235,7 +239,11 @@ internal class CelesteViewModel(
             return
         }
 
-        val generation = assistantNameContextGeneration
+        val contextGeneration = assistantNameContextGeneration
+        val saveGeneration = ++assistantNameSaveGeneration
+        assistantNameReadGeneration += 1
+        assistantNameReadJob?.cancel()
+        assistantNameReadJob = null
         mutableState.value = snapshot.copy(
             assistantNameEditor = editor.copy(
                 isSaving = true,
@@ -249,15 +257,23 @@ internal class CelesteViewModel(
                 assistantNameStoreMutex.withLock {
                     assistantNameStore.write(key.origin, key.profile, validation.normalized)
                 }
-                if (!isCurrentAssistantNameContext(generation, key)) return@launch
+                if (!isCurrentAssistantNameSave(contextGeneration, key, saveGeneration)) {
+                    return@launch
+                }
+                assistantNameReadGeneration += 1
+                assistantNameReadJob?.cancel()
+                assistantNameReadJob = null
                 mutableState.value = mutableState.value.copy(
                     assistantDisplayName = validation.normalized ?: DEFAULT_ASSISTANT_NAME,
                     assistantNameEditor = AssistantNameEditState(),
                 )
+                assistantNameSaveJob = null
             } catch (error: CancellationException) {
                 throw error
             } catch (_: Throwable) {
-                if (!isCurrentAssistantNameContext(generation, key)) return@launch
+                if (!isCurrentAssistantNameSave(contextGeneration, key, saveGeneration)) {
+                    return@launch
+                }
                 mutableState.value = mutableState.value.copy(
                     assistantNameEditor = mutableState.value.assistantNameEditor.copy(
                         isSaving = false,
@@ -265,6 +281,7 @@ internal class CelesteViewModel(
                         isRetryableError = true,
                     ),
                 )
+                assistantNameSaveJob = null
             }
         }
     }
@@ -283,13 +300,20 @@ internal class CelesteViewModel(
         key: AssistantNameKey?,
         baseState: CelesteUiState = mutableState.value,
     ) {
-        assistantNameContextGeneration += 1
-        val generation = assistantNameContextGeneration
-        assistantNameReadJob?.cancel()
-        assistantNameSaveJob?.cancel()
-        assistantNameReadJob = null
-        assistantNameSaveJob = null
         val sameContext = key != null && baseState.assistantNameKey == key
+        val saveInFlight = sameContext && assistantNameSaveJob?.isActive == true
+        if (!sameContext) {
+            assistantNameContextGeneration += 1
+            assistantNameSaveGeneration += 1
+            assistantNameSaveJob?.cancel()
+            assistantNameSaveJob = null
+        }
+        assistantNameReadGeneration += 1
+        val contextGeneration = assistantNameContextGeneration
+        val readGeneration = assistantNameReadGeneration
+        val saveGeneration = assistantNameSaveGeneration
+        assistantNameReadJob?.cancel()
+        assistantNameReadJob = null
         mutableState.value = baseState.copy(
             assistantDisplayName = if (sameContext) {
                 baseState.assistantDisplayName.ifBlank { DEFAULT_ASSISTANT_NAME }
@@ -297,7 +321,11 @@ internal class CelesteViewModel(
                 DEFAULT_ASSISTANT_NAME
             },
             assistantNameKey = key,
-            assistantNameEditor = AssistantNameEditState(),
+            assistantNameEditor = if (saveInFlight) {
+                baseState.assistantNameEditor
+            } else {
+                AssistantNameEditState()
+            },
         )
         if (key == null) return
 
@@ -324,7 +352,15 @@ internal class CelesteViewModel(
                     }
                 }
             }
-            if (!isCurrentAssistantNameContext(generation, key)) return@launch
+            if (!isCurrentAssistantNameRead(
+                    contextGeneration = contextGeneration,
+                    readGeneration = readGeneration,
+                    saveGeneration = saveGeneration,
+                    key = key,
+                )
+            ) {
+                return@launch
+            }
             mutableState.value = mutableState.value.copy(
                 assistantDisplayName = storedName ?: DEFAULT_ASSISTANT_NAME,
             )
@@ -348,6 +384,24 @@ internal class CelesteViewModel(
     ): Boolean =
         assistantNameContextGeneration == generation && mutableState.value.assistantNameKey == key
 
+    private fun isCurrentAssistantNameRead(
+        contextGeneration: Long,
+        readGeneration: Long,
+        saveGeneration: Long,
+        key: AssistantNameKey,
+    ): Boolean =
+        isCurrentAssistantNameContext(contextGeneration, key) &&
+            assistantNameReadGeneration == readGeneration &&
+            assistantNameSaveGeneration == saveGeneration
+
+    private fun isCurrentAssistantNameSave(
+        contextGeneration: Long,
+        key: AssistantNameKey,
+        saveGeneration: Long,
+    ): Boolean =
+        isCurrentAssistantNameContext(contextGeneration, key) &&
+            assistantNameSaveGeneration == saveGeneration
+
     private fun assistantNameOriginFor(state: CelesteUiState): String? =
         state.assistantNameKey?.origin
             ?: AssistantNameKey.from(
@@ -358,6 +412,33 @@ internal class CelesteViewModel(
     private fun cleanupRetryOrigin(preferredOrigin: String? = null): String? =
         preferredOrigin?.takeIf { it in pendingAssistantNameCleanupOrigins }
             ?: pendingAssistantNameCleanupOrigins.firstOrNull()
+
+    private suspend fun captureCleanupFailure(
+        operation: suspend () -> Unit,
+    ): Throwable? = try {
+        operation()
+        null
+    } catch (error: CancellationException) {
+        throw error
+    } catch (error: Throwable) {
+        error
+    }
+
+    private fun cleanupErrorMessage(
+        assistantNameError: Throwable?,
+        connectionError: Throwable?,
+    ): String? {
+        val assistantNamePending = assistantNameError != null ||
+            pendingAssistantNameCleanupOrigins.isNotEmpty()
+        return when {
+            assistantNamePending && connectionError != null -> {
+                "Celeste could not remove the local assistant name or saved connection. Try again."
+            }
+            assistantNamePending -> "Celeste could not remove the local assistant name. Try again."
+            connectionError != null -> "Celeste could not remove the saved connection. Try again."
+            else -> null
+        }
+    }
 
     fun findDashboard() {
         val rawUrl = mutableState.value.dashboardUrl
@@ -464,6 +545,7 @@ internal class CelesteViewModel(
                 if (!isCurrentConnectionAttempt(attempt)) return@onSuccess
                 credential = remembered.loaded.credential
                 currentDescriptor = remembered.descriptor
+                pendingConnectionForget = false
                 publishConnectedDashboard(
                     loaded = remembered.loaded,
                     password = "",
@@ -567,6 +649,7 @@ internal class CelesteViewModel(
         if (forgottenOrigin != null) {
             pendingAssistantNameCleanupOrigins += forgottenOrigin
         }
+        pendingConnectionForget = true
         val activeCredential = credential
         val attempt = beginConnectionAttempt()
         resetAssistantNameContext()
@@ -576,22 +659,37 @@ internal class CelesteViewModel(
         mutableState.value = CelesteUiState(
             connectionPhase = ConnectionPhase.ManualSetup,
             loadingMessage = "Forgetting this connection…",
-            assistantNameCleanupRetryOrigin = cleanupRetryOrigin(),
+            assistantNameCleanupRetryOrigin = cleanupRetryOrigin(
+                preferredOrigin = forgottenOrigin,
+            ),
         )
         connectionJob = viewModelScope.launch {
-            val error = connectionStoreMutex.withLock {
-                runCatching { connectionStore.forget() }.exceptionOrNull()
-            }
             val assistantNameError = forgottenOrigin?.let { origin ->
                 assistantNameStoreMutex.withLock {
-                    runCatching { assistantNameStore.clearOrigin(origin) }.exceptionOrNull()
+                    captureCleanupFailure { assistantNameStore.clearOrigin(origin) }
                 }
             }
             if (assistantNameError == null && forgottenOrigin != null) {
                 pendingAssistantNameCleanupOrigins -= forgottenOrigin
             }
+            val connectionError = if (assistantNameError == null) {
+                connectionStoreMutex.withLock {
+                    captureCleanupFailure { connectionStore.forget() }
+                }
+            } else {
+                null
+            }
+            if (assistantNameError == null && connectionError == null) {
+                pendingConnectionForget = false
+            }
             if (activeCredential == GatewayCredential.CookieSession && snapshot.probe != null) {
-                runCatching { dashboard.logout(snapshot.probe.baseUrl) }
+                try {
+                    dashboard.logout(snapshot.probe.baseUrl)
+                } catch (error: CancellationException) {
+                    throw error
+                } catch (_: Throwable) {
+                    // Local cleanup remains authoritative when the dashboard is offline.
+                }
             }
             dashboard.clearAuthentication()
             if (!isCurrentConnectionAttempt(attempt)) return@launch
@@ -600,13 +698,8 @@ internal class CelesteViewModel(
                 assistantNameCleanupRetryOrigin = cleanupRetryOrigin(
                     preferredOrigin = forgottenOrigin.takeIf { assistantNameError != null },
                 ),
-                errorMessage = when {
-                    assistantNameError != null -> {
-                        "Celeste could not remove the local assistant name. Try again."
-                    }
-                    error != null -> "Celeste could not remove the saved connection. Try again."
-                    else -> null
-                },
+                connectionForgetRetryPending = connectionError != null,
+                errorMessage = cleanupErrorMessage(assistantNameError, connectionError),
             )
         }
     }
@@ -619,25 +712,65 @@ internal class CelesteViewModel(
             loadingMessage = "Removing the local assistant name…",
             errorMessage = null,
             assistantNameCleanupRetryOrigin = retryOrigin,
+            connectionForgetRetryPending = false,
         )
         connectionJob = viewModelScope.launch {
-            val error = assistantNameStoreMutex.withLock {
-                runCatching { assistantNameStore.clearOrigin(retryOrigin) }.exceptionOrNull()
+            val assistantNameError = assistantNameStoreMutex.withLock {
+                captureCleanupFailure { assistantNameStore.clearOrigin(retryOrigin) }
             }
-            if (error == null) {
+            if (assistantNameError == null) {
                 pendingAssistantNameCleanupOrigins -= retryOrigin
+            }
+            val connectionError = if (assistantNameError == null && pendingConnectionForget) {
+                connectionStoreMutex.withLock {
+                    captureCleanupFailure { connectionStore.forget() }
+                }
+            } else {
+                null
+            }
+            if (assistantNameError == null && connectionError == null && pendingConnectionForget) {
+                pendingConnectionForget = false
             }
             if (!isCurrentConnectionAttempt(attempt)) return@launch
             mutableState.value = mutableState.value.copy(
                 loadingMessage = null,
                 assistantNameCleanupRetryOrigin = cleanupRetryOrigin(
-                    preferredOrigin = retryOrigin.takeIf { error != null },
+                    preferredOrigin = retryOrigin.takeIf { assistantNameError != null },
                 ),
-                errorMessage = if (error == null) {
-                    null
+                assistantDisplayName = if (
+                    assistantNameError == null &&
+                    mutableState.value.assistantNameKey?.origin == retryOrigin
+                ) {
+                    DEFAULT_ASSISTANT_NAME
                 } else {
-                    "Celeste could not remove the local assistant name. Try again."
+                    mutableState.value.assistantDisplayName
                 },
+                connectionForgetRetryPending = connectionError != null,
+                errorMessage = cleanupErrorMessage(assistantNameError, connectionError),
+            )
+        }
+    }
+
+    fun retryConnectionCleanup() {
+        if (!pendingConnectionForget || pendingAssistantNameCleanupOrigins.isNotEmpty()) return
+        val attempt = beginConnectionAttempt()
+        mutableState.value = mutableState.value.copy(
+            loadingMessage = "Removing the saved connection…",
+            errorMessage = null,
+            connectionForgetRetryPending = true,
+        )
+        connectionJob = viewModelScope.launch {
+            val connectionError = connectionStoreMutex.withLock {
+                captureCleanupFailure { connectionStore.forget() }
+            }
+            if (connectionError == null) {
+                pendingConnectionForget = false
+            }
+            if (!isCurrentConnectionAttempt(attempt)) return@launch
+            mutableState.value = mutableState.value.copy(
+                loadingMessage = null,
+                connectionForgetRetryPending = connectionError != null,
+                errorMessage = cleanupErrorMessage(null, connectionError),
             )
         }
     }
@@ -750,6 +883,7 @@ internal class CelesteViewModel(
             }
             credential = loaded.credential
             currentDescriptor = descriptor
+            pendingConnectionForget = false
             mutableState.value = mutableState.value.copy(
                 dashboardUrl = probe.baseUrl,
                 probe = probe,
