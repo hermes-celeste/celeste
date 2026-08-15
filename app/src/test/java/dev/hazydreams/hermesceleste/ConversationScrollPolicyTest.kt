@@ -43,6 +43,20 @@ class ConversationScrollPolicyTest {
     }
 
     @Test
+    fun terminalClearanceUsesMeasuredDockTopRatherThanTrailingPaddingEnd() {
+        assertEquals(
+            26,
+            terminalBottomClearancePx(
+                terminalOffsetPx = 780,
+                terminalSizePx = 74,
+                viewportEndOffsetPx = 1_000,
+                afterContentPaddingPx = 146,
+                dockHeightPx = 120,
+            ),
+        )
+    }
+
+    @Test
     fun viewportGeometryIsPendingUntilTheDockAndListHaveUsableBounds() {
         assertFalse(hasUsableViewportGeometry(0, 0, 400))
         assertFalse(hasUsableViewportGeometry(120, 400, 400))

@@ -90,6 +90,8 @@ class ConversationViewportDeviceTest {
 
     @Test
     fun systemBackDismissesImeBeforeLeavingConversation() {
+        composeRule.runOnUiThread { composeRule.activity.useProductionInsets() }
+        composeRule.waitForIdle()
         val composer = composeRule.onNode(hasSetTextAction())
         composer.performClick()
         composer.performTextInput("synthetic keyboard text")
@@ -109,6 +111,45 @@ class ConversationViewportDeviceTest {
         device.pressBack()
         composeRule.waitForIdle()
         assertEquals("The second system Back delegates to the route.", 1, composeRule.activity.backCalls)
+    }
+
+    @Test
+    fun productionInsetsTrackImeOpenAndClose() {
+        composeRule.runOnUiThread { composeRule.activity.useProductionInsets() }
+        composeRule.waitForIdle()
+        val composer = composeRule.onNode(hasSetTextAction())
+        composer.performClick()
+        composer.performTextInput("production inset keyboard text")
+        composeRule.waitForIdle()
+
+        var imeVisible = false
+        composeRule.runOnIdle {
+            imeVisible = composeRule.activity.window.decorView.rootWindowInsets
+                ?.isVisible(AndroidWindowInsets.Type.ime()) == true
+        }
+        assumeTrue("This gate requires a real visible IME.", imeVisible)
+        assertProductionBoundsAgainstWindowInsets()
+
+        device.pressBack()
+        composeRule.waitForIdle()
+        var imeHidden = false
+        composeRule.runOnIdle {
+            imeHidden = composeRule.activity.window.decorView.rootWindowInsets
+                ?.isVisible(AndroidWindowInsets.Type.ime()) == false
+        }
+        assertTrue("The production IME inset must settle after Back.", imeHidden)
+        assertProductionBoundsAgainstWindowInsets()
+    }
+
+    @Test
+    fun productionInsetsKeepComposerGrowthAndTerminalBoundsUsable() {
+        composeRule.runOnUiThread {
+            composeRule.activity.useProductionInsets()
+            composeRule.activity.setContentDraft(longComposerDraft())
+        }
+        composeRule.waitForIdle()
+        assertTerminalClearsDock()
+        assertProductionBoundsAgainstWindowInsets()
     }
 
     @Test
@@ -146,6 +187,8 @@ class ConversationViewportDeviceTest {
     @Test
     fun cutoutDeviceKeepsSafeDrawingHeaderClearance() {
         assumeTrue("This gate requires a display cutout device.", Build.VERSION.SDK_INT >= 28)
+        composeRule.runOnUiThread { composeRule.activity.useProductionInsets() }
+        composeRule.waitForIdle()
         var hasCutout = false
         composeRule.runOnIdle {
             hasCutout = composeRule.activity.window.decorView.rootWindowInsets?.displayCutout != null
@@ -157,22 +200,28 @@ class ConversationViewportDeviceTest {
 
     @Test
     fun gestureNavigationUsesTheMeasuredGestureCategory() {
+        composeRule.runOnUiThread { composeRule.activity.useProductionInsets() }
+        composeRule.waitForIdle()
         val insets = currentRootInsetsOrSkip()
         val navigationBottom = insets.getInsets(AndroidWindowInsets.Type.navigationBars()).bottom
         val gestureBottom = insets.getInsets(AndroidWindowInsets.Type.systemGestures()).bottom
         assumeTrue("This gate requires gesture navigation.", gestureBottom > navigationBottom)
         assertTrue(activeBottomOcclusionPx(0, navigationBottom, gestureBottom) >= gestureBottom)
         assertTerminalClearsDock()
+        assertProductionBoundsAgainstWindowInsets()
     }
 
     @Test
     fun threeButtonNavigationUsesTheMeasuredNavigationCategory() {
+        composeRule.runOnUiThread { composeRule.activity.useProductionInsets() }
+        composeRule.waitForIdle()
         val insets = currentRootInsetsOrSkip()
         val navigationBottom = insets.getInsets(AndroidWindowInsets.Type.navigationBars()).bottom
         val gestureBottom = insets.getInsets(AndroidWindowInsets.Type.systemGestures()).bottom
         assumeTrue("This gate requires three-button navigation.", navigationBottom > gestureBottom)
         assertTrue(activeBottomOcclusionPx(0, navigationBottom, gestureBottom) >= navigationBottom)
         assertTerminalClearsDock()
+        assertProductionBoundsAgainstWindowInsets()
     }
 
     @Test
@@ -310,6 +359,19 @@ class ConversationViewportDeviceTest {
     }
 
     @Test
+    fun scrollingToEndRelatchesAgainstTheMeasuredDockBoundary() {
+        setSyntheticContent(bottomInsetPx = 48)
+        val transcript = composeRule.onNodeWithContentDescription("Conversation transcript")
+        transcript.performScrollToIndex(6)
+        composeRule.waitForIdle()
+        composeRule.onNodeWithContentDescription("Jump to latest").assertIsDisplayed()
+
+        transcript.performScrollToIndex(syntheticMessages.lastIndex)
+        composeRule.waitForIdle()
+        composeRule.onNodeWithContentDescription("Jump to latest").assertDoesNotExist()
+    }
+
+    @Test
     fun reconnectErrorKeepsDraftAndRetryActionReachable() {
         composeRule.onNodeWithContentDescription("Conversation transcript")
             .performScrollToIndex(5)
@@ -382,6 +444,36 @@ class ConversationViewportDeviceTest {
             terminalBottom <= dockTop,
         )
     }
+
+    private fun assertProductionBoundsAgainstWindowInsets() {
+        assumeTrue("Production inset bounds require API 30+.", Build.VERSION.SDK_INT >= 30)
+        var rootHeight = 0
+        var rootInsets: android.view.WindowInsets? = null
+        composeRule.runOnIdle {
+            rootHeight = composeRule.activity.window.decorView.height
+            rootInsets = composeRule.activity.window.decorView.rootWindowInsets
+        }
+        assumeTrue("The production test window did not report WindowInsets.", rootInsets != null)
+        val insets = rootInsets!!
+        val activeBottom = activeBottomOcclusionPx(
+            imeBottomPx = insets.getInsets(AndroidWindowInsets.Type.ime()).bottom,
+            navigationBottomPx = insets.getInsets(AndroidWindowInsets.Type.navigationBars()).bottom,
+            systemGesturesBottomPx = insets.getInsets(AndroidWindowInsets.Type.systemGestures()).bottom,
+        )
+        val usableBottom = rootHeight - activeBottom
+        val composerBounds = composeRule.onNodeWithContentDescription("Message composer")
+            .getUnclippedBoundsInRoot()
+        val fieldBounds = composeRule.onNode(hasSetTextAction()).getUnclippedBoundsInRoot()
+        val sendBounds = composeRule.onNodeWithText("Send  →").getUnclippedBoundsInRoot()
+        val terminalBounds = composeRule.onNodeWithContentDescription("Terminal transcript row")
+            .getUnclippedBoundsInRoot()
+        assertTrue("The text field must remain above the real bottom occlusion.", fieldBounds.bottom <= usableBottom + 2f)
+        assertTrue("The composer action must remain above the real bottom occlusion.", sendBounds.bottom <= usableBottom + 2f)
+        assertTrue("The terminal row must clear the measured production dock.", terminalBounds.bottom <= composerBounds.top + 2f)
+    }
+
+    private fun longComposerDraft(): String =
+        (1..5).joinToString("\n") { "Synthetic composer line $it" }
 
     private fun currentRootInsetsOrSkip(): android.view.WindowInsets {
         assumeTrue("Navigation mode inspection requires API 30+.", Build.VERSION.SDK_INT >= 30)

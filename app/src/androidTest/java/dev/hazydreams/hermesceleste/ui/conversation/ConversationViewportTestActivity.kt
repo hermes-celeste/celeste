@@ -34,6 +34,7 @@ internal class ConversationViewportTestActivity : ComponentActivity() {
     private var contentBottomInsetPx by mutableIntStateOf(0)
     private var contentTopInsetPx by mutableIntStateOf(0)
     private var contentBottomInsetsSettled by mutableStateOf(true)
+    private var contentUseProductionInsets by mutableStateOf(false)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -58,19 +59,31 @@ internal class ConversationViewportTestActivity : ComponentActivity() {
                         onInterrupt = { interruptCalls += 1 },
                         onReconnect = { reconnectCalls += 1 },
                         onBack = { backCalls += 1 },
-                        bottomOcclusion = androidx.compose.foundation.layout.WindowInsets(
-                            0,
-                            0,
-                            0,
-                            contentBottomInsetPx,
-                        ),
-                        safeDrawingInsets = androidx.compose.foundation.layout.WindowInsets(
-                            16,
-                            contentTopInsetPx,
-                            16,
-                            0,
-                        ),
-                        bottomOcclusionSettled = contentBottomInsetsSettled,
+                        bottomOcclusion = if (contentUseProductionInsets) {
+                            null
+                        } else {
+                            androidx.compose.foundation.layout.WindowInsets(
+                                0,
+                                0,
+                                0,
+                                contentBottomInsetPx,
+                            )
+                        },
+                        safeDrawingInsets = if (contentUseProductionInsets) {
+                            null
+                        } else {
+                            androidx.compose.foundation.layout.WindowInsets(
+                                16,
+                                contentTopInsetPx,
+                                16,
+                                0,
+                            )
+                        },
+                        bottomOcclusionSettled = if (contentUseProductionInsets) {
+                            null
+                        } else {
+                            contentBottomInsetsSettled
+                        },
                     )
                 }
             }
@@ -110,6 +123,10 @@ internal class ConversationViewportTestActivity : ComponentActivity() {
         contentBottomInsetPx = bottom
         contentTopInsetPx = top
         contentBottomInsetsSettled = settled
+    }
+
+    fun useProductionInsets(enabled: Boolean = true) {
+        contentUseProductionInsets = enabled
     }
 
     fun setContentSummary(value: StoredSession) {

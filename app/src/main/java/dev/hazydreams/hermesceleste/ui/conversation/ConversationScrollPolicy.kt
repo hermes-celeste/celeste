@@ -14,14 +14,27 @@ internal fun activeBottomOcclusionPx(
 ): Int = maxOf(imeBottomPx, navigationBottomPx, systemGesturesBottomPx)
 
 /**
- * Positive values mean that the terminal row ends above the usable viewport
- * boundary. Negative values mean that it is still occluded by the dock.
+ * Positive values mean that the terminal row ends above the usable dock boundary.
+ * Negative values mean that it is still occluded by the dock.
+ *
+ * `LazyListLayoutInfo.viewportEndOffset` includes the list's trailing content
+ * padding. The padding contains the measured dock plus a small visual gap, so
+ * derive the physical dock top from both values instead of treating the raw
+ * viewport end as the boundary.
  */
 internal fun terminalBottomClearancePx(
     terminalOffsetPx: Int,
     terminalSizePx: Int,
     viewportEndOffsetPx: Int,
-): Int = viewportEndOffsetPx - (terminalOffsetPx + terminalSizePx)
+    afterContentPaddingPx: Int = 0,
+    dockHeightPx: Int = 0,
+): Int {
+    val trailingPaddingPx = afterContentPaddingPx.coerceAtLeast(0)
+    val measuredDockHeightPx = dockHeightPx.coerceAtLeast(0)
+    val visualGapPx = (trailingPaddingPx - measuredDockHeightPx).coerceAtLeast(0)
+    val dockTopOffsetPx = viewportEndOffsetPx - trailingPaddingPx + visualGapPx
+    return dockTopOffsetPx - (terminalOffsetPx + terminalSizePx)
+}
 
 internal fun hasUsableViewportGeometry(
     dockHeightPx: Int,

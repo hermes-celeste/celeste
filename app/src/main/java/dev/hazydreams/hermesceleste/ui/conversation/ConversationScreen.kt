@@ -1,5 +1,6 @@
 package dev.hazydreams.hermesceleste.ui.conversation
 
+import android.animation.ValueAnimator
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.scrollBy
@@ -53,7 +54,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.onDispose
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
-import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.retain.retain
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.withFrameNanos
@@ -68,8 +69,11 @@ import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
@@ -94,14 +98,12 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.distinctUntilChanged
-import kotlinx.coroutines.flow.filter
-import kotlinx.coroutines.flow.filterNotNull
-import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlin.math.abs
 
 private const val GEOMETRY_RETRY_DELAY_MS = 96L
+private const val MAX_RETAINED_ANCHOR_KEY_LENGTH = 256
 
 @Composable
 internal fun conversationBottomOcclusionInsets(): WindowInsets =
@@ -212,7 +214,20 @@ internal fun ConversationScreen(
                     overflow = TextOverflow.Ellipsis,
                 )
                 Spacer(Modifier.height(6.dp))
-                Row(verticalAlignment = Alignment.CenterVertically) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .semantics {
+                            liveRegion = LiveRegionMode.Polite
+                            stateDescription = when (turnState) {
+                                TurnState.Idle -> "Connected"
+                                TurnState.Running -> "Responding"
+                                TurnState.Synchronizing -> "Synchronizing"
+                                TurnState.Reconnecting -> "Reconnecting"
+                            }
+                        },
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
                     androidx.compose.foundation.layout.Box(
                         Modifier.size(6.dp).background(
                             turnStateColor(turnState),
@@ -239,7 +254,16 @@ internal fun ConversationScreen(
                     verticalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
                     loadingMessage?.let { StatusMessage(it, CelesteBlue, showSpinner = true) }
-                    errorMessage?.let { StatusMessage(it, CelesteError) }
+                    errorMessage?.let {
+                        StatusMessage(
+                            message = it,
+                            color = CelesteError,
+                            modifier = Modifier.semantics {
+                                liveRegion = LiveRegionMode.Polite
+                                stateDescription = "Terminal error"
+                            },
+                        )
+                    }
                 }
             }
 
@@ -280,6 +304,16 @@ internal fun ConversationScreen(
     }
 }
 
+private class RetainedConversationViewportState {
+    // `retain` survives configuration recreation without entering SavedStateRegistry. A process
+    // restart therefore starts with a fresh latest policy and never restores a server row key.
+    // Only the list position, follow policy, and one bounded in-memory anchor cross rotation;
+    // transient jobs and transition guards are rebuilt after the new geometry settles.
+    val listState = LazyListState()
+    val followsLatest = mutableStateOf(true)
+    val lastHistoryAnchor = mutableStateOf<TranscriptAnchor?>(null)
+}
+
 @Composable
 private fun ConversationViewport(
     summaryId: String,
@@ -300,7 +334,9 @@ private fun ConversationViewport(
 ) {
     val density = LocalDensity.current
     val scope = rememberCoroutineScope()
-    val listState = rememberSaveable(summaryId, saver = LazyListState.Saver) { LazyListState() }
+    val retainedViewportState = retain(summaryId) { RetainedConversationViewportState() }
+    val listState = retainedViewportState.listState
+    var followsLatest by retainedViewportState.followsLatest
     val transcriptKeys = remember(messages) { transcriptItemKeys(messages) }
     val hasStreamingRow = streamingText.isNotBlank()
     val itemCount = messages.size + if (hasStreamingRow) 1 else 0
@@ -308,22 +344,11 @@ private fun ConversationViewport(
         if (hasStreamingRow) transcriptKeys + STREAMING_TRANSCRIPT_KEY else transcriptKeys
     }
     val policy = remember(summaryId) { ConversationScrollPolicy() }
-    var followsLatest by rememberSaveable(summaryId) { mutableStateOf(true) }
     var transitionGeneration by remember(summaryId) { mutableLongStateOf(0L) }
     var transitionActive by remember(summaryId) { mutableStateOf(false) }
     var initialProjectionHandled by remember(summaryId) { mutableStateOf(false) }
-    var savedAnchorKey by rememberSaveable(summaryId) { mutableStateOf<String?>(null) }
-    var savedAnchorIndex by rememberSaveable(summaryId) { mutableIntStateOf(-1) }
-    var savedAnchorOffsetPx by rememberSaveable(summaryId) { mutableIntStateOf(0) }
-    val restoredHistoryAnchor = savedAnchorKey?.let { key ->
-        TranscriptAnchor(
-            key = key,
-            index = savedAnchorIndex,
-            relativeOffsetPx = savedAnchorOffsetPx,
-        )
-    }
-    var pendingAnchor by remember(summaryId) { mutableStateOf(restoredHistoryAnchor) }
-    var lastHistoryAnchor by remember(summaryId) { mutableStateOf(restoredHistoryAnchor) }
+    var pendingAnchor by remember(summaryId) { mutableStateOf<TranscriptAnchor?>(null) }
+    var lastHistoryAnchor by retainedViewportState.lastHistoryAnchor
     var recoveryNeeded by remember(summaryId) { mutableStateOf(false) }
     var programmaticScrollGeneration by remember(summaryId) { mutableStateOf<Long?>(null) }
     var activeScrollJob by remember(summaryId) { mutableStateOf<Job?>(null) }
@@ -332,18 +357,15 @@ private fun ConversationViewport(
     var previousProjectionGeneration by remember(summaryId) { mutableStateOf<Long?>(null) }
     var geometryRetryTick by remember(summaryId) { mutableLongStateOf(0L) }
 
-    fun persistHistoryAnchor(anchor: TranscriptAnchor?) {
-        savedAnchorKey = anchor?.key
-        savedAnchorIndex = anchor?.index ?: -1
-        savedAnchorOffsetPx = anchor?.relativeOffsetPx ?: 0
-    }
-
-    // rememberCoroutineScope() survives a summary-key change. Dispose the
-    // previous summary's explicit jump/restore job before its list state is
-    // discarded, otherwise a late completion can move the next conversation.
-    DisposableEffect(summaryId) {
+    // Explicit scroll jobs are composition-scoped. The retained state only carries settled UI
+    // policy and the list position across configuration recreation.
+    DisposableEffect(summaryId, retainedViewportState) {
         onDispose {
             activeScrollJob?.cancel()
+            activeScrollJob = null
+            transitionActive = false
+            pendingAnchor = null
+            programmaticScrollGeneration = null
         }
     }
 
@@ -359,9 +381,14 @@ private fun ConversationViewport(
         configurationOrientation = configurationOrientation,
         configurationFontScale = configurationFontScale,
     )
-    val terminalDistanceDp by remember(listState, itemCount, density) {
+    val terminalDistanceDp by remember(listState, itemCount, density, geometry.dockHeightPx) {
         derivedStateOf {
-            terminalDistanceDp(listState.layoutInfo, itemCount, density)
+            terminalDistanceDp(
+                layoutInfo = listState.layoutInfo,
+                itemCount = itemCount,
+                density = density,
+                dockHeightPx = geometry.dockHeightPx,
+            )
         }
     }
     val showJumpToLatest = itemCount > 0 && !followsLatest &&
@@ -390,7 +417,6 @@ private fun ConversationViewport(
             if (anchor != null) {
                 lastHistoryAnchor = anchor
                 pendingAnchor = anchor
-                persistHistoryAnchor(anchor)
             }
         }
         followsLatest = decision.followsLatest
@@ -399,11 +425,12 @@ private fun ConversationViewport(
         programmaticScrollGeneration = null
     }
 
-    suspend fun scrollForGeneration(generation: Long, action: suspend () -> Unit) {
-        if (generation != transitionGeneration) return
+    suspend fun scrollForGeneration(generation: Long, action: suspend () -> Unit): Boolean {
+        if (generation != transitionGeneration) return false
         programmaticScrollGeneration = generation
         try {
             action()
+            return true
         } finally {
             if (programmaticScrollGeneration == generation) {
                 programmaticScrollGeneration = null
@@ -424,29 +451,24 @@ private fun ConversationViewport(
         followsLatest = decision.followsLatest
         recoveryNeeded = false
         pendingAnchor = null
-        persistHistoryAnchor(null)
         transitionActive = false
         transitionGeneration = decision.transitionGeneration + 1
         val generation = transitionGeneration
         activeScrollJob?.cancel()
         activeScrollJob = scope.launch {
             scrollForGeneration(generation) {
-                listState.animateScrollToItem(itemCount - 1)
-                settleTerminalRow(listState, itemCount)
+                if (ValueAnimator.areAnimatorsEnabled()) {
+                    listState.animateScrollToItem(itemCount - 1)
+                } else {
+                    listState.scrollToItem(itemCount - 1)
+                }
+                settleTerminalRow(
+                    listState = listState,
+                    itemCount = itemCount,
+                    dockHeightPx = geometry.dockHeightPx,
+                )
             }
         }
-    }
-
-    LaunchedEffect(listState, summaryId, followsLatest) {
-        snapshotFlow { captureTranscriptAnchor(listState) }
-            .filterNotNull()
-            .distinctUntilChanged()
-            .collect { anchor ->
-                if (!followsLatest) {
-                    lastHistoryAnchor = anchor
-                    persistHistoryAnchor(anchor)
-                }
-            }
     }
 
     LaunchedEffect(
@@ -494,6 +516,10 @@ private fun ConversationViewport(
                 if (decision.command == ScrollCommand.RelatchLatest) {
                     followsLatest = decision.followsLatest
                     transitionGeneration = decision.transitionGeneration + 1
+                } else if (!followsLatest) {
+                    // Capture the live anchor once the gesture settles, rather than writing
+                    // pixel offsets into state for every scroll sample.
+                    captureAnchor()?.let { lastHistoryAnchor = it }
                 }
             }
             previousPosition = position
@@ -510,32 +536,21 @@ private fun ConversationViewport(
     ) {
         if (initialProjectionHandled || itemCount == 0) return@LaunchedEffect
         val settlingGeneration = transitionGeneration
-        snapshotFlow {
-            listState.layoutInfo.totalItemsCount == itemCount &&
-                hasUsableViewportGeometry(
-                    dockHeightPx = geometry.dockHeightPx,
-                    viewportStartOffsetPx = listState.layoutInfo.viewportStartOffset,
-                    viewportEndOffsetPx = listState.layoutInfo.viewportEndOffset,
-                )
-        }.filter { it }.first()
-        if (!awaitStableUsableGeometry(listState, itemCount, geometry, bottomOcclusion, density)) {
-            delay(GEOMETRY_RETRY_DELAY_MS)
-            geometryRetryTick += 1
-            return@LaunchedEffect
-        }
-        // A deliberate drag/accessibility scroll can happen while the first
-        // usable geometry is settling. Its generation owns the viewport now;
-        // never let this older initial-latest attempt relatch after that input.
-        if (initialProjectionHandled || settlingGeneration != transitionGeneration) {
-            return@LaunchedEffect
-        }
         val restoringHistory = !followsLatest
         val anchor = pendingAnchor ?: lastHistoryAnchor
         val anchorCanBeRestored = anchor != null && (
-            itemKeys.contains(anchor.key) || anchor.index in itemKeys.indices
+            (anchor.key.isNotEmpty() && itemKeys.contains(anchor.key)) ||
+                anchor.index in itemKeys.indices
         )
-        val decision = policy.decide(
-            ScrollPolicyInput(
+        val settlement = settleViewportTransition(
+            listState = listState,
+            itemCount = itemCount,
+            itemKeys = itemKeys,
+            geometry = geometry,
+            bottomOcclusion = bottomOcclusion,
+            density = density,
+            policy = policy,
+            input = ScrollPolicyInput(
                 followsLatest = followsLatest,
                 restorationPending = restoringHistory,
                 anchorAvailable = anchorCanBeRestored,
@@ -544,34 +559,27 @@ private fun ConversationViewport(
                 pendingGeneration = settlingGeneration,
                 hasItems = true,
             ),
+            anchor = anchor,
+            withGeneration = { generation, action ->
+                scrollForGeneration(generation, action)
+            },
         )
-        if (decision.command == ScrollCommand.CancelPendingFollow) return@LaunchedEffect
+        if (settlement.pendingGeometry) {
+            delay(GEOMETRY_RETRY_DELAY_MS)
+            if (settlingGeneration == transitionGeneration) geometryRetryTick += 1
+            return@LaunchedEffect
+        }
+        if (initialProjectionHandled || settlingGeneration != transitionGeneration) {
+            return@LaunchedEffect
+        }
+        val decision = settlement.decision ?: return@LaunchedEffect
+        if (!settlement.completed || decision.command == ScrollCommand.CancelPendingFollow) {
+            return@LaunchedEffect
+        }
         initialProjectionHandled = true
         followsLatest = decision.followsLatest
-        when (decision.command) {
-            ScrollCommand.FollowLatest -> {
-                scrollForGeneration(decision.transitionGeneration) {
-                    settleTerminalRow(listState, itemCount)
-                }
-            }
-
-            ScrollCommand.RestoreAnchor -> {
-                scrollForGeneration(decision.transitionGeneration) {
-                    val restored = restoreTranscriptAnchor(
-                        listState = listState,
-                        itemKeys = itemKeys,
-                        anchor = anchor,
-                    )
-                    if (decision.fallbackToLatest || !restored) {
-                        settleTerminalRow(listState, itemCount)
-                        recoveryNeeded = true
-                    }
-                }
-                pendingAnchor = null
-            }
-
-            else -> Unit
-        }
+        if (settlement.recoveryNeeded) recoveryNeeded = true
+        if (decision.command == ScrollCommand.RestoreAnchor) pendingAnchor = null
     }
 
     // A single immediate settle handles append, streaming deltas, and terminal-row
@@ -611,7 +619,11 @@ private fun ConversationViewport(
             withFrameNanos { }
             val generation = transitionGeneration
             scrollForGeneration(generation) {
-                settleTerminalRow(listState, itemCount)
+                settleTerminalRow(
+                    listState = listState,
+                    itemCount = itemCount,
+                    dockHeightPx = geometry.dockHeightPx,
+                )
             }
         }
     }
@@ -657,53 +669,44 @@ private fun ConversationViewport(
         // report settled inset state. A zero/stale inset or cancelled IME
         // animation must retry from a later sample, not clear the guard after
         // a fixed frame budget and lose the pending restoration.
-        if (!awaitStableUsableGeometry(listState, itemCount, geometry, bottomOcclusion, density)) {
-            delay(GEOMETRY_RETRY_DELAY_MS)
-            if (generation == transitionGeneration) geometryRetryTick += 1
-            return@LaunchedEffect
-        }
-        if (generation != transitionGeneration) return@LaunchedEffect
-
         val anchor = pendingAnchor
         val anchorCanBeRestored = anchor != null && (
-            itemKeys.contains(anchor.key) || anchor.index in itemKeys.indices
+            (anchor.key.isNotEmpty() && itemKeys.contains(anchor.key)) ||
+                anchor.index in itemKeys.indices
         )
-        val decision = policy.decide(
-            ScrollPolicyInput(
+        val settlement = settleViewportTransition(
+            listState = listState,
+            itemCount = itemCount,
+            itemKeys = itemKeys,
+            geometry = geometry,
+            bottomOcclusion = bottomOcclusion,
+            density = density,
+            policy = policy,
+            input = ScrollPolicyInput(
                 followsLatest = followsLatest,
                 imeOrInsetTransition = true,
                 restorationPending = shouldRestoreAnchor,
                 anchorAvailable = anchorCanBeRestored,
                 transitionSettled = true,
                 transitionGeneration = generation,
-                hasItems = itemCount > 0,
+                hasItems = true,
             ),
+            anchor = anchor,
+            withGeneration = { actionGeneration, action ->
+                scrollForGeneration(actionGeneration, action)
+            },
         )
-        transitionActive = false
-        when (decision.command) {
-            ScrollCommand.FollowLatest -> {
-                scrollForGeneration(generation) {
-                    settleTerminalRow(listState, itemCount)
-                }
-            }
-
-            ScrollCommand.RestoreAnchor -> {
-                scrollForGeneration(generation) {
-                    val restored = restoreTranscriptAnchor(
-                        listState = listState,
-                        itemKeys = itemKeys,
-                        anchor = anchor,
-                    )
-                    if (decision.fallbackToLatest || !restored) {
-                        settleTerminalRow(listState, itemCount)
-                        recoveryNeeded = true
-                    }
-                }
-                pendingAnchor = null
-            }
-
-            else -> Unit
+        if (settlement.pendingGeometry) {
+            delay(GEOMETRY_RETRY_DELAY_MS)
+            if (generation == transitionGeneration) geometryRetryTick += 1
+            return@LaunchedEffect
         }
+        if (generation != transitionGeneration) return@LaunchedEffect
+        val decision = settlement.decision ?: return@LaunchedEffect
+        if (!settlement.completed) return@LaunchedEffect
+        transitionActive = false
+        if (settlement.recoveryNeeded) recoveryNeeded = true
+        if (decision.command == ScrollCommand.RestoreAnchor) pendingAnchor = null
     }
 
     Box(modifier) {
@@ -925,8 +928,9 @@ private data class TerminalLayoutSignature(
 private fun captureTranscriptAnchor(listState: LazyListState): TranscriptAnchor? {
     val layoutInfo = listState.layoutInfo
     val item = layoutInfo.visibleItemsInfo.firstOrNull() ?: return null
+    val anchorKey = item.key.toString()
     return TranscriptAnchor(
-        key = item.key.toString(),
+        key = anchorKey.takeIf { it.length <= MAX_RETAINED_ANCHOR_KEY_LENGTH } ?: "",
         index = item.index,
         relativeOffsetPx = item.offset - layoutInfo.viewportStartOffset,
     )
@@ -938,7 +942,7 @@ private suspend fun restoreTranscriptAnchor(
     anchor: TranscriptAnchor?,
 ): Boolean {
     if (anchor == null || itemKeys.isEmpty()) return false
-    val exactIndex = itemKeys.indexOf(anchor.key)
+    val exactIndex = anchor.key.takeIf { it.isNotEmpty() }?.let(itemKeys::indexOf) ?: -1
     val targetIndex = if (exactIndex >= 0) {
         exactIndex
     } else {
@@ -952,6 +956,71 @@ private suspend fun restoreTranscriptAnchor(
         listState.scrollBy((currentOffset - anchor.relativeOffsetPx).toFloat())
     }
     return true
+}
+
+private data class ViewportSettlement(
+    val pendingGeometry: Boolean,
+    val decision: ScrollPolicyDecision? = null,
+    val recoveryNeeded: Boolean = false,
+    val completed: Boolean = false,
+)
+
+/**
+ * The single settled-transition owner for initial projection, inset changes,
+ * composer growth, reconnect projection, and configuration changes. Geometry
+ * must settle before the policy is allowed to issue a scroll command.
+ */
+private suspend fun settleViewportTransition(
+    listState: LazyListState,
+    itemCount: Int,
+    itemKeys: List<String>,
+    geometry: ViewportGeometry,
+    bottomOcclusion: WindowInsets,
+    density: androidx.compose.ui.unit.Density,
+    policy: ConversationScrollPolicy,
+    input: ScrollPolicyInput,
+    anchor: TranscriptAnchor?,
+    withGeneration: suspend (Long, suspend () -> Unit) -> Boolean,
+): ViewportSettlement {
+    if (!awaitStableUsableGeometry(listState, itemCount, geometry, bottomOcclusion, density)) {
+        return ViewportSettlement(pendingGeometry = true)
+    }
+
+    val decision = policy.decide(input.copy(transitionSettled = true))
+    var recoveryNeeded = false
+    val completed = when (decision.command) {
+        ScrollCommand.FollowLatest -> withGeneration(decision.transitionGeneration) {
+            settleTerminalRow(
+                listState = listState,
+                itemCount = itemCount,
+                dockHeightPx = geometry.dockHeightPx,
+            )
+        }
+
+        ScrollCommand.RestoreAnchor -> withGeneration(decision.transitionGeneration) {
+            val restored = restoreTranscriptAnchor(
+                listState = listState,
+                itemKeys = itemKeys,
+                anchor = anchor,
+            )
+            if (decision.fallbackToLatest || !restored) {
+                settleTerminalRow(
+                    listState = listState,
+                    itemCount = itemCount,
+                    dockHeightPx = geometry.dockHeightPx,
+                )
+                recoveryNeeded = true
+            }
+        }
+
+        else -> true
+    }
+    return ViewportSettlement(
+        pendingGeometry = false,
+        decision = decision,
+        recoveryNeeded = recoveryNeeded,
+        completed = completed,
+    )
 }
 
 private data class GeometrySample(
@@ -1011,6 +1080,7 @@ private suspend fun awaitStableUsableGeometry(
 private suspend fun settleTerminalRow(
     listState: LazyListState,
     itemCount: Int,
+    dockHeightPx: Int,
 ) {
     if (itemCount == 0) return
     listState.scrollToItem(itemCount - 1)
@@ -1022,6 +1092,8 @@ private suspend fun settleTerminalRow(
         terminalOffsetPx = terminal.offset,
         terminalSizePx = terminal.size,
         viewportEndOffsetPx = layoutInfo.viewportEndOffset,
+        afterContentPaddingPx = layoutInfo.afterContentPadding,
+        dockHeightPx = dockHeightPx,
     )
     if (clearance < 0) {
         listState.scrollBy(-clearance.toFloat())
@@ -1046,11 +1118,20 @@ private fun terminalDistanceDp(
     layoutInfo: LazyListLayoutInfo,
     itemCount: Int,
     density: androidx.compose.ui.unit.Density,
+    dockHeightPx: Int,
 ): Float? {
     if (itemCount == 0) return null
     val terminal = layoutInfo.visibleItemsInfo.firstOrNull { it.index == itemCount - 1 }
         ?: return null
-    val distancePx = abs(layoutInfo.viewportEndOffset - (terminal.offset + terminal.size))
+    val distancePx = abs(
+        terminalBottomClearancePx(
+            terminalOffsetPx = terminal.offset,
+            terminalSizePx = terminal.size,
+            viewportEndOffsetPx = layoutInfo.viewportEndOffset,
+            afterContentPaddingPx = layoutInfo.afterContentPadding,
+            dockHeightPx = dockHeightPx,
+        ),
+    )
     return with(density) { distancePx.toDp().value }
 }
 

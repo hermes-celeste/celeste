@@ -282,8 +282,14 @@ internal fun EditorialDivider(modifier: Modifier = Modifier) {
 }
 
 @Composable
-internal fun StatusMessage(message: String, color: Color, showSpinner: Boolean = false) {
+internal fun StatusMessage(
+    message: String,
+    color: Color,
+    showSpinner: Boolean = false,
+    modifier: Modifier = Modifier,
+) {
     Row(
+        modifier = modifier,
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(9.dp),
     ) {
