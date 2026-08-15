@@ -216,11 +216,10 @@ internal class CelesteViewModel(
         )
     }
 
-    private fun isCurrent(token: OperationToken): Boolean {
+    private fun isCurrentIgnoringAuthMode(token: OperationToken): Boolean {
         if (activeOperations[token.operation] != token.operationGeneration) return false
         if (token.contextGeneration != contextGeneration) return false
         if (token.origin != null && token.origin != currentOrigin) return false
-        if (token.authMode != null && token.authMode != currentAuthMode) return false
         if (token.profile != normalizedProfile(mutableState.value.selectedProfile)) return false
         if (token.gateway != null && gateway !== token.gateway) return false
         if (token.gatewayGeneration != gatewayGeneration) return false
@@ -233,6 +232,19 @@ internal class CelesteViewModel(
         }
         return true
     }
+
+    private fun isCurrent(token: OperationToken): Boolean =
+        isCurrentIgnoringAuthMode(token) &&
+            (token.authMode == null || token.authMode == currentAuthMode)
+
+    /**
+     * Authentication rejection clears the current auth mode as part of the
+     * invalidation. Keep every other token identity strict while allowing that
+     * one deliberate transition to publish the sign-in recovery state.
+     */
+    private fun isCurrentForAuthenticationInvalidation(token: OperationToken): Boolean =
+        isCurrentIgnoringAuthMode(token) &&
+            (currentAuthMode == null || token.authMode == currentAuthMode)
 
     private fun cancelOwnedOperations() {
         ownedJobs.values.toList().forEach(Job::cancel)
@@ -1017,7 +1029,7 @@ internal class CelesteViewModel(
         currentDescriptor = null
         dashboard.clearAuthentication()
         currentAuthMode = null
-        if (token != null && !isCurrent(token)) return
+        if (token != null && !isCurrentForAuthenticationInvalidation(token)) return
         mutableState.value = manualState(
             descriptor = descriptor,
             phase = ConnectionPhase.AuthenticationRequired,
@@ -1748,7 +1760,7 @@ internal class CelesteViewModel(
         )
         mutableState.value = mutableState.value.copy(
             messages = resumed.messages,
-            streamingText = streamingSuffix,
+            streamingText = if (resumed.running == false) "" else streamingSuffix,
             turnState = when (resumed.running) {
                 true -> TurnState.Running
                 false -> TurnState.Idle
@@ -1756,6 +1768,52 @@ internal class CelesteViewModel(
             },
             notice = null,
         )
+        if (resumed.running == false) {
+            settleStreamingOutput(resumed.inflightAssistantText.takeIf(String::isNotBlank))
+        }
+    }
+
+    /** Settle an in-flight assistant projection when the server says the turn ended. */
+    private fun settleStreamingOutput(authoritativeInflight: String? = null) {
+        val snapshot = mutableState.value
+        if (authoritativeInflight != null) {
+            val settledText = authoritativeInflight.trimEnd()
+            val previousAssistant = snapshot.messages.lastOrNull()?.takeIf {
+                it.role == "assistant" && it.text.isNotBlank()
+            }
+            val messages = if (
+                settledText.isNotBlank() &&
+                previousAssistant != null &&
+                settledText.startsWith(previousAssistant.text)
+            ) {
+                snapshot.messages.dropLast(1) + previousAssistant.copy(
+                    text = settledText,
+                    pending = false,
+                    interim = false,
+                )
+            } else if (settledText.isNotBlank()) {
+                snapshot.messages + ConversationMessage(
+                    role = "assistant",
+                    text = settledText,
+                )
+            } else {
+                snapshot.messages
+            }
+            mutableState.value = snapshot.copy(
+                messages = messages,
+                streamingText = "",
+                turnState = TurnState.Idle,
+            )
+            return
+        }
+        if (snapshot.streamingText.isBlank()) {
+            mutableState.value = snapshot.copy(
+                streamingText = "",
+                turnState = TurnState.Idle,
+            )
+        } else {
+            finalizeAssistant(keepRunning = false)
+        }
     }
 
     private fun applyEvent(event: GatewayEvent) {
@@ -1801,22 +1859,35 @@ internal class CelesteViewModel(
             "message.complete" -> {
                 if (interruptionRequested || stoppedTurnIsActive()) return
                 val status = event.payload.string("status")
+                val isError = status == "error" || event.payload["error"] != null
+                val isPartial = event.payload.boolean("partial") == true
                 val content = event.payload.string("text")
                     ?: event.payload.string("content")
                     ?: event.payload.string("rendered")
                     ?: ""
-                finalizeAssistant(
-                    suppliedContent = content,
-                    keepRunning = false,
-                )
-                mutableState.value = mutableState.value.copy(
-                    turnState = TurnState.Idle,
-                    notice = if (status == "error") {
-                        UiNotice.serverTurnFailure()
-                    } else {
-                        mutableState.value.notice
-                    },
-                )
+                if (isError && !isPartial) {
+                    // The terminal error frame is authoritative: without a
+                    // partial flag its text belongs to the failure detail, not
+                    // to the assistant transcript.
+                    mutableState.value = mutableState.value.copy(
+                        streamingText = "",
+                        turnState = TurnState.Idle,
+                        notice = UiNotice.serverTurnFailure(),
+                    )
+                } else {
+                    finalizeAssistant(
+                        suppliedContent = content,
+                        keepRunning = false,
+                    )
+                    mutableState.value = mutableState.value.copy(
+                        turnState = TurnState.Idle,
+                        notice = if (isError) {
+                            UiNotice.serverTurnFailure()
+                        } else {
+                            mutableState.value.notice
+                        },
+                    )
+                }
             }
 
             "error", "message.error" -> {
@@ -1837,7 +1908,10 @@ internal class CelesteViewModel(
             "session.busy" -> {
                 val busy = event.payload.boolean("busy") == true
                 if (busy && (interruptionRequested || stoppedTurnIsActive())) return
-                if (!busy) interruptionRequested = false
+                if (!busy) {
+                    interruptionRequested = false
+                    settleStreamingOutput()
+                }
                 mutableState.value = mutableState.value.copy(
                     turnState = if (busy) TurnState.Running else TurnState.Idle,
                 )
@@ -1846,7 +1920,10 @@ internal class CelesteViewModel(
             "session.info" -> {
                 event.payload.boolean("running")?.let { running ->
                     if (running && (interruptionRequested || stoppedTurnIsActive())) return
-                    if (!running) interruptionRequested = false
+                    if (!running) {
+                        interruptionRequested = false
+                        settleStreamingOutput()
+                    }
                     mutableState.value = mutableState.value.copy(
                         turnState = if (running) TurnState.Running else TurnState.Idle,
                     )

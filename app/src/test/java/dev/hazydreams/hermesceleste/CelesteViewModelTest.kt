@@ -128,13 +128,37 @@ class CelesteViewModelTest {
         gateway.emit("message.delta", """{"text":"streamed prefix"}""")
         gateway.emit(
             "message.complete",
-            """{"content":"authoritative partial response","status":"error"}""",
+            """{"content":"authoritative partial response","status":"error","partial":true,"error":"synthetic provider failure"}""",
         )
         advanceUntilIdle()
 
         assertEquals(TurnState.Idle, viewModel.state.value.turnState)
         assertEquals("authoritative partial response", viewModel.state.value.messages.last().text)
         assertEquals(UiNoticeCategory.ServerTurnFailure, viewModel.state.value.notice?.category)
+        viewModel.leaveConversation()
+    }
+
+    @Test
+    fun nonPartialErrorCompletionNeverBecomesAssistantContent() = runTest {
+        val gateway = FakeGateway()
+        val viewModel = openConversation(gateway)
+
+        viewModel.updateDraft("Do not render the failure payload")
+        viewModel.sendMessage()
+        gateway.emit("message.start")
+        gateway.emit("message.delta", """{"text":"discarded streamed text"}""")
+        gateway.emit(
+            "message.complete",
+            """{"text":"raw error payload","content":"raw error payload","status":"error","partial":false,"error":"raw error payload"}""",
+        )
+        advanceUntilIdle()
+
+        val state = viewModel.state.value
+        assertEquals(TurnState.Idle, state.turnState)
+        assertEquals("", state.streamingText)
+        assertEquals(listOf("user"), state.messages.map { it.role })
+        assertTrue(state.messages.none { it.text.contains("raw error payload") })
+        assertEquals(UiNoticeCategory.ServerTurnFailure, state.notice?.category)
         viewModel.leaveConversation()
     }
 
@@ -609,6 +633,53 @@ class CelesteViewModelTest {
     }
 
     @Test
+    fun runningFalseSessionEventsSettlePartialOutputWithoutMessageComplete() = runTest {
+        val gateway = FakeGateway()
+        val viewModel = openConversation(gateway)
+
+        gateway.emit("message.start")
+        gateway.emit("message.delta", """{"text":"settled by busy=false"}""")
+        gateway.emit("session.busy", """{"busy":false}""")
+        gateway.emit("message.start")
+        gateway.emit("message.delta", """{"text":"settled by running=false"}""")
+        gateway.emit("session.info", """{"running":false}""")
+        advanceUntilIdle()
+
+        val state = viewModel.state.value
+        assertEquals(TurnState.Idle, state.turnState)
+        assertEquals("", state.streamingText)
+        assertEquals(
+            listOf("settled by busy=false", "settled by running=false"),
+            state.messages.map { it.text },
+        )
+        viewModel.leaveConversation()
+    }
+
+    @Test
+    fun runningFalseResumeSettlesAuthoritativeInflightOutputWithoutCompletion() = runTest {
+        val gateway = FakeGateway()
+        gateway.resumePayload = resumePayload(
+            messages = listOf(
+                ConversationMessage(role = "user", text = "Recover this turn", id = "user-1"),
+                ConversationMessage(role = "assistant", text = "Stored prefix", id = "assistant-1"),
+            ),
+            running = false,
+            inflightText = "Stored prefix and recovered suffix",
+        )
+        val viewModel = openConversation(gateway)
+        advanceUntilIdle()
+
+        val state = viewModel.state.value
+        assertEquals(TurnState.Idle, state.turnState)
+        assertEquals("", state.streamingText)
+        assertEquals(
+            listOf("Recover this turn", "Stored prefix and recovered suffix"),
+            state.messages.map { it.text },
+        )
+        viewModel.leaveConversation()
+    }
+
+    @Test
     fun profileAndOriginChangesClearGatewayBoundStateAndOldEvents() = runTest {
         val gateway = FakeGateway()
         val dashboard = FakeDashboard(gateway)
@@ -1011,12 +1082,16 @@ class CelesteViewModelTest {
         private fun resumePayload(
             messages: List<ConversationMessage>,
             running: Boolean,
+            inflightText: String? = null,
         ): JsonObject {
             val encodedMessages = messages.joinToString(",") { message ->
                 """{"id":${Json.encodeToString(message.id ?: "")},"role":${Json.encodeToString(message.role)},"text":${Json.encodeToString(message.text)}}"""
             }
+            val encodedInflight = inflightText?.let { text ->
+                """{"text":${Json.encodeToString(text)}}"""
+            } ?: "null"
             return Json.parseToJsonElement(
-                """{"session_id":"runtime-7","resumed":"stored-42","running":$running,"status":"${if (running) "streaming" else "idle"}","inflight":null,"messages":[$encodedMessages]}""",
+                """{"session_id":"runtime-7","resumed":"stored-42","running":$running,"status":"${if (running) "streaming" else "idle"}","inflight":$encodedInflight,"messages":[$encodedMessages]}""",
             ) as JsonObject
         }
     }
