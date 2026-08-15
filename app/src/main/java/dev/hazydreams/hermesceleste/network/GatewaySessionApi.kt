@@ -202,8 +202,8 @@ internal fun JsonElement?.isTruthy(): Boolean = when (this) {
         ?: false
 }
 
-private fun JsonElement.asObject(errorMessage: String): JsonObject =
-    this as? JsonObject ?: throw IOException(errorMessage)
+private fun JsonElement.asObject(failureCopy: String): JsonObject =
+    this as? JsonObject ?: throw IOException(failureCopy)
 
 internal fun JsonObject.string(key: String): String? =
     get(key)?.jsonPrimitive?.contentOrNull

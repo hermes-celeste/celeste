@@ -83,7 +83,7 @@ private val gatewaySetupState = GatewaySettingsUiState(
     sessionToken = "",
     connectionPhase = ConnectionPhase.ManualSetup,
     loadingMessage = null,
-    errorMessage = null,
+    notice = null,
 )
 
 private val passwordSignInState = GatewaySettingsUiState(
@@ -100,7 +100,7 @@ private val passwordSignInState = GatewaySettingsUiState(
     sessionToken = "",
     connectionPhase = ConnectionPhase.AuthenticationRequired,
     loadingMessage = null,
-    errorMessage = "Sign in required.",
+    notice = UiNotice.authentication(),
 )
 
 private val sessionTokenState = GatewaySettingsUiState(
@@ -117,7 +117,7 @@ private val sessionTokenState = GatewaySettingsUiState(
     sessionToken = "",
     connectionPhase = ConnectionPhase.ManualSetup,
     loadingMessage = null,
-    errorMessage = null,
+    notice = null,
 )
 
 private val connectedGatewayState = GatewaySettingsUiState(
@@ -134,7 +134,7 @@ private val connectedGatewayState = GatewaySettingsUiState(
     sessionToken = "",
     connectionPhase = ConnectionPhase.Connected,
     loadingMessage = null,
-    errorMessage = null,
+    notice = null,
 )
 
 private fun gatewayPreviewActions(onBack: (() -> Unit)?): GatewaySettingsActions =
@@ -227,7 +227,7 @@ fun RestoringConnectionPreviewScreenshot() {
 fun RestoreFailedPreviewScreenshot() {
     HermesCelesteTheme {
         ConnectionUnavailableScreen(
-            errorMessage = "Could not reach Hermes.",
+            notice = UiNotice.unavailable(),
             onRetry = {},
             onSettings = {},
         )
@@ -247,7 +247,7 @@ fun SessionListPreviewScreenshot() {
             ),
             selectedProfile = "work",
             loadingMessage = null,
-            errorMessage = null,
+            notice = null,
             onProfileSelected = {},
             onNewConversation = {},
             onSessionSelected = {},
@@ -339,7 +339,7 @@ fun ReconnectingPreviewScreenshot() {
         PreviewConversation(
             draft = "This draft stays here while the connection recovers.",
             turnState = TurnState.Reconnecting,
-            errorMessage = "The dashboard connection closed before Hermes finished responding.",
+            notice = UiNotice.reconnecting(),
         )
     }
 }
@@ -351,7 +351,7 @@ private fun PreviewConversation(
     streamingText: String = "",
     draft: String = "",
     turnState: TurnState,
-    errorMessage: String? = null,
+    notice: UiNotice? = null,
 ) {
     ConversationScreen(
         summary = summary,
@@ -360,7 +360,7 @@ private fun PreviewConversation(
         draft = draft,
         turnState = turnState,
         loadingMessage = null,
-        errorMessage = errorMessage,
+        notice = notice,
         onDraftChange = {},
         onSend = {},
         onInterrupt = {},

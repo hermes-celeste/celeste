@@ -86,7 +86,7 @@ internal fun CelesteRoutes(ui: CelesteUiState, viewModel: CelesteViewModel) {
                     draft = ui.draft,
                     turnState = ui.turnState,
                     loadingMessage = ui.loadingMessage,
-                    errorMessage = ui.errorMessage,
+                    notice = ui.notice,
                     agentActivity = ui.agentActivity,
                     reasoningDisclosureEnabled = ui.agentActivityReasoningDisclosureEnabled,
                     onDraftChange = viewModel::updateDraft,
@@ -103,7 +103,7 @@ internal fun CelesteRoutes(ui: CelesteUiState, viewModel: CelesteViewModel) {
                 profiles = ui.profiles,
                 selectedProfile = ui.selectedProfile,
                 loadingMessage = ui.loadingMessage,
-                errorMessage = ui.errorMessage,
+                notice = ui.notice,
                 onProfileSelected = viewModel::selectProfile,
                 onNewConversation = viewModel::createNewConversation,
                 onSessionSelected = viewModel::openSession,
@@ -114,7 +114,7 @@ internal fun CelesteRoutes(ui: CelesteUiState, viewModel: CelesteViewModel) {
                 ui.connectionPhase == ConnectionPhase.Restoring -> ConnectionLoadingScreen()
 
             ui.connectionPhase == ConnectionPhase.RestoreFailed -> ConnectionUnavailableScreen(
-                errorMessage = ui.errorMessage,
+                notice = ui.notice,
                 onRetry = viewModel::retrySavedConnection,
                 onSettings = { destination = CelesteDestination.Gateway },
             )
@@ -146,7 +146,7 @@ private fun GatewaySettingsRoute(
             sessionToken = ui.sessionToken,
             connectionPhase = ui.connectionPhase,
             loadingMessage = ui.loadingMessage,
-            errorMessage = ui.errorMessage,
+            notice = ui.notice,
         ),
         actions = GatewaySettingsActions(
             onUsernameChange = viewModel::updateUsername,

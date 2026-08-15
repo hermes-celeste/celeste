@@ -30,14 +30,21 @@ data class ActivityDisclosureScope(
 
 interface ActivityDisclosurePreferenceStore {
     fun isServerReasoningDisclosureEnabled(): Boolean
-    fun setServerReasoningDisclosureEnabled(enabled: Boolean)
+
+    /**
+     * Returns true only after the write has been synchronously accepted and
+     * verified by reading the stored value back.
+     */
+    fun setServerReasoningDisclosureEnabled(enabled: Boolean): Boolean
 
     /** Scoped overloads keep older callers source-compatible during migration. */
     fun isServerReasoningDisclosureEnabled(scope: ActivityDisclosureScope): Boolean =
         isServerReasoningDisclosureEnabled()
 
-    fun setServerReasoningDisclosureEnabled(scope: ActivityDisclosureScope, enabled: Boolean) =
-        setServerReasoningDisclosureEnabled(enabled)
+    fun setServerReasoningDisclosureEnabled(
+        scope: ActivityDisclosureScope,
+        enabled: Boolean,
+    ): Boolean = setServerReasoningDisclosureEnabled(enabled)
 }
 
 class InMemoryActivityDisclosurePreferenceStore(
@@ -48,8 +55,9 @@ class InMemoryActivityDisclosurePreferenceStore(
 
     override fun isServerReasoningDisclosureEnabled(): Boolean = enabled
 
-    override fun setServerReasoningDisclosureEnabled(enabled: Boolean) {
+    override fun setServerReasoningDisclosureEnabled(enabled: Boolean): Boolean {
         this.enabled = enabled
+        return true
     }
 
     override fun isServerReasoningDisclosureEnabled(scope: ActivityDisclosureScope): Boolean =
@@ -58,8 +66,9 @@ class InMemoryActivityDisclosurePreferenceStore(
     override fun setServerReasoningDisclosureEnabled(
         scope: ActivityDisclosureScope,
         enabled: Boolean,
-    ) {
+    ): Boolean {
         scopedValues[scope.stablePreferenceKey()] = enabled
+        return true
     }
 }
 
@@ -76,9 +85,8 @@ class AndroidActivityDisclosurePreferenceStore private constructor(
     override fun isServerReasoningDisclosureEnabled(): Boolean =
         preferences.getBoolean(GLOBAL_REASONING_DISCLOSURE_KEY, true)
 
-    override fun setServerReasoningDisclosureEnabled(enabled: Boolean) {
-        preferences.edit().putBoolean(GLOBAL_REASONING_DISCLOSURE_KEY, enabled).apply()
-    }
+    override fun setServerReasoningDisclosureEnabled(enabled: Boolean): Boolean =
+        commitAndVerify(GLOBAL_REASONING_DISCLOSURE_KEY, enabled)
 
     override fun isServerReasoningDisclosureEnabled(scope: ActivityDisclosureScope): Boolean =
         preferences.getBoolean(
@@ -89,8 +97,15 @@ class AndroidActivityDisclosurePreferenceStore private constructor(
     override fun setServerReasoningDisclosureEnabled(
         scope: ActivityDisclosureScope,
         enabled: Boolean,
-    ) {
-        preferences.edit().putBoolean(scopedKey(scope), enabled).apply()
+    ): Boolean = commitAndVerify(scopedKey(scope), enabled)
+
+    private fun commitAndVerify(key: String, enabled: Boolean): Boolean {
+        val committed = runCatching {
+            preferences.edit().putBoolean(key, enabled).commit()
+        }.getOrDefault(false)
+        return committed && runCatching {
+            preferences.getBoolean(key, !enabled) == enabled
+        }.getOrDefault(false)
     }
 
     private fun scopedKey(scope: ActivityDisclosureScope): String =

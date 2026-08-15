@@ -647,8 +647,8 @@ class DashboardClient(
                         return
                     }
                 if ((root["id"] as? JsonPrimitive)?.contentOrNull != expectedId) return
-                (root["error"] as? JsonObject)?.let { error ->
-                    fail(IOException((error["message"] as? JsonPrimitive)?.contentOrNull ?: "$operation failed."))
+                (root["error"] as? JsonObject)?.let {
+                    fail(IOException("$operation returned a JSON-RPC error."))
                     return
                 }
                 val result = root["result"]

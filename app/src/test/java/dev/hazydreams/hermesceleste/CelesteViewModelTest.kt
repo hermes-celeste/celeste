@@ -537,7 +537,8 @@ class CelesteViewModelTest {
 
         assertEquals(ConnectionPhase.ManualSetup, viewModel.state.value.connectionPhase)
         assertNull(viewModel.state.value.sessions)
-        assertEquals("Hermes rejected profile access.", viewModel.state.value.errorMessage)
+        assertEquals(UiNoticeCategory.AuthenticationRequired, viewModel.state.value.notice?.category)
+        assertEquals("Your Hermes sign-in has expired. Sign in again.", viewModel.state.value.notice?.message)
     }
 
     @Test
@@ -606,6 +607,101 @@ class CelesteViewModelTest {
     }
 
     @Test
+    fun closingGatewayCancelsAnInFlightOpenOperationBeforeItsResumeReturns() = runTest {
+        val gateway = FakeGateway()
+        val dashboard = FakeDashboard(gateway)
+        val viewModel = CelesteViewModel(
+            dashboard = dashboard,
+            reconnectDelayMillis = { _, _ -> 0L },
+        )
+        advanceUntilIdle()
+        viewModel.updateDashboardUrl("http://hermes.test:9119")
+        viewModel.findDashboard()
+        advanceUntilIdle()
+        viewModel.loadSessions()
+        advanceUntilIdle()
+
+        val resumeGate = CompletableDeferred<JsonObject>()
+        gateway.resumeGates += resumeGate
+        viewModel.openSession(dashboard.session)
+        runCurrent()
+        assertEquals(1, gateway.resumeRequestCount)
+
+        viewModel.leaveConversation()
+        resumeGate.complete(resumePayload(messages = emptyList(), running = false))
+        advanceUntilIdle()
+
+        assertNull(viewModel.state.value.activeSummary)
+        assertTrue(viewModel.state.value.messages.isEmpty())
+    }
+
+    @Test
+    fun closingGatewayCancelsAnInFlightCreateOperationBeforeItsResponseReturns() = runTest {
+        val gateway = FakeGateway()
+        val viewModel = openConversation(gateway)
+        advanceUntilIdle()
+        val createGate = CompletableDeferred<Unit>()
+        gateway.createGates += createGate
+
+        viewModel.createNewConversation()
+        runCurrent()
+        assertEquals(1, gateway.createCount)
+
+        viewModel.leaveConversation()
+        createGate.complete(Unit)
+        advanceUntilIdle()
+
+        assertNull(viewModel.state.value.activeSummary)
+        assertTrue(viewModel.state.value.messages.isEmpty())
+    }
+
+    @Test
+    fun closingGatewayCancelsAnInFlightSendOperationBeforeItsResponseReturns() = runTest {
+        val gateway = FakeGateway()
+        val viewModel = openConversation(gateway)
+        advanceUntilIdle()
+        val promptGate = CompletableDeferred<Unit>()
+        gateway.promptGates += promptGate
+
+        viewModel.updateDraft("<synthetic-prompt>")
+        viewModel.sendMessage()
+        runCurrent()
+        assertEquals(1, gateway.methods.count { it == "prompt.submit" })
+
+        viewModel.leaveConversation()
+        promptGate.complete(Unit)
+        advanceUntilIdle()
+
+        assertNull(viewModel.state.value.activeSummary)
+        assertTrue(viewModel.state.value.messages.isEmpty())
+    }
+
+    @Test
+    fun closingGatewayCancelsAnInFlightInterruptOperationBeforeItsResponseReturns() = runTest {
+        val gateway = FakeGateway()
+        val viewModel = openConversation(gateway)
+        advanceUntilIdle()
+        viewModel.updateDraft("<synthetic-prompt>")
+        viewModel.sendMessage()
+        advanceUntilIdle()
+        gateway.emit("message.start")
+        runCurrent()
+
+        val interruptGate = CompletableDeferred<Unit>()
+        gateway.interruptGates += interruptGate
+        viewModel.interrupt()
+        runCurrent()
+        assertEquals(1, gateway.methods.count { it == "session.interrupt" })
+
+        viewModel.leaveConversation()
+        interruptGate.complete(Unit)
+        advanceUntilIdle()
+
+        assertNull(viewModel.state.value.activeSummary)
+        assertTrue(viewModel.state.value.messages.isEmpty())
+    }
+
+    @Test
     fun removesPersistedPrefixFromInflightProjection() {
         val suffix = CelesteViewModel.unpersistedInflightText(
             inflight = "Already stored and still arriving",
@@ -663,6 +759,29 @@ class CelesteViewModelTest {
     }
 
     @Test
+    fun disclosurePreferenceFailureRollsBackTheProjectionAndShowsRetryNotice() = runTest {
+        val gateway = FakeGateway()
+        val preferences = FailingPreferenceStore()
+        val viewModel = openConversation(gateway, preferences)
+
+        viewModel.setActivityReasoningDisclosureEnabled(false)
+
+        assertTrue(viewModel.state.value.agentActivityReasoningDisclosureEnabled)
+        assertEquals(UiNoticeCategory.PreferencePersistence, viewModel.state.value.notice?.category)
+        assertEquals(UiRecoveryAction.Retry, viewModel.state.value.notice?.recovery)
+        assertTrue(
+            preferences.isServerReasoningDisclosureEnabled(
+                ActivityDisclosureScope(
+                    originKey = "http://hermes.test:9119",
+                    profile = "default",
+                    storedSessionId = "stored-42",
+                ),
+            ),
+        )
+        viewModel.leaveConversation()
+    }
+
+    @Test
     fun messageFailureReasonSurfacesAsAUserSafeErrorAndSettlesTheTurn() = runTest {
         val gateway = FakeGateway()
         val viewModel = openConversation(gateway)
@@ -675,7 +794,8 @@ class CelesteViewModelTest {
         advanceUntilIdle()
 
         assertEquals(TurnState.Idle, viewModel.state.value.turnState)
-        assertEquals("Synthetic failure detail", viewModel.state.value.errorMessage)
+        assertEquals(UiNoticeCategory.ServerTurnFailure, viewModel.state.value.notice?.category)
+        assertEquals("Hermes couldn’t finish that response.", viewModel.state.value.notice?.message)
         viewModel.leaveConversation()
     }
 
@@ -721,6 +841,38 @@ class CelesteViewModelTest {
         viewModel.loadSessions()
         viewModel.openSession(dashboard.session)
         return viewModel
+    }
+
+    private class FailingPreferenceStore : ActivityDisclosurePreferenceStore {
+        private var enabled = true
+        private val scopedValues = mutableMapOf<String, Boolean>()
+        private var failNextWrite = true
+
+        override fun isServerReasoningDisclosureEnabled(): Boolean = enabled
+
+        override fun setServerReasoningDisclosureEnabled(enabled: Boolean): Boolean {
+            if (failNextWrite) {
+                failNextWrite = false
+                return false
+            }
+            this.enabled = enabled
+            return true
+        }
+
+        override fun isServerReasoningDisclosureEnabled(scope: ActivityDisclosureScope): Boolean =
+            scopedValues[scope.stablePreferenceKey()] ?: enabled
+
+        override fun setServerReasoningDisclosureEnabled(
+            scope: ActivityDisclosureScope,
+            enabled: Boolean,
+        ): Boolean {
+            scopedValues[scope.stablePreferenceKey()] = enabled
+            if (failNextWrite) {
+                failNextWrite = false
+                return false
+            }
+            return true
+        }
     }
 
     private class FakeDashboard(
@@ -797,12 +949,17 @@ class CelesteViewModelTest {
         var failPrompt = false
         var connectFailure: Throwable? = null
         var resumePayload: JsonObject = resumePayload(messages = emptyList(), running = false)
+        val connectGates = mutableListOf<CompletableDeferred<Unit>>()
+        val createGates = mutableListOf<CompletableDeferred<Unit>>()
+        val promptGates = mutableListOf<CompletableDeferred<Unit>>()
+        val interruptGates = mutableListOf<CompletableDeferred<Unit>>()
         val resumeGates = mutableListOf<CompletableDeferred<JsonObject>>()
         var resumeRequestCount = 0
 
         override suspend fun connect() {
             connectCount += 1
             connectFailure?.let { throw it }
+            if (connectGates.isNotEmpty()) connectGates.removeAt(0).await()
             mutableState.value = GatewayConnectionState.Connected
         }
 
@@ -820,6 +977,7 @@ class CelesteViewModelTest {
                 }
                 "session.create" -> {
                     createCount += 1
+                    if (createGates.isNotEmpty()) createGates.removeAt(0).await()
                     buildJsonObject {
                         put("session_id", "runtime-new-$createCount")
                         put("stored_session_id", "stored-new-$createCount")
@@ -834,13 +992,17 @@ class CelesteViewModelTest {
                     buildJsonObject { put("sessions", "healthy") }
                 }
                 "prompt.submit" -> {
+                    if (promptGates.isNotEmpty()) promptGates.removeAt(0).await()
                     if (failPrompt) {
                         failPrompt = false
                         throw IOException("prompt delivery failed")
                     }
                     buildJsonObject { put("status", "streaming") }
                 }
-                "session.interrupt" -> buildJsonObject { put("status", "interrupting") }
+                "session.interrupt" -> {
+                    if (interruptGates.isNotEmpty()) interruptGates.removeAt(0).await()
+                    buildJsonObject { put("status", "interrupting") }
+                }
                 else -> buildJsonObject {}
             }
         }

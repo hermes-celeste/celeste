@@ -56,14 +56,27 @@ class ActivityDisclosurePreferenceStoreTest {
         )
     }
 
-    private fun inMemorySharedPreferences(): SharedPreferences {
+    @Test
+    fun androidPreferencesRejectAnUnverifiedCommit() {
+        val preferences = inMemorySharedPreferences(writeOnPut = false)
+        val store = AndroidActivityDisclosurePreferenceStore.fromPreferences(preferences)
+
+        assertFalse(store.setServerReasoningDisclosureEnabled(false))
+        assertTrue(store.isServerReasoningDisclosureEnabled())
+    }
+
+    private fun inMemorySharedPreferences(
+        writeOnPut: Boolean = true,
+    ): SharedPreferences {
         val values = mutableMapOf<String, Any?>()
         lateinit var editor: SharedPreferences.Editor
         val editorHandler = InvocationHandler { _, method, args ->
             when (method.name) {
                 "putBoolean" -> {
                     val arguments = requireNotNull(args)
-                    values[arguments[0] as String] = arguments[1] as Boolean
+                    if (writeOnPut) {
+                        values[arguments[0] as String] = arguments[1] as Boolean
+                    }
                     editor
                 }
                 "remove" -> {
