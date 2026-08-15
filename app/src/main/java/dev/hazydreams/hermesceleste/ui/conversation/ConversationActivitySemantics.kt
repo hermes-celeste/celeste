@@ -6,12 +6,26 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
 
+internal data class ConversationActivitySemanticsSpec(
+    val contentDescription: String,
+    val liveRegion: ActivityAnnouncementMode,
+)
+
+internal fun ConversationActivityOwner.semanticsSpec(): ConversationActivitySemanticsSpec =
+    ConversationActivitySemanticsSpec(
+        contentDescription = announcement,
+        liveRegion = announcementMode,
+    )
+
 internal fun Modifier.conversationActivitySemantics(
     owner: ConversationActivityOwner,
-): Modifier = semantics(mergeDescendants = true) {
-    liveRegion = when (owner.announcementMode) {
+): Modifier {
+    val spec = owner.semanticsSpec()
+    return semantics(mergeDescendants = true) {
+        liveRegion = when (spec.liveRegion) {
         ActivityAnnouncementMode.Polite -> LiveRegionMode.Polite
         ActivityAnnouncementMode.Assertive -> LiveRegionMode.Assertive
+        }
+        contentDescription = spec.contentDescription
     }
-    contentDescription = owner.announcement
 }

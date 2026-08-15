@@ -1,8 +1,12 @@
 package dev.hazydreams.hermesceleste.ui.conversation
 
+import dev.hazydreams.hermesceleste.ActiveTurnAction
+import dev.hazydreams.hermesceleste.ConversationActionModel
+import dev.hazydreams.hermesceleste.ConversationActivityCandidate
+import dev.hazydreams.hermesceleste.ConversationActivityCandidates
 import dev.hazydreams.hermesceleste.TurnState
-import dev.hazydreams.hermesceleste.network.ConversationMessage
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -18,10 +22,12 @@ class ConversationActivityPolicyTest {
 
         assertNull(projection.owner)
         assertEquals(ConversationComposerAction.SendMessage, projection.composerAction)
+        assertEquals("Send message", projection.composerAction.label)
+        assertTrue(projection.draftEnabled)
     }
 
     @Test
-    fun synchronizingOwnsOnePoliteNoticeWithoutAComposerStatusCopy() {
+    fun synchronizingOwnsOnePoliteNoticeAndAnUnavailableDisabledAction() {
         val projection = selectConversationActivity(
             scope = scope(),
             turnState = TurnState.Synchronizing,
@@ -31,6 +37,8 @@ class ConversationActivityPolicyTest {
         assertEquals("Synchronizing…", projection.owner?.label)
         assertEquals(ActivityAnnouncementMode.Polite, projection.owner?.announcementMode)
         assertEquals(ConversationComposerAction.Unavailable, projection.composerAction)
+        assertEquals("Unavailable", projection.composerAction.label)
+        assertFalse(projection.draftEnabled)
     }
 
     @Test
@@ -43,7 +51,45 @@ class ConversationActivityPolicyTest {
         assertEquals(ActivityOwnerKind.Working, projection.owner?.kind)
         assertEquals("Working…", projection.owner?.label)
         assertEquals(ActivityAnnouncementMode.Polite, projection.owner?.announcementMode)
+        assertEquals("Working…", projection.owner?.semanticsSpec()?.contentDescription)
+        assertEquals(ActivityAnnouncementMode.Polite, projection.owner?.semanticsSpec()?.liveRegion)
         assertEquals(ConversationComposerAction.StopResponse, projection.composerAction)
+        assertEquals("Stop response", projection.composerAction.label)
+        assertFalse(projection.draftEnabled)
+    }
+
+    @Test
+    fun unavailableActiveTurnCapabilityDoesNotFallBackToStop() {
+        val projection = selectConversationActivity(
+            scope = scope(),
+            turnState = TurnState.Running,
+            actionModel = ConversationActionModel(ActiveTurnAction.Unavailable),
+        )
+
+        assertEquals(ConversationComposerAction.Unavailable, projection.composerAction)
+        assertEquals("Unavailable", projection.composerAction.label)
+        assertFalse(projection.draftEnabled)
+    }
+
+    @Test
+    fun futureSteerAndQueueActionsHaveExplicitLabelsAndDraftCapability() {
+        val steer = selectConversationActivity(
+            scope = scope(),
+            turnState = TurnState.Running,
+            actionModel = ConversationActionModel(ActiveTurnAction.SteerWithMessage),
+        )
+        val queue = selectConversationActivity(
+            scope = scope(),
+            turnState = TurnState.Running,
+            actionModel = ConversationActionModel(ActiveTurnAction.QueueMessage),
+        )
+
+        assertEquals(ConversationComposerAction.SteerWithMessage, steer.composerAction)
+        assertEquals("Steer with message", steer.composerAction.label)
+        assertTrue(steer.draftEnabled)
+        assertEquals(ConversationComposerAction.QueueMessage, queue.composerAction)
+        assertEquals("Queue message", queue.composerAction.label)
+        assertTrue(queue.draftEnabled)
     }
 
     @Test
@@ -67,32 +113,23 @@ class ConversationActivityPolicyTest {
 
     @Test
     fun pendingToolReplacesStreamingAndKeepsOneStableToolOwner() {
+        val candidates = ConversationActivityCandidates(
+            pendingTool = ConversationActivityCandidate(
+                index = 2,
+                identity = "tool-1",
+                displayName = "terminal",
+            ),
+        )
         val first = selectConversationActivity(
             scope = scope(),
             turnState = TurnState.Running,
             streamingText = "Before tool",
-            messages = listOf(
-                ConversationMessage(
-                    role = "tool",
-                    text = "",
-                    toolName = "terminal",
-                    id = "tool-1",
-                    pending = true,
-                ),
-            ),
+            activityCandidates = candidates,
         )
         val updated = selectConversationActivity(
             scope = scope(),
             turnState = TurnState.Running,
-            messages = listOf(
-                ConversationMessage(
-                    role = "tool",
-                    text = "still running",
-                    toolName = "terminal",
-                    id = "tool-1",
-                    pending = true,
-                ),
-            ),
+            activityCandidates = candidates,
         )
 
         assertEquals(ActivityOwnerKind.Tool, first.owner?.kind)
@@ -113,6 +150,7 @@ class ConversationActivityPolicyTest {
         assertEquals("Reconnecting to Hermes…", projection.owner?.label)
         assertEquals(ActivityAnnouncementMode.Polite, projection.owner?.announcementMode)
         assertEquals(ConversationComposerAction.RetryConnection, projection.composerAction)
+        assertEquals("Retry connection", projection.composerAction.label)
     }
 
     @Test
@@ -126,7 +164,10 @@ class ConversationActivityPolicyTest {
         assertEquals(ActivityOwnerKind.Error, projection.owner?.kind)
         assertEquals("Hermes could not finish that response.", projection.owner?.label)
         assertEquals(ActivityAnnouncementMode.Assertive, projection.owner?.announcementMode)
+        assertEquals("Hermes could not finish that response.", projection.owner?.semanticsSpec()?.contentDescription)
+        assertEquals(ActivityAnnouncementMode.Assertive, projection.owner?.semanticsSpec()?.liveRegion)
         assertEquals(ConversationComposerAction.Retry, projection.composerAction)
+        assertEquals("Retry", projection.composerAction.label)
     }
 
     @Test
@@ -162,9 +203,6 @@ class ConversationActivityPolicyTest {
         val projection = selectConversationActivity(
             scope = scope(),
             turnState = TurnState.Idle,
-            messages = listOf(
-                ConversationMessage(role = "assistant", text = "Done", pending = false),
-            ),
         )
 
         assertNull(projection.owner)

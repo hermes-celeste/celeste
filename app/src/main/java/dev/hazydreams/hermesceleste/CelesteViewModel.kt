@@ -77,6 +77,8 @@ internal data class CelesteUiState(
     val streamingText: String = "",
     val draft: String = "",
     val turnState: TurnState = TurnState.Idle,
+    val activityCandidates: ConversationActivityCandidates = ConversationActivityCandidates(),
+    val conversationActionModel: ConversationActionModel = ConversationActionModel(),
     val loadingMessage: String? = null,
     val errorMessage: String? = null,
 )
@@ -166,6 +168,7 @@ internal class CelesteViewModel(
             activeSummary = null,
             messages = emptyList(),
             streamingText = "",
+            activityCandidates = ConversationActivityCandidates(),
             draft = "",
             loadingMessage = "Finding Hermes…",
             errorMessage = null,
@@ -182,7 +185,7 @@ internal class CelesteViewModel(
                 .onFailure { error ->
                     if (!isCurrentConnectionAttempt(attempt)) return@onFailure
                     mutableState.value = mutableState.value.copy(
-                        errorMessage = error.message ?: "Could not reach the Hermes dashboard.",
+                        errorMessage = sanitizeFailure(error, "Could not reach the Hermes dashboard."),
                     )
                 }
             if (!isCurrentConnectionAttempt(attempt)) return@launch
@@ -270,7 +273,7 @@ internal class CelesteViewModel(
                 if (!isCurrentConnectionAttempt(attempt)) return@onFailure
                 dashboard.clearAuthentication()
                 mutableState.value = mutableState.value.copy(
-                    errorMessage = error.message ?: "Could not load Hermes conversations.",
+                    errorMessage = sanitizeFailure(error, "Could not load Hermes conversations."),
                     password = "",
                     sessionToken = "",
                 )
@@ -290,6 +293,7 @@ internal class CelesteViewModel(
             activeSummary = null,
             messages = emptyList(),
             streamingText = "",
+            activityCandidates = ConversationActivityCandidates(),
             draft = "",
             errorMessage = null,
         )
@@ -321,6 +325,7 @@ internal class CelesteViewModel(
             activeSummary = null,
             messages = emptyList(),
             streamingText = "",
+            activityCandidates = ConversationActivityCandidates(),
             draft = "",
             password = "",
             sessionToken = "",
@@ -499,7 +504,7 @@ internal class CelesteViewModel(
                     dashboardUrl = descriptor.baseUrl,
                     savedAuthMode = descriptor.authMode,
                     username = descriptor.username.orEmpty(),
-                    errorMessage = error.message ?: "Could not reconnect to Hermes.",
+                    errorMessage = sanitizeFailure(error, "Could not reconnect to Hermes."),
                 )
             }
         }
@@ -551,6 +556,7 @@ internal class CelesteViewModel(
             selectedProfile = selectedProfile,
             activeSummary = null,
             messages = emptyList(),
+            activityCandidates = ConversationActivityCandidates(),
             password = password,
             sessionToken = sessionToken,
             loadingMessage = null,
@@ -590,6 +596,7 @@ internal class CelesteViewModel(
             activeSummary = summary,
             messages = emptyList(),
             streamingText = "",
+            activityCandidates = ConversationActivityCandidates(),
             draft = "",
             turnState = TurnState.Synchronizing,
             loadingMessage = "Opening ${summary.title.ifBlank { "conversation" }}…",
@@ -609,7 +616,7 @@ internal class CelesteViewModel(
             }.onFailure { error ->
                 mutableState.value = mutableState.value.copy(
                     loadingMessage = null,
-                    errorMessage = error.message ?: "Could not open that Hermes conversation.",
+                    errorMessage = sanitizeFailure(error, "Could not open that Hermes conversation."),
                     turnState = TurnState.Reconnecting,
                 )
                 scheduleReconnect(wasRunning = false)
@@ -627,6 +634,7 @@ internal class CelesteViewModel(
             activeSummary = null,
             messages = emptyList(),
             streamingText = "",
+            activityCandidates = ConversationActivityCandidates(),
             draft = "",
             turnState = TurnState.Synchronizing,
             loadingMessage = "Starting a new $selectedProfile conversation…",
@@ -678,7 +686,7 @@ internal class CelesteViewModel(
                 mutableState.value = mutableState.value.copy(
                     turnState = TurnState.Idle,
                     loadingMessage = null,
-                    errorMessage = error.message ?: "Could not create a Hermes conversation.",
+                    errorMessage = sanitizeFailure(error, "Could not create a Hermes conversation."),
                 )
             }
         }
@@ -689,6 +697,7 @@ internal class CelesteViewModel(
         mutableState.value = mutableState.value.copy(
             activeSummary = null,
             messages = emptyList(),
+            activityCandidates = ConversationActivityCandidates(),
             streamingText = "",
             draft = "",
             turnState = TurnState.Idle,
@@ -731,7 +740,7 @@ internal class CelesteViewModel(
                 }
                 .onFailure { error ->
                     mutableState.value = mutableState.value.copy(
-                        errorMessage = error.message ?: "Hermes could not send that message.",
+                        errorMessage = sanitizeFailure(error, "Hermes could not send that message."),
                     )
                     if (gateway === activeGateway) {
                         runCatching { reconcile(activeGateway, currentStoredSessionId ?: return@launch) }
@@ -754,7 +763,7 @@ internal class CelesteViewModel(
                 reconcile(activeGateway, currentStoredSessionId ?: return@launch)
             }.onFailure { error ->
                 mutableState.value = mutableState.value.copy(
-                    errorMessage = error.message ?: "Hermes could not stop that turn.",
+                    errorMessage = sanitizeFailure(error, "Hermes could not stop that turn."),
                 )
             }
         }
@@ -807,7 +816,7 @@ internal class CelesteViewModel(
                 activeGateway.close()
                 mutableState.value = mutableState.value.copy(
                     turnState = TurnState.Reconnecting,
-                    errorMessage = health.exceptionOrNull()?.message ?: "Reconnecting to Hermes…",
+                    errorMessage = sanitizeFailure(health.exceptionOrNull(), "Reconnecting to Hermes…"),
                 )
                 scheduleReconnect(wasRunning = wasRunning, immediate = true)
             }
@@ -836,7 +845,7 @@ internal class CelesteViewModel(
                     val wasRunning = mutableState.value.turnState == TurnState.Running
                     mutableState.value = mutableState.value.copy(
                         turnState = TurnState.Reconnecting,
-                        errorMessage = connectionState.reason,
+                        errorMessage = sanitizeFailureMessage(connectionState.reason, "Reconnecting to Hermes…"),
                     )
                     scheduleReconnect(wasRunning)
                 }
@@ -873,6 +882,7 @@ internal class CelesteViewModel(
         mutableState.value = mutableState.value.copy(
             messages = resumed.messages,
             streamingText = streamingSuffix,
+            activityCandidates = activityCandidatesFor(resumed.messages),
             turnState = if (resumed.running == true || resumed.hasLiveProjection) {
                 TurnState.Running
             } else {
@@ -890,6 +900,10 @@ internal class CelesteViewModel(
                 if (mutableState.value.streamingText.isNotBlank()) finalizeAssistant()
                 mutableState.value = mutableState.value.copy(
                     streamingText = "",
+                    activityCandidates = mutableState.value.activityCandidates.copy(
+                        pendingTool = null,
+                        interimAssistant = null,
+                    ),
                     turnState = TurnState.Running,
                     errorMessage = null,
                 )
@@ -929,7 +943,10 @@ internal class CelesteViewModel(
                 mutableState.value = mutableState.value.copy(
                     turnState = TurnState.Idle,
                     errorMessage = if (status == "error") {
-                        event.payload.string("error") ?: "Hermes could not finish that response."
+                        sanitizeFailureMessage(
+                            event.payload.string("error"),
+                            "Hermes could not finish that response.",
+                        )
                     } else {
                         mutableState.value.errorMessage
                     },
@@ -940,7 +957,10 @@ internal class CelesteViewModel(
                 finalizeAssistant(keepRunning = false)
                 mutableState.value = mutableState.value.copy(
                     turnState = TurnState.Idle,
-                    errorMessage = event.payload.string("message") ?: "Hermes reported an error.",
+                    errorMessage = sanitizeFailureMessage(
+                        event.payload.string("message"),
+                        "Hermes reported an error.",
+                    ),
                 )
             }
 
@@ -969,13 +989,23 @@ internal class CelesteViewModel(
                 val input = event.payload.string("args_text")
                     ?: event.payload.string("context")
                     ?: event.payload["args"]?.toString().orEmpty()
+                val toolId = "tool-${localMessageCounter.incrementAndGet()}"
+                val messages = mutableState.value.messages + ConversationMessage(
+                    role = "tool",
+                    text = input,
+                    toolName = name,
+                    id = toolId,
+                    pending = true,
+                )
                 mutableState.value = mutableState.value.copy(
-                    messages = mutableState.value.messages + ConversationMessage(
-                        role = "tool",
-                        text = input,
-                        toolName = name,
-                        id = "tool-${localMessageCounter.incrementAndGet()}",
-                        pending = true,
+                    messages = messages,
+                    activityCandidates = mutableState.value.activityCandidates.copy(
+                        pendingTool = ConversationActivityCandidate(
+                            index = messages.lastIndex,
+                            identity = toolId,
+                            displayName = name,
+                        ),
+                        interimAssistant = null,
                     ),
                     turnState = TurnState.Running,
                 )
@@ -994,7 +1024,12 @@ internal class CelesteViewModel(
                 } else {
                     messages += ConversationMessage(role = "tool", text = output, toolName = name)
                 }
-                mutableState.value = mutableState.value.copy(messages = messages)
+                mutableState.value = mutableState.value.copy(
+                    messages = messages,
+                    activityCandidates = mutableState.value.activityCandidates.copy(
+                        pendingTool = activityCandidatesFor(messages).pendingTool,
+                    ),
+                )
             }
         }
     }
@@ -1032,9 +1067,21 @@ internal class CelesteViewModel(
                 )
             else -> currentMessages
         }
+        val interimAssistant = if (interim && messages.lastOrNull()?.role == "assistant") {
+            ConversationActivityCandidate(
+                index = messages.lastIndex,
+                identity = messages.lastOrNull()?.id,
+            )
+        } else {
+            null
+        }
         mutableState.value = mutableState.value.copy(
             messages = messages,
             streamingText = "",
+            activityCandidates = mutableState.value.activityCandidates.copy(
+                pendingTool = null,
+                interimAssistant = interimAssistant,
+            ),
             turnState = if (keepRunning) TurnState.Running else TurnState.Idle,
         )
     }
@@ -1110,7 +1157,7 @@ internal class CelesteViewModel(
                 reconnectAttempts += 1
                 mutableState.value = mutableState.value.copy(
                     turnState = TurnState.Reconnecting,
-                    errorMessage = failure?.message ?: "Reconnecting to Hermes…",
+                    errorMessage = sanitizeFailure(failure, "Reconnecting to Hermes…"),
                 )
             }
             reconnectJob = null

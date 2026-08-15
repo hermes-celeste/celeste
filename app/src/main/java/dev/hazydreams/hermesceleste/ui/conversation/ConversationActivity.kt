@@ -1,7 +1,10 @@
 package dev.hazydreams.hermesceleste.ui.conversation
 
+import dev.hazydreams.hermesceleste.ActiveTurnAction
+import dev.hazydreams.hermesceleste.ConversationActionModel
+import dev.hazydreams.hermesceleste.ConversationActivityCandidates
 import dev.hazydreams.hermesceleste.TurnState
-import dev.hazydreams.hermesceleste.network.ConversationMessage
+import dev.hazydreams.hermesceleste.sanitizeFailureMessage
 
 internal enum class ActivityOwnerKind {
     Synchronizing,
@@ -20,6 +23,8 @@ internal enum class ActivityAnnouncementMode {
 internal enum class ConversationComposerAction(val label: String) {
     SendMessage("Send message"),
     StopResponse("Stop response"),
+    SteerWithMessage("Steer with message"),
+    QueueMessage("Queue message"),
     RetryConnection("Retry connection"),
     Retry("Retry"),
     Unavailable("Unavailable"),
@@ -52,28 +57,26 @@ internal data class ConversationActivityProjection(
     val scope: ConversationActivityScope,
     val owner: ConversationActivityOwner?,
     val composerAction: ConversationComposerAction,
+    val draftEnabled: Boolean,
 )
 
 /**
  * Selects the one conversation activity owner from backend-authoritative state.
  * Compose only renders this projection; it does not maintain another turn flag.
+ * Activity candidates are maintained by the ViewModel so streaming deltas do
+ * not trigger a full-transcript scan here.
  */
 internal fun selectConversationActivity(
     scope: ConversationActivityScope,
     turnState: TurnState,
-    messages: List<ConversationMessage> = emptyList(),
+    activityCandidates: ConversationActivityCandidates = ConversationActivityCandidates(),
     streamingText: String = "",
     errorMessage: String? = null,
+    actionModel: ConversationActionModel = ConversationActionModel(),
 ): ConversationActivityProjection {
-    val safeError = sanitizeActivityError(errorMessage)
-    val pendingTool = messages.withIndex()
-        .toList()
-        .asReversed()
-        .firstOrNull { (_, message) -> message.role == "tool" && message.pending }
-    val interimAssistant = messages.asReversed()
-        .firstOrNull { message ->
-            message.role == "assistant" && message.interim && message.text.isNotBlank()
-        }
+    val safeError = sanitizeFailureMessage(errorMessage)
+    val pendingTool = activityCandidates.pendingTool
+    val interimAssistant = activityCandidates.interimAssistant
 
     val owner = when {
         turnState == TurnState.Reconnecting -> ConversationActivityOwner(
@@ -103,13 +106,13 @@ internal fun selectConversationActivity(
         turnState != TurnState.Running -> null
 
         pendingTool != null -> {
-            val (index, message) = pendingTool
-            val toolName = safeToolName(message.toolName)
+            val toolName = safeToolName(pendingTool.displayName)
             ConversationActivityOwner(
                 kind = ActivityOwnerKind.Tool,
                 key = scope.activityKey(
                     "tool",
-                    message.id?.takeIf(String::isNotBlank) ?: "$toolName:$index",
+                    pendingTool.identity?.takeIf(String::isNotBlank)
+                        ?: "$toolName:${pendingTool.index}",
                 ),
                 label = "Running $toolName…",
                 announcement = "Running $toolName…",
@@ -138,15 +141,29 @@ internal fun selectConversationActivity(
         turnState == TurnState.Reconnecting -> ConversationComposerAction.RetryConnection
         owner?.kind == ActivityOwnerKind.Error -> ConversationComposerAction.Retry
         turnState == TurnState.Synchronizing -> ConversationComposerAction.Unavailable
-        turnState == TurnState.Running -> ConversationComposerAction.StopResponse
+        turnState == TurnState.Running -> actionModel.activeTurn.toComposerAction()
         else -> ConversationComposerAction.SendMessage
+    }
+    val draftEnabled = when {
+        turnState == TurnState.Idle || turnState == TurnState.Reconnecting -> true
+        turnState == TurnState.Running -> actionModel.activeTurn == ActiveTurnAction.SteerWithMessage ||
+            actionModel.activeTurn == ActiveTurnAction.QueueMessage
+        else -> false
     }
 
     return ConversationActivityProjection(
         scope = scope,
         owner = owner,
         composerAction = composerAction,
+        draftEnabled = draftEnabled,
     )
+}
+
+private fun ActiveTurnAction.toComposerAction(): ConversationComposerAction = when (this) {
+    ActiveTurnAction.StopResponse -> ConversationComposerAction.StopResponse
+    ActiveTurnAction.SteerWithMessage -> ConversationComposerAction.SteerWithMessage
+    ActiveTurnAction.QueueMessage -> ConversationComposerAction.QueueMessage
+    ActiveTurnAction.Unavailable -> ConversationComposerAction.Unavailable
 }
 
 private fun ConversationActivityScope.activityKey(kind: String, identity: String? = null): String =
@@ -174,23 +191,4 @@ private fun safeToolName(rawName: String?): String {
         .take(48)
         .trim()
     return cleaned.ifBlank { "tool" }
-}
-
-private fun sanitizeActivityError(rawMessage: String?): String? {
-    val cleaned = rawMessage
-        ?.replace(Regex("\\s+"), " ")
-        ?.trim()
-        ?.take(240)
-        ?.takeIf(String::isNotBlank)
-        ?: return null
-    val normalized = cleaned.lowercase()
-    return if (
-        normalized.contains("standalonecoroutine") ||
-        normalized.contains("jobcancellationexception") ||
-        (normalized.contains("coroutine") && normalized.contains("cancel"))
-    ) {
-        null
-    } else {
-        cleaned
-    }
 }

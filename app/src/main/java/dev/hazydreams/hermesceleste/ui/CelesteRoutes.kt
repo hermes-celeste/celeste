@@ -92,6 +92,8 @@ internal fun CelesteRoutes(ui: CelesteUiState, viewModel: CelesteViewModel) {
                     draft = ui.draft,
                     turnState = ui.turnState,
                     errorMessage = ui.errorMessage,
+                    activityCandidates = ui.activityCandidates,
+                    actionModel = ui.conversationActionModel,
                     onDraftChange = viewModel::updateDraft,
                     onSend = viewModel::sendMessage,
                     onInterrupt = viewModel::interrupt,

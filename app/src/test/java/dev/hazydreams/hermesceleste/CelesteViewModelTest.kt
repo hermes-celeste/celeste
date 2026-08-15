@@ -28,6 +28,7 @@ import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonPrimitive
@@ -77,6 +78,123 @@ class CelesteViewModelTest {
         assertEquals("Hello continued", state.messages.single { it.role == "assistant" }.text)
         assertFalse(state.messages.single { it.role == "user" }.pending)
         assertEquals(1, gateway.methods.count { it == "prompt.submit" })
+        viewModel.leaveConversation()
+    }
+
+    @Test
+    fun noOutputStartAndFirstDeltaMoveThroughTheAuthoritativeTurnProjection() = runTest {
+        val gateway = FakeGateway()
+        val viewModel = openConversation(gateway)
+
+        viewModel.updateDraft("Start a response")
+        viewModel.sendMessage()
+        advanceUntilIdle()
+
+        assertEquals(TurnState.Running, viewModel.state.value.turnState)
+        assertEquals("", viewModel.state.value.streamingText)
+        assertNull(viewModel.state.value.activityCandidates.pendingTool)
+
+        gateway.emit("message.start")
+        gateway.emit("message.delta", """{"text":"First token"}""")
+        advanceUntilIdle()
+
+        assertEquals(TurnState.Running, viewModel.state.value.turnState)
+        assertEquals("First token", viewModel.state.value.streamingText)
+        assertNull(viewModel.state.value.activityCandidates.pendingTool)
+        viewModel.leaveConversation()
+    }
+
+    @Test
+    fun toolStartAndCompleteUpdateOneStablePendingProjectionInPlace() = runTest {
+        val gateway = FakeGateway()
+        val viewModel = openConversation(gateway)
+
+        gateway.emit("message.start")
+        gateway.emit(
+            "tool.start",
+            """{"name":"terminal","args_text":"pwd"}""",
+        )
+        advanceUntilIdle()
+
+        val pending = viewModel.state.value.messages.single { it.role == "tool" }
+        assertTrue(pending.pending)
+        assertEquals("terminal", pending.toolName)
+        assertEquals(pending.id, viewModel.state.value.activityCandidates.pendingTool?.identity)
+
+        gateway.emit("tool.complete", """{"name":"terminal","output":"/home/juno"}""")
+        advanceUntilIdle()
+
+        val completed = viewModel.state.value.messages.single { it.role == "tool" }
+        assertEquals(pending.id, completed.id)
+        assertFalse(completed.pending)
+        assertEquals("/home/juno", completed.text)
+        assertNull(viewModel.state.value.activityCandidates.pendingTool)
+        viewModel.leaveConversation()
+    }
+
+    @Test
+    fun staleSessionEventsDoNotResurrectStreamingActivity() = runTest {
+        val gateway = FakeGateway()
+        val viewModel = openConversation(gateway)
+
+        gateway.emit(
+            "message.delta",
+            """{"text":"stale"}""",
+            sessionId = "old-runtime",
+        )
+        advanceUntilIdle()
+        assertEquals("", viewModel.state.value.streamingText)
+
+        gateway.emit("message.delta", """{"text":"current"}""")
+        advanceUntilIdle()
+        assertEquals("current", viewModel.state.value.streamingText)
+        viewModel.leaveConversation()
+    }
+
+    @Test
+    fun resumeReconciliationRebuildsCandidatesAndUsesAuthoritativeRunningState() = runTest {
+        val gateway = FakeGateway()
+        val viewModel = openConversation(gateway)
+        val pendingTool = ConversationMessage(
+            role = "tool",
+            text = "pwd",
+            toolName = "terminal",
+            id = "tool-resumed",
+            pending = true,
+        )
+        gateway.resumePayload = resumePayload(
+            messages = listOf(pendingTool),
+            running = true,
+        )
+
+        viewModel.onForeground()
+        advanceUntilIdle()
+
+        assertEquals(TurnState.Running, viewModel.state.value.turnState)
+        assertEquals("tool-resumed", viewModel.state.value.activityCandidates.pendingTool?.identity)
+
+        gateway.resumePayload = resumePayload(
+            messages = listOf(pendingTool.copy(pending = false, text = "done")),
+            running = false,
+        )
+        viewModel.onForeground()
+        advanceUntilIdle()
+
+        assertEquals(TurnState.Idle, viewModel.state.value.turnState)
+        assertNull(viewModel.state.value.activityCandidates.pendingTool)
+        viewModel.leaveConversation()
+    }
+
+    @Test
+    fun cancellationEventIsSilentThroughTheSharedFailureSanitizer() = runTest {
+        val gateway = FakeGateway()
+        val viewModel = openConversation(gateway)
+
+        gateway.emit("error", """{"message":"StandaloneCoroutine was cancelled"}""")
+        advanceUntilIdle()
+
+        assertEquals(TurnState.Idle, viewModel.state.value.turnState)
+        assertNull(viewModel.state.value.errorMessage)
         viewModel.leaveConversation()
     }
 
@@ -394,11 +512,15 @@ class CelesteViewModelTest {
             mutableState.value = GatewayConnectionState.Closed
         }
 
-        fun emit(type: String, payload: String = "{}") {
+        fun emit(
+            type: String,
+            payload: String = "{}",
+            sessionId: String = "runtime-7",
+        ) {
             mutableEvents.tryEmit(
                 GatewayEvent(
                     type = type,
-                    sessionId = "runtime-7",
+                    sessionId = sessionId,
                     payload = Json.parseToJsonElement(payload) as JsonObject,
                 ),
             )
@@ -415,10 +537,24 @@ class CelesteViewModelTest {
             running: Boolean,
         ): JsonObject {
             val encodedMessages = messages.joinToString(",") { message ->
-                """{"id":${Json.encodeToString(message.id ?: "")},"role":${Json.encodeToString(message.role)},"text":${Json.encodeToString(message.text)}}"""
+                buildJsonObject {
+                    put("id", message.id ?: "")
+                    put("role", message.role)
+                    put("text", message.text)
+                    message.toolName?.let { put("tool_name", it) }
+                    if (message.pending) put("pending", true)
+                    if (message.interim) put("interim", true)
+                }
             }
             return Json.parseToJsonElement(
-                """{"session_id":"runtime-7","resumed":"stored-42","running":$running,"status":"${if (running) "streaming" else "idle"}","inflight":null,"messages":[$encodedMessages]}""",
+                buildJsonObject {
+                    put("session_id", "runtime-7")
+                    put("resumed", "stored-42")
+                    put("running", running)
+                    put("status", if (running) "streaming" else "idle")
+                    put("inflight", JsonNull)
+                    put("messages", Json.parseToJsonElement("[$encodedMessages]"))
+                }.toString(),
             ) as JsonObject
         }
     }

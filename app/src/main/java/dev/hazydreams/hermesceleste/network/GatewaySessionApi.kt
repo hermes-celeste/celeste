@@ -132,6 +132,8 @@ private fun decodeGatewayMessage(element: JsonElement): ConversationMessage? {
         id = row["row_id"].scalarIdentity()?.let { "row-$it" }
             ?: row["id"].scalarIdentity()
             ?: row["message_id"].scalarIdentity(),
+        pending = row.boolean("pending") == true,
+        interim = row.boolean("interim") == true,
     )
 }
 

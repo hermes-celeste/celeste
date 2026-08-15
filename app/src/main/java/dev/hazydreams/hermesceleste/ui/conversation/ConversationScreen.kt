@@ -51,6 +51,8 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import dev.hazydreams.hermesceleste.ConversationActionModel
+import dev.hazydreams.hermesceleste.ConversationActivityCandidates
 import dev.hazydreams.hermesceleste.TurnState
 import dev.hazydreams.hermesceleste.network.ConversationMessage
 import dev.hazydreams.hermesceleste.network.StoredSession
@@ -82,6 +84,9 @@ internal fun ConversationScreen(
     onInterrupt: () -> Unit,
     onReconnect: () -> Unit,
     onBack: () -> Unit,
+    activityCandidates: ConversationActivityCandidates = ConversationActivityCandidates(),
+    actionModel: ConversationActionModel = ConversationActionModel(),
+    onActiveTurnAction: (() -> Unit)? = null,
 ) {
     val listState = rememberLazyListState()
     val focusManager = LocalFocusManager.current
@@ -89,9 +94,10 @@ internal fun ConversationScreen(
     val activity = selectConversationActivity(
         scope = activityScope,
         turnState = turnState,
-        messages = messages,
+        activityCandidates = activityCandidates,
         streamingText = streamingText,
         errorMessage = errorMessage,
+        actionModel = actionModel,
     )
     var debouncedWorkingKey by remember(activityScope.key) { mutableStateOf<String?>(null) }
     LaunchedEffect(activity.owner?.key) {
@@ -104,18 +110,8 @@ internal fun ConversationScreen(
     val visibleOwner = activity.owner?.takeUnless { owner ->
         owner.kind == ActivityOwnerKind.Working && debouncedWorkingKey != owner.key
     }
-    val pendingToolIndex = messages.withIndex()
-        .toList()
-        .asReversed()
-        .firstOrNull { (_, message) -> message.role == "tool" && message.pending }
-        ?.index
-    val interimAssistantIndex = messages.withIndex()
-        .toList()
-        .asReversed()
-        .firstOrNull { (_, message) ->
-            message.role == "assistant" && message.interim && message.text.isNotBlank()
-        }
-        ?.index
+    val pendingToolIndex = activityCandidates.pendingTool?.index
+    val interimAssistantIndex = activityCandidates.interimAssistant?.index
     val visibleMessageCount = messages.size +
         (if (streamingText.isNotBlank()) 1 else 0) +
         (if (visibleOwner?.kind == ActivityOwnerKind.Working) 1 else 0)
@@ -237,7 +233,8 @@ internal fun ConversationScreen(
                 OutlinedTextField(
                     value = draft,
                     onValueChange = onDraftChange,
-                    enabled = turnState == TurnState.Idle || turnState == TurnState.Reconnecting,
+                    enabled = activity.draftEnabled &&
+                        (turnState != TurnState.Running || onActiveTurnAction != null),
                     modifier = Modifier.fillMaxWidth(),
                     placeholder = {
                         Text(
@@ -251,12 +248,21 @@ internal fun ConversationScreen(
                     keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
                     keyboardActions = KeyboardActions(
                         onSend = {
-                            if (
-                                draft.isNotBlank() &&
-                                activity.composerAction == ConversationComposerAction.SendMessage
-                            ) {
-                                onSend()
-                                focusManager.clearFocus()
+                            if (draft.isNotBlank()) {
+                                when (activity.composerAction) {
+                                    ConversationComposerAction.SendMessage -> {
+                                        onSend()
+                                        focusManager.clearFocus()
+                                    }
+
+                                    ConversationComposerAction.SteerWithMessage,
+                                    ConversationComposerAction.QueueMessage -> {
+                                        onActiveTurnAction?.invoke()
+                                        focusManager.clearFocus()
+                                    }
+
+                                    else -> Unit
+                                }
                             }
                         },
                     ),
@@ -302,8 +308,20 @@ internal fun ConversationScreen(
                             colors = ButtonDefaults.outlinedButtonColors(contentColor = CelesteError),
                         ) { Text(activity.composerAction.label, fontWeight = FontWeight.SemiBold) }
 
-                        ConversationComposerAction.SendMessage,
-                        ConversationComposerAction.Unavailable -> Button(
+                        ConversationComposerAction.SteerWithMessage,
+                        ConversationComposerAction.QueueMessage -> OutlinedButton(
+                            onClick = {
+                                onActiveTurnAction?.invoke()
+                                focusManager.clearFocus()
+                            },
+                            enabled = draft.isNotBlank() && onActiveTurnAction != null,
+                            modifier = Modifier.height(46.dp),
+                            shape = RoundedCornerShape(23.dp),
+                            border = androidx.compose.foundation.BorderStroke(1.dp, CelesteBlue),
+                            colors = ButtonDefaults.outlinedButtonColors(contentColor = CelesteBlue),
+                        ) { Text(activity.composerAction.label, fontWeight = FontWeight.SemiBold) }
+
+                        ConversationComposerAction.SendMessage -> Button(
                             onClick = {
                                 onSend()
                                 focusManager.clearFocus()
@@ -318,7 +336,20 @@ internal fun ConversationScreen(
                                 disabledContainerColor = CelesteHairline,
                                 disabledContentColor = CelesteMuted,
                             ),
-                        ) { Text(ConversationComposerAction.SendMessage.label, fontWeight = FontWeight.Bold) }
+                        ) { Text(activity.composerAction.label, fontWeight = FontWeight.Bold) }
+
+                        ConversationComposerAction.Unavailable -> Button(
+                            onClick = {},
+                            enabled = false,
+                            modifier = Modifier.height(46.dp),
+                            shape = RoundedCornerShape(23.dp),
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = CelesteInk,
+                                contentColor = CelestePaper,
+                                disabledContainerColor = CelesteHairline,
+                                disabledContentColor = CelesteMuted,
+                            ),
+                        ) { Text(activity.composerAction.label, fontWeight = FontWeight.Bold) }
                     }
                 }
             }
