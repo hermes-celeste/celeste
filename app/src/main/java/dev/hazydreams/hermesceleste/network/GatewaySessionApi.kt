@@ -78,6 +78,14 @@ suspend fun GatewayConnection.resumeStoredSession(storedSessionId: String): Resu
         status = status,
         inflightAssistantText = inflightAssistantText(inflight),
         hasLiveProjection = inflight.isTruthy() || queued.isTruthy(),
+        // The current Hermes gateway exposes durable activity through its
+        // server-authored `messages` projection: role=tool rows plus explicit
+        // `reasoning`/`reasoning_content` fields on assistant rows. No guessed
+        // activity RPC or speculative snapshot key is introduced here.
+        activityItems = decodeGatewayActivity(result["messages"]?.jsonArray.orEmpty()),
+        profile = result.string("profile")
+            ?: result.string("profile_id")
+            ?: info?.string("profile_name"),
     )
 }
 
@@ -125,10 +133,16 @@ private fun decodeGatewayMessage(element: JsonElement): ConversationMessage? {
         ?: row.string("content")
         ?: row.string("context")
         ?: if (role == "tool") toolName.orEmpty() else ""
+    val safeToolName = if (role == "tool") toolName?.let { sanitizeActivityText(it, 80) } else toolName
+    val safeText = if (role == "tool") {
+        sanitizeActivityText(text, TOOL_ACTIVITY_DETAIL_LIMIT)
+    } else {
+        text
+    }
     return ConversationMessage(
         role = role,
-        text = text,
-        toolName = toolName,
+        text = safeText,
+        toolName = safeToolName,
         id = row["row_id"].scalarIdentity()?.let { "row-$it" }
             ?: row["id"].scalarIdentity()
             ?: row["message_id"].scalarIdentity(),
@@ -138,7 +152,7 @@ private fun decodeGatewayMessage(element: JsonElement): ConversationMessage? {
 private fun JsonElement?.scalarIdentity(): String? =
     (this as? JsonPrimitive)?.contentOrNull?.takeIf(String::isNotBlank)
 
-private fun inflightAssistantText(element: JsonElement?): String {
+internal fun inflightAssistantText(element: JsonElement?): String {
     val row = element as? JsonObject ?: return ""
     return sequenceOf("assistant", "text", "content")
         .mapNotNull(row::string)
@@ -146,7 +160,7 @@ private fun inflightAssistantText(element: JsonElement?): String {
         .orEmpty()
 }
 
-private fun JsonElement?.isTruthy(): Boolean = when (this) {
+internal fun JsonElement?.isTruthy(): Boolean = when (this) {
     null, JsonNull -> false
     is JsonObject, is JsonArray -> true
     is JsonPrimitive -> booleanOrNull

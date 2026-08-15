@@ -39,6 +39,10 @@ data class GatewayEvent(
     val type: String,
     val sessionId: String,
     val payload: JsonObject,
+    /** Optional local binding metadata; the wire event remains generic JSON-RPC. */
+    val originKey: NormalizedDashboardOrigin? = null,
+    val profile: String? = null,
+    val storedSessionId: String? = null,
 )
 
 class GatewayRpcException(

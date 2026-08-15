@@ -5,8 +5,11 @@ import java.io.IOException
 import dev.hazydreams.hermesceleste.connection.InMemoryConnectionStore
 import dev.hazydreams.hermesceleste.network.AuthenticationMaterial
 import dev.hazydreams.hermesceleste.network.AuthenticationRejected
+import dev.hazydreams.hermesceleste.network.ActivityCapabilityState
+import dev.hazydreams.hermesceleste.network.ActivityDisclosurePreferenceStore
 import dev.hazydreams.hermesceleste.network.AuthProvider
 import dev.hazydreams.hermesceleste.network.ConversationMessage
+import dev.hazydreams.hermesceleste.network.CorrelationQuality
 import dev.hazydreams.hermesceleste.network.DashboardProbeResult
 import dev.hazydreams.hermesceleste.network.DashboardProfile
 import dev.hazydreams.hermesceleste.network.DashboardService
@@ -14,7 +17,11 @@ import dev.hazydreams.hermesceleste.network.GatewayConnection
 import dev.hazydreams.hermesceleste.network.GatewayConnectionState
 import dev.hazydreams.hermesceleste.network.GatewayCredential
 import dev.hazydreams.hermesceleste.network.GatewayEvent
+import dev.hazydreams.hermesceleste.network.InMemoryActivityDisclosurePreferenceStore
+import dev.hazydreams.hermesceleste.network.ServerReasoningActivity
 import dev.hazydreams.hermesceleste.network.StoredSession
+import dev.hazydreams.hermesceleste.network.ToolActivity
+import dev.hazydreams.hermesceleste.network.ToolPhase
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -52,6 +59,81 @@ class CelesteViewModelTest {
     @After
     fun tearDown() {
         Dispatchers.resetMain()
+    }
+
+    @Test
+    fun projectsToolAndServerReasoningSeparatelyAndHonorsDeviceDisclosure() = runTest {
+        val gateway = FakeGateway()
+        val preferences = InMemoryActivityDisclosurePreferenceStore()
+        val viewModel = openConversation(gateway, preferences)
+
+        gateway.emit(
+            "tool.start",
+            """{"name":"terminal","tool_call_id":"call-1","args":"<tool-input>"}""",
+        )
+        gateway.emit(
+            "reasoning.available",
+            """{"text":"<server-summary>","label":"Server summary"}""",
+        )
+        gateway.emit(
+            "tool.complete",
+            """{"name":"terminal","tool_call_id":"call-1","output":"<tool-output>"}""",
+        )
+        advanceUntilIdle()
+
+        val activity = requireNotNull(viewModel.state.value.agentActivity)
+        assertEquals(2, activity.items.size)
+        assertEquals(1, activity.items.filterIsInstance<ToolActivity>().size)
+        assertEquals(1, activity.items.filterIsInstance<ServerReasoningActivity>().size)
+        assertEquals(
+            ToolPhase.Completed,
+            activity.items.filterIsInstance<ToolActivity>().single().phase,
+        )
+        assertEquals(
+            CorrelationQuality.ExactId,
+            activity.items.filterIsInstance<ToolActivity>().single().correlation,
+        )
+        assertEquals(ActivityCapabilityState.ToolAndServerReasoning, activity.capability)
+
+        viewModel.setActivityReasoningDisclosureEnabled(false)
+        assertFalse(viewModel.state.value.agentActivityReasoningDisclosureEnabled)
+        assertFalse(preferences.isServerReasoningDisclosureEnabled())
+        assertTrue(viewModel.state.value.agentActivity?.items.orEmpty().none { it is ServerReasoningActivity })
+        assertEquals(
+            ActivityCapabilityState.ToolAndServerReasoning,
+            viewModel.state.value.agentActivity?.capability,
+        )
+        assertTrue(gateway.methods.none { it.contains("activity", ignoreCase = true) })
+        viewModel.leaveConversation()
+    }
+
+    @Test
+    fun reconnectRestoresActivityProjectionFromAuthoritativeSnapshot() = runTest {
+        val gateway = FakeGateway()
+        val viewModel = openConversation(gateway)
+        gateway.emit(
+            "tool.start",
+            """{"name":"terminal","tool_call_id":"call-1"}""",
+        )
+        advanceUntilIdle()
+        assertEquals(
+            dev.hazydreams.hermesceleste.network.ActivityPresentationState.Running,
+            viewModel.state.value.agentActivity?.presentation,
+        )
+
+        gateway.resumePayload = resumePayload(
+            messages = emptyList(),
+            running = false,
+        )
+        gateway.disconnect("reconnect for activity")
+        advanceUntilIdle()
+
+        assertEquals(
+            dev.hazydreams.hermesceleste.network.ActivityPresentationState.Discovering,
+            viewModel.state.value.agentActivity?.presentation,
+        )
+        assertEquals(TurnState.Idle, viewModel.state.value.turnState)
+        viewModel.leaveConversation()
     }
 
     @Test
@@ -267,11 +349,16 @@ class CelesteViewModelTest {
         assertEquals("and still arriving", suffix)
     }
 
-    private suspend fun openConversation(gateway: FakeGateway): CelesteViewModel {
+    private suspend fun openConversation(
+        gateway: FakeGateway,
+        activityDisclosurePreferences: ActivityDisclosurePreferenceStore =
+            InMemoryActivityDisclosurePreferenceStore(),
+    ): CelesteViewModel {
         val dashboard = FakeDashboard(gateway)
         val viewModel = CelesteViewModel(
             dashboard = dashboard,
             reconnectDelayMillis = { _, _ -> 0L },
+            activityDisclosurePreferences = activityDisclosurePreferences,
         )
         viewModel.updateDashboardUrl("http://hermes.test:9119")
         viewModel.findDashboard()

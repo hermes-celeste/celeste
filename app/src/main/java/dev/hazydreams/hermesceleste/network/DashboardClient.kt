@@ -91,6 +91,9 @@ data class ResumedSession(
     val status: String? = null,
     val inflightAssistantText: String = "",
     val hasLiveProjection: Boolean = false,
+    val activityItems: List<ActivityItem> = emptyList(),
+    val originKey: NormalizedDashboardOrigin? = null,
+    val profile: String? = null,
 )
 
 sealed interface GatewayCredential {
@@ -543,12 +546,27 @@ class DashboardClient(
             if (runtimeId.isBlank()) {
                 throw InvalidDashboardResponse("Hermes returned no runtime session identity.")
             }
+            val info = result["info"] as? JsonObject
+            val running = result["running"]?.jsonPrimitive?.booleanOrNull ?: info?.boolean("running")
+            val status = result["status"]?.jsonPrimitive?.contentOrNull ?: info?.string("status")
+            val inflight = result["inflight"]
+            val queued = result["queued"]
+            val messages = result["messages"]?.jsonArray.orEmpty()
             ResumedSession(
                 runtimeSessionId = runtimeId,
                 storedSessionId = result["resumed"]?.jsonPrimitive?.contentOrNull
+                    ?: result["stored_session_id"]?.jsonPrimitive?.contentOrNull
                     ?: result["session_key"]?.jsonPrimitive?.contentOrNull
                     ?: storedSessionId,
-                messages = decodeGatewayMessages(result["messages"]?.jsonArray.orEmpty()),
+                messages = decodeGatewayMessages(messages),
+                running = running,
+                status = status,
+                inflightAssistantText = inflightAssistantText(inflight),
+                hasLiveProjection = inflight.isTruthy() || queued.isTruthy(),
+                activityItems = decodeGatewayActivity(messages),
+                profile = result["profile"]?.jsonPrimitive?.contentOrNull
+                    ?: result["profile_id"]?.jsonPrimitive?.contentOrNull
+                    ?: info?.string("profile_name"),
             )
         }
     }

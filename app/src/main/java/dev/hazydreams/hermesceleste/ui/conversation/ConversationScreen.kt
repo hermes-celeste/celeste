@@ -49,6 +49,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import dev.hazydreams.hermesceleste.TurnState
 import dev.hazydreams.hermesceleste.network.ConversationMessage
+import dev.hazydreams.hermesceleste.network.AgentActivityProjection
 import dev.hazydreams.hermesceleste.network.StoredSession
 import dev.hazydreams.hermesceleste.ui.CelesteBackdrop
 import dev.hazydreams.hermesceleste.ui.CelesteBlue
@@ -77,11 +78,15 @@ internal fun ConversationScreen(
     onInterrupt: () -> Unit,
     onReconnect: () -> Unit,
     onBack: () -> Unit,
+    agentActivity: AgentActivityProjection? = null,
+    reasoningDisclosureEnabled: Boolean = true,
+    onReasoningDisclosureChange: (Boolean) -> Unit = {},
 ) {
     val listState = rememberLazyListState()
     val focusManager = LocalFocusManager.current
-    val transcriptKeys = remember(messages) { transcriptItemKeys(messages) }
-    val visibleMessageCount = messages.size + if (streamingText.isNotBlank()) 1 else 0
+    val transcriptMessages = remember(messages) { messages.filterNot { it.role == "tool" } }
+    val transcriptKeys = remember(transcriptMessages) { transcriptItemKeys(transcriptMessages) }
+    val visibleMessageCount = transcriptMessages.size + if (streamingText.isNotBlank()) 1 else 0
     val safeDrawingInsets = WindowInsets.safeDrawing
     val headerTopPadding = maxOf(
         34.dp,
@@ -153,6 +158,16 @@ internal fun ConversationScreen(
                 }
             }
 
+            agentActivity?.let { projection ->
+                Spacer(Modifier.height(8.dp))
+                AgentActivityPanel(
+                    projection = projection,
+                    reasoningDisclosureEnabled = reasoningDisclosureEnabled,
+                    onReasoningDisclosureChange = onReasoningDisclosureChange,
+                )
+                Spacer(Modifier.height(8.dp))
+            }
+
             LazyColumn(
                 state = listState,
                 modifier = Modifier.weight(1f).fillMaxWidth(),
@@ -160,7 +175,7 @@ internal fun ConversationScreen(
                 verticalArrangement = Arrangement.spacedBy(25.dp),
             ) {
                 itemsIndexed(
-                    items = messages,
+                    items = transcriptMessages,
                     key = { index, _ -> transcriptKeys[index] },
                 ) { _, message ->
                     MessageBubble(message)

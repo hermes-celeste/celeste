@@ -87,10 +87,13 @@ internal fun CelesteRoutes(ui: CelesteUiState, viewModel: CelesteViewModel) {
                     turnState = ui.turnState,
                     loadingMessage = ui.loadingMessage,
                     errorMessage = ui.errorMessage,
+                    agentActivity = ui.agentActivity,
+                    reasoningDisclosureEnabled = ui.agentActivityReasoningDisclosureEnabled,
                     onDraftChange = viewModel::updateDraft,
                     onSend = viewModel::sendMessage,
                     onInterrupt = viewModel::interrupt,
                     onReconnect = viewModel::reconnectNow,
+                    onReasoningDisclosureChange = viewModel::setActivityReasoningDisclosureEnabled,
                     onBack = viewModel::leaveConversation,
                 )
             }

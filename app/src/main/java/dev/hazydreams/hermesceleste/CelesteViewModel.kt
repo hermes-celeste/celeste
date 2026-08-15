@@ -20,7 +20,16 @@ import dev.hazydreams.hermesceleste.network.DashboardUrlPolicy
 import dev.hazydreams.hermesceleste.network.GatewayConnection
 import dev.hazydreams.hermesceleste.network.GatewayConnectionState
 import dev.hazydreams.hermesceleste.network.GatewayCredential
+import dev.hazydreams.hermesceleste.network.ActivityBinding
+import dev.hazydreams.hermesceleste.network.ActivityCapabilityState
+import dev.hazydreams.hermesceleste.network.ActivityDisclosurePreferenceStore
+import dev.hazydreams.hermesceleste.network.AgentActivityProjection
+import dev.hazydreams.hermesceleste.network.AgentActivityReducer
+import dev.hazydreams.hermesceleste.network.InMemoryActivityDisclosurePreferenceStore
 import dev.hazydreams.hermesceleste.network.GatewayEvent
+import dev.hazydreams.hermesceleste.network.ServerReasoningActivity
+import dev.hazydreams.hermesceleste.network.initialActivityProjection
+import dev.hazydreams.hermesceleste.network.normalizeActivityOrigin
 import dev.hazydreams.hermesceleste.network.ResumedSession
 import dev.hazydreams.hermesceleste.network.StoredSession
 import dev.hazydreams.hermesceleste.network.boolean
@@ -74,12 +83,17 @@ internal data class CelesteUiState(
     val selectedProfile: String = "default",
     val activeSummary: StoredSession? = null,
     val messages: List<ConversationMessage> = emptyList(),
+    val agentActivity: AgentActivityProjection? = null,
+    val agentActivityReasoningDisclosureEnabled: Boolean = true,
     val streamingText: String = "",
     val draft: String = "",
     val turnState: TurnState = TurnState.Idle,
     val loadingMessage: String? = null,
     val errorMessage: String? = null,
-)
+) {
+    /** Compatibility alias for callers that name the projection explicitly. */
+    val activityProjection: AgentActivityProjection? get() = agentActivity
+}
 
 private data class LoadedDashboard(
     val credential: GatewayCredential,
@@ -99,6 +113,8 @@ internal class CelesteViewModel(
     private val reconnectDelayMillis: (attempt: Int, wasRunning: Boolean) -> Long = { attempt, wasRunning ->
         if (wasRunning && attempt == 0) 100L else min(5_000L, 1_000L shl attempt.coerceAtMost(2))
     },
+    private val activityDisclosurePreferences: ActivityDisclosurePreferenceStore =
+        InMemoryActivityDisclosurePreferenceStore(),
 ) : ViewModel() {
     private val mutableState = MutableStateFlow(CelesteUiState())
     val state: StateFlow<CelesteUiState> = mutableState.asStateFlow()
@@ -117,9 +133,15 @@ internal class CelesteViewModel(
     private var reconnectAttempts = 0
     private var reconciling = false
     private var currentSessionCanResume = true
+    private var activityReasoningDisclosureEnabled = runCatching {
+        activityDisclosurePreferences.isServerReasoningDisclosureEnabled()
+    }.getOrDefault(true)
     private val bufferedEvents = mutableListOf<GatewayEvent>()
 
     init {
+        mutableState.value = mutableState.value.copy(
+            agentActivityReasoningDisclosureEnabled = activityReasoningDisclosureEnabled,
+        )
         restoreSavedConnection()
     }
 
@@ -147,6 +169,27 @@ internal class CelesteViewModel(
         mutableState.value = mutableState.value.copy(draft = value)
     }
 
+    /**
+     * Device-local disclosure only. It never requests a new server payload and
+     * disabling it drops the in-memory reasoning projection rather than writing
+     * private text to preferences or a local transcript.
+     */
+    fun setActivityReasoningDisclosureEnabled(enabled: Boolean) {
+        activityReasoningDisclosureEnabled = enabled
+        runCatching {
+            activityDisclosurePreferences.setServerReasoningDisclosureEnabled(enabled)
+        }
+        val activity = mutableState.value.agentActivity
+        mutableState.value = mutableState.value.copy(
+            agentActivityReasoningDisclosureEnabled = enabled,
+            agentActivity = if (enabled || activity == null) {
+                activity
+            } else {
+                AgentActivityReducer.withoutServerReasoning(activity)
+            },
+        )
+    }
+
     fun selectProfile(name: String) {
         if (mutableState.value.profiles.none { it.name == name }) return
         mutableState.value = mutableState.value.copy(selectedProfile = name)
@@ -165,6 +208,7 @@ internal class CelesteViewModel(
             sessions = null,
             activeSummary = null,
             messages = emptyList(),
+            agentActivity = null,
             streamingText = "",
             draft = "",
             loadingMessage = "Finding Hermes…",
@@ -289,6 +333,7 @@ internal class CelesteViewModel(
             sessions = null,
             activeSummary = null,
             messages = emptyList(),
+            agentActivity = null,
             streamingText = "",
             draft = "",
             errorMessage = null,
@@ -305,7 +350,10 @@ internal class CelesteViewModel(
         credential = null
         currentDescriptor = null
         dashboard.clearAuthentication()
-        mutableState.value = CelesteUiState(connectionPhase = ConnectionPhase.ManualSetup)
+        mutableState.value = CelesteUiState(
+            connectionPhase = ConnectionPhase.ManualSetup,
+            agentActivityReasoningDisclosureEnabled = activityReasoningDisclosureEnabled,
+        )
     }
 
     fun signOut() {
@@ -320,6 +368,7 @@ internal class CelesteViewModel(
             sessions = null,
             activeSummary = null,
             messages = emptyList(),
+            agentActivity = null,
             streamingText = "",
             draft = "",
             password = "",
@@ -356,6 +405,7 @@ internal class CelesteViewModel(
         currentDescriptor = null
         mutableState.value = CelesteUiState(
             connectionPhase = ConnectionPhase.ManualSetup,
+            agentActivityReasoningDisclosureEnabled = activityReasoningDisclosureEnabled,
             loadingMessage = "Forgetting this connection…",
         )
         connectionJob = viewModelScope.launch {
@@ -369,6 +419,7 @@ internal class CelesteViewModel(
             if (!isCurrentConnectionAttempt(attempt)) return@launch
             mutableState.value = CelesteUiState(
                 connectionPhase = ConnectionPhase.ManualSetup,
+                agentActivityReasoningDisclosureEnabled = activityReasoningDisclosureEnabled,
                 errorMessage = if (error == null) null else {
                     "Celeste could not remove the saved connection. Try again."
                 },
@@ -382,6 +433,7 @@ internal class CelesteViewModel(
         credential = null
         mutableState.value = CelesteUiState(
             connectionPhase = ConnectionPhase.CheckingSavedConnection,
+            agentActivityReasoningDisclosureEnabled = activityReasoningDisclosureEnabled,
             loadingMessage = "Checking this device…",
         )
         connectionJob = viewModelScope.launch {
@@ -418,6 +470,7 @@ internal class CelesteViewModel(
         var restoredProbe: DashboardProbeResult? = null
         mutableState.value = CelesteUiState(
             connectionPhase = ConnectionPhase.Restoring,
+            agentActivityReasoningDisclosureEnabled = activityReasoningDisclosureEnabled,
             dashboardUrl = descriptor.baseUrl,
             savedAuthMode = descriptor.authMode,
             username = descriptor.username.orEmpty(),
@@ -496,6 +549,7 @@ internal class CelesteViewModel(
                 currentDescriptor = null
                 mutableState.value = CelesteUiState(
                     connectionPhase = ConnectionPhase.RestoreFailed,
+                    agentActivityReasoningDisclosureEnabled = activityReasoningDisclosureEnabled,
                     dashboardUrl = descriptor.baseUrl,
                     savedAuthMode = descriptor.authMode,
                     username = descriptor.username.orEmpty(),
@@ -551,6 +605,7 @@ internal class CelesteViewModel(
             selectedProfile = selectedProfile,
             activeSummary = null,
             messages = emptyList(),
+            agentActivity = null,
             password = password,
             sessionToken = sessionToken,
             loadingMessage = null,
@@ -565,6 +620,7 @@ internal class CelesteViewModel(
         errorMessage: String? = null,
     ): CelesteUiState = CelesteUiState(
         connectionPhase = phase,
+        agentActivityReasoningDisclosureEnabled = activityReasoningDisclosureEnabled,
         dashboardUrl = descriptor?.baseUrl.orEmpty(),
         probe = probe,
         savedAuthMode = descriptor?.authMode,
@@ -585,10 +641,19 @@ internal class CelesteViewModel(
         val connection = mutableState.value.probe ?: return
         val activeCredential = credential ?: return
         closeGateway()
+        currentRuntimeSessionId = null
+        currentStoredSessionId = summary.id
         currentSessionCanResume = true
+        val initialActivity = initialActivityProjection(
+            originKey = connection.baseUrl,
+            profile = summary.profile.ifBlank { mutableState.value.selectedProfile },
+            storedSessionId = summary.id,
+            capability = ActivityCapabilityState.Unknown,
+        )
         mutableState.value = mutableState.value.copy(
             activeSummary = summary,
             messages = emptyList(),
+            agentActivity = initialActivity,
             streamingText = "",
             draft = "",
             turnState = TurnState.Synchronizing,
@@ -626,6 +691,7 @@ internal class CelesteViewModel(
         mutableState.value = snapshot.copy(
             activeSummary = null,
             messages = emptyList(),
+            agentActivity = null,
             streamingText = "",
             draft = "",
             turnState = TurnState.Synchronizing,
@@ -666,6 +732,13 @@ internal class CelesteViewModel(
                     sessions = listOf(summary) + mutableState.value.sessions.orEmpty()
                         .filterNot { it.id == summary.id },
                     activeSummary = summary,
+                    agentActivity = initialActivityProjection(
+                        originKey = connection.baseUrl,
+                        profile = selectedProfile,
+                        storedSessionId = created.storedSessionId,
+                        runtimeSessionId = created.runtimeSessionId,
+                        capability = ActivityCapabilityState.Unknown,
+                    ),
                     turnState = TurnState.Idle,
                     loadingMessage = null,
                     errorMessage = null,
@@ -689,6 +762,7 @@ internal class CelesteViewModel(
         mutableState.value = mutableState.value.copy(
             activeSummary = null,
             messages = emptyList(),
+            agentActivity = null,
             streamingText = "",
             draft = "",
             turnState = TurnState.Idle,
@@ -807,6 +881,7 @@ internal class CelesteViewModel(
                 activeGateway.close()
                 mutableState.value = mutableState.value.copy(
                     turnState = TurnState.Reconnecting,
+                    agentActivity = mutableState.value.agentActivity?.let(AgentActivityReducer::markStale),
                     errorMessage = health.exceptionOrNull()?.message ?: "Reconnecting to Hermes…",
                 )
                 scheduleReconnect(wasRunning = wasRunning, immediate = true)
@@ -836,6 +911,7 @@ internal class CelesteViewModel(
                     val wasRunning = mutableState.value.turnState == TurnState.Running
                     mutableState.value = mutableState.value.copy(
                         turnState = TurnState.Reconnecting,
+                        agentActivity = mutableState.value.agentActivity?.let(AgentActivityReducer::markStale),
                         errorMessage = connectionState.reason,
                     )
                     scheduleReconnect(wasRunning)
@@ -847,6 +923,9 @@ internal class CelesteViewModel(
     private suspend fun reconcile(activeGateway: GatewayConnection, storedSessionId: String) {
         reconciling = true
         bufferedEvents.clear()
+        mutableState.value = mutableState.value.copy(
+            agentActivity = mutableState.value.agentActivity?.let(AgentActivityReducer::markRestoring),
+        )
         try {
             val resumed = activeGateway.resumeStoredSession(storedSessionId)
             if (gateway !== activeGateway) return
@@ -858,11 +937,34 @@ internal class CelesteViewModel(
         } catch (error: Throwable) {
             bufferedEvents.clear()
             reconciling = false
+            mutableState.value = mutableState.value.copy(
+                agentActivity = mutableState.value.agentActivity?.let(AgentActivityReducer::markStale),
+            )
             throw error
         }
     }
 
     private fun applyResumedSession(resumed: ResumedSession) {
+        val currentActivity = mutableState.value.agentActivity
+        val expectedStoredId = currentStoredSessionId
+            ?: mutableState.value.activeSummary?.id
+            ?: resumed.storedSessionId
+        if (resumed.storedSessionId != expectedStoredId) {
+            throw IOException("Hermes returned activity for a different stored conversation.")
+        }
+        if (currentActivity != null) {
+            if (resumed.originKey != null &&
+                normalizeActivityOrigin(resumed.originKey) != currentActivity.originKey
+            ) {
+                throw IOException("Hermes returned activity for a different dashboard origin.")
+            }
+            if (resumed.profile != null &&
+                resumed.profile.isNotBlank() &&
+                resumed.profile != currentActivity.profile
+            ) {
+                throw IOException("Hermes returned activity for a different profile.")
+            }
+        }
         currentRuntimeSessionId = resumed.runtimeSessionId
         currentStoredSessionId = resumed.storedSessionId
         currentSessionCanResume = true
@@ -870,8 +972,27 @@ internal class CelesteViewModel(
             inflight = resumed.inflightAssistantText,
             messages = resumed.messages,
         )
+        val activity = currentActivity?.let { projection ->
+            val snapshotItems = resumed.activityItems.ifEmpty {
+                dev.hazydreams.hermesceleste.network.activityItemsFromMessages(resumed.messages)
+            }.filter { item ->
+                activityReasoningDisclosureEnabled || item !is ServerReasoningActivity
+            }
+            AgentActivityReducer.applySnapshot(
+                projection = projection,
+                items = snapshotItems,
+                binding = ActivityBinding(
+                    originKey = projection.originKey,
+                    profile = projection.profile,
+                    storedSessionId = resumed.storedSessionId,
+                    runtimeSessionId = resumed.runtimeSessionId,
+                ),
+                running = resumed.running == true || resumed.hasLiveProjection,
+            )
+        }
         mutableState.value = mutableState.value.copy(
             messages = resumed.messages,
+            agentActivity = activity,
             streamingText = streamingSuffix,
             turnState = if (resumed.running == true || resumed.hasLiveProjection) {
                 TurnState.Running
@@ -885,6 +1006,16 @@ internal class CelesteViewModel(
     private fun applyEvent(event: GatewayEvent) {
         val runtimeId = currentRuntimeSessionId ?: return
         if (event.sessionId.isNotBlank() && event.sessionId != runtimeId) return
+        mutableState.value.agentActivity?.let { projection ->
+            val updated = AgentActivityReducer.applyEvent(
+                projection = projection,
+                event = event,
+                reasoningEnabled = activityReasoningDisclosureEnabled,
+            )
+            if (updated !== projection) {
+                mutableState.value = mutableState.value.copy(agentActivity = updated)
+            }
+        }
         when (event.type) {
             "message.start" -> {
                 if (mutableState.value.streamingText.isNotBlank()) finalizeAssistant()
@@ -965,36 +1096,14 @@ internal class CelesteViewModel(
 
             "tool.start", "tool_call" -> {
                 if (mutableState.value.streamingText.isNotBlank()) finalizeAssistant(keepRunning = true)
-                val name = event.payload.string("name") ?: "Tool"
-                val input = event.payload.string("args_text")
-                    ?: event.payload.string("context")
-                    ?: event.payload["args"]?.toString().orEmpty()
-                mutableState.value = mutableState.value.copy(
-                    messages = mutableState.value.messages + ConversationMessage(
-                        role = "tool",
-                        text = input,
-                        toolName = name,
-                        id = "tool-${localMessageCounter.incrementAndGet()}",
-                        pending = true,
-                    ),
-                    turnState = TurnState.Running,
-                )
+                mutableState.value = mutableState.value.copy(turnState = TurnState.Running)
             }
 
             "tool.complete", "tool_result" -> {
-                val name = event.payload.string("name") ?: "Tool"
-                val output = event.payload.string("output")
-                    ?: event.payload["result"]?.toString().orEmpty()
-                val messages = mutableState.value.messages.toMutableList()
-                val index = messages.indexOfLast {
-                    it.role == "tool" && it.toolName == name && it.pending
-                }
-                if (index >= 0) {
-                    messages[index] = messages[index].copy(text = output, pending = false)
-                } else {
-                    messages += ConversationMessage(role = "tool", text = output, toolName = name)
-                }
-                mutableState.value = mutableState.value.copy(messages = messages)
+                // Tool completion is activity state, not an assistant transcript row.
+                // Keep the turn running because Hermes may execute another tool or
+                // continue streaming assistant content after this event.
+                mutableState.value = mutableState.value.copy(turnState = TurnState.Running)
             }
         }
     }
@@ -1053,9 +1162,20 @@ internal class CelesteViewModel(
             currentStoredSessionId = created.storedSessionId
             val previousSummary = mutableState.value.activeSummary
                 ?: throw IOException("No draft conversation is open.")
+            val previousActivity = mutableState.value.agentActivity
+                ?: throw IOException("No activity projection is open.")
             val updatedSummary = previousSummary.copy(id = created.storedSessionId, profile = profile)
+            val updatedActivity = initialActivityProjection(
+                originKey = previousActivity.originKey,
+                profile = profile,
+                storedSessionId = created.storedSessionId,
+                runtimeSessionId = created.runtimeSessionId,
+                capability = ActivityCapabilityState.Unknown,
+            )
+            currentSessionCanResume = false
             mutableState.value = mutableState.value.copy(
                 activeSummary = updatedSummary,
+                agentActivity = updatedActivity,
                 sessions = mutableState.value.sessions?.map { session ->
                     if (session.id == previousStoredId) updatedSummary else session
                 },
