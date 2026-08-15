@@ -145,8 +145,22 @@ private data class PendingOperation(
     val draftSnapshot: String,
     val attachments: List<AttachmentReference>,
     val localMessageId: String? = null,
+    val uncertain: Boolean = false,
+    val cancelledByStop: Boolean = false,
 )
 
+private data class PendingStop(
+    val sequence: Long,
+    val gateway: GatewayConnection,
+    val generation: Long,
+    val runtimeSessionId: String,
+    val storedSessionId: String,
+    val profile: String,
+    val scopeKey: String,
+    val correctionSequence: Long? = null,
+    val rpcAccepted: Boolean = false,
+    val uncertain: Boolean = false,
+)
 private enum class OperationResult {
     Accepted,
     Rejected,
@@ -218,6 +232,7 @@ internal class CelesteViewModel(
     private val localMessageCounter = AtomicLong(0)
     private val operationSequence = AtomicLong(0)
     private var pendingOperation: PendingOperation? = null
+    private var pendingStop: PendingStop? = null
     private var gatewayGeneration = 0L
     private val busyInputPolicies = mutableMapOf<String, BusyInputPolicy>()
     private var credential: GatewayCredential? = null
@@ -1042,6 +1057,16 @@ internal class CelesteViewModel(
                 }
             }.onSuccess { result ->
                 if (!isCurrentOperation(operation)) return@onSuccess
+                if (operation.cancelledByStop || pendingStop != null) {
+                    // Stop and the correction may cross on the same socket. The
+                    // correction response is not authoritative once Stop has
+                    // started; keep it until the following resume snapshot.
+                    pendingOperation = operation.copy(
+                        uncertain = true,
+                        cancelledByStop = true,
+                    )
+                    return@onSuccess
+                }
                 pendingOperation = null
                 when (result) {
                     OperationResult.Accepted -> {
@@ -1084,10 +1109,24 @@ internal class CelesteViewModel(
                 }
             }.onFailure { error ->
                 if (!isCurrentOperation(operation)) return@onFailure
-                pendingOperation = null
+                if (operation.cancelledByStop || pendingStop != null) {
+                    pendingOperation = operation.copy(
+                        uncertain = true,
+                        cancelledByStop = true,
+                    )
+                    return@onFailure
+                }
                 val definiteRejection = error is GatewayRpcException &&
                     (error.code == 4010 || error.code == -32601)
-                if (definiteRejection) discardOptimisticSubmission(operation)
+                if (definiteRejection) {
+                    pendingOperation = null
+                    discardOptimisticSubmission(operation)
+                } else {
+                    // Keep the operation envelope, including its draft and
+                    // sequence, until resume can prove admission or
+                    // non-admission. This is deliberately not a resend queue.
+                    pendingOperation = operation.copy(uncertain = true)
+                }
                 mutableState.value = mutableState.value.copy(
                     turnState = if (definiteRejection && operation.kind == ActiveTurnOperationKind.Submit) {
                         TurnState.Idle
@@ -1160,47 +1199,69 @@ internal class CelesteViewModel(
         val activeGateway = gateway ?: return
         val runtimeId = currentRuntimeSessionId ?: return
         val storedId = currentStoredSessionId ?: return
-        if (mutableState.value.turnState != TurnState.Running) return
-        val correctionWasPending = pendingOperation != null
-        pendingOperation = null
-        val generation = gatewayGeneration
-        mutableState.value = mutableState.value.copy(
+        val snapshot = mutableState.value
+        if (snapshot.turnState != TurnState.Running || pendingStop != null) return
+        val correction = pendingOperation?.let { operation ->
+            operation.copy(
+                uncertain = true,
+                cancelledByStop = true,
+            )
+        }
+        pendingOperation = correction
+        val stop = PendingStop(
+            sequence = operationSequence.incrementAndGet(),
+            gateway = activeGateway,
+            generation = gatewayGeneration,
+            runtimeSessionId = runtimeId,
+            storedSessionId = storedId,
+            profile = snapshot.activeSummary?.profile ?: snapshot.selectedProfile,
+            scopeKey = sessionScopeKey(
+                storedId,
+                snapshot.activeSummary?.profile ?: snapshot.selectedProfile,
+            ),
+            correctionSequence = correction?.sequence,
+        )
+        pendingStop = stop
+        mutableState.value = snapshot.copy(
             turnState = TurnState.Synchronizing,
-            deliveryStatus = if (correctionWasPending) {
-                DeliveryStatus.Uncertain
-            } else {
-                DeliveryStatus.Pending
-            },
-            lastAction = if (correctionWasPending) mutableState.value.lastAction else ComposerAction.Stop,
+            deliveryStatus = DeliveryStatus.Pending,
+            lastAction = ComposerAction.Stop,
             errorMessage = null,
         )
         viewModelScope.launch {
             runCatching {
                 activeGateway.interruptSession(runtimeId)
-                if (gateway !== activeGateway || gatewayGeneration != generation) return@runCatching
+                if (!isCurrentStop(stop)) return@runCatching
+                pendingStop = pendingStop?.copy(rpcAccepted = true, uncertain = false)
                 reconcile(activeGateway, storedId)
             }.onSuccess {
-                if (gateway === activeGateway && gatewayGeneration == generation) {
+                val currentStop = pendingStop
+                if (currentStop == null || !isCurrentStop(currentStop)) return@onSuccess
+                if (currentStop.rpcAccepted && mutableState.value.turnState != TurnState.Running) {
+                    pendingStop = null
+                    val correctionWasUncertain = pendingOperation?.sequence == currentStop.correctionSequence
                     mutableState.value = mutableState.value.copy(
-                        deliveryStatus = if (correctionWasPending) {
+                        deliveryStatus = if (correctionWasUncertain) {
                             DeliveryStatus.Uncertain
                         } else {
                             DeliveryStatus.Accepted
                         },
                         lastAction = ComposerAction.Stop,
-                        errorMessage = if (correctionWasPending) {
-                            "Delivery uncertain; reconnecting before you try again."
+                        errorMessage = if (correctionWasUncertain) {
+                            "Turn stopped; the correction was not confirmed, so your draft is still here."
                         } else {
                             null
                         },
                     )
                 }
             }.onFailure { error ->
-                if (gateway !== activeGateway || gatewayGeneration != generation) return@onFailure
+                if (!isCurrentStop(stop)) return@onFailure
+                pendingStop = pendingStop?.copy(uncertain = true)
                 mutableState.value = mutableState.value.copy(
                     turnState = TurnState.Reconnecting,
                     deliveryStatus = DeliveryStatus.Uncertain,
-                    errorMessage = error.message ?: "Delivery uncertain; reconnecting before you try again.",
+                    lastAction = ComposerAction.Stop,
+                    errorMessage = error.message ?: "Stop delivery uncertain; reconnecting before you try again.",
                 )
                 scheduleReconnect(wasRunning = true, immediate = true)
             }
@@ -1251,8 +1312,9 @@ internal class CelesteViewModel(
             }
             if (health.isFailure && gateway === activeGateway) {
                 val wasRunning = mutableState.value.turnState == TurnState.Running
-                val operationWasPending = pendingOperation != null
-                pendingOperation = null
+                val operationWasPending = pendingOperation != null || pendingStop != null
+                pendingOperation = pendingOperation?.copy(uncertain = true)
+                pendingStop = pendingStop?.copy(uncertain = true)
                 gatewayGeneration += 1
                 activeGateway.close()
                 mutableState.value = mutableState.value.copy(
@@ -1303,8 +1365,9 @@ internal class CelesteViewModel(
             activeGateway.state.collect { connectionState ->
                 if (gateway !== activeGateway) return@collect
                 if (connectionState is GatewayConnectionState.Disconnected) {
-                    if (pendingOperation != null) {
-                        pendingOperation = null
+                    pendingOperation = pendingOperation?.copy(uncertain = true)
+                    pendingStop = pendingStop?.copy(uncertain = true)
+                    if (pendingOperation != null || pendingStop != null) {
                         mutableState.value = mutableState.value.copy(
                             deliveryStatus = DeliveryStatus.Uncertain,
                             errorMessage = "Delivery uncertain; reconnecting before you try again.",
@@ -1334,7 +1397,7 @@ internal class CelesteViewModel(
             if (resumed.storedSessionId != storedSessionId) {
                 throw IOException("Hermes resumed a different conversation.")
             }
-            applyResumedSession(resumed)
+            applyResumedSession(resumed, activeGateway, generation)
             events = bufferedEvents.toList()
             bufferedEvents.clear()
         } catch (error: Throwable) {
@@ -1350,18 +1413,25 @@ internal class CelesteViewModel(
         gateway === activeGateway && gatewayGeneration == generation
 
 
-    private fun applyResumedSession(resumed: ResumedSession) {
+    private enum class PendingOperationResolution {
+        Accepted,
+        Rejected,
+        Unresolved,
+    }
+
+    private fun applyResumedSession(
+        resumed: ResumedSession,
+        activeGateway: GatewayConnection,
+        generation: Long,
+    ) {
         currentRuntimeSessionId = resumed.runtimeSessionId
         currentStoredSessionId = resumed.storedSessionId
         currentSessionCanResume = true
-        val streamingSuffix = unpersistedInflightText(
-            inflight = resumed.inflightAssistantText,
-            messages = resumed.messages,
-        )
+        val projection = projectResumedTurn(resumed)
         val current = mutableState.value
-        mutableState.value = mutableState.value.copy(
-            messages = resumed.messages,
-            streamingText = streamingSuffix,
+        mutableState.value = current.copy(
+            messages = projection.messages,
+            streamingText = projection.streamingText,
             turnState = resumedTurnState(resumed),
             redirectSupported = resumed.supportsActiveTurnRedirect,
             errorMessage = if (current.deliveryStatus == DeliveryStatus.Uncertain) {
@@ -1370,11 +1440,176 @@ internal class CelesteViewModel(
                 null
             },
         )
+        rebindPendingOperations(resumed, activeGateway, generation)
+        val operationResolution = resolvePendingOperation(resumed)
+        resolvePendingStopAfterResume(resumed, operationResolution)
     }
 
+    private fun rebindPendingOperations(
+        resumed: ResumedSession,
+        activeGateway: GatewayConnection,
+        generation: Long,
+    ) {
+        val profile = mutableState.value.activeSummary?.profile ?: mutableState.value.selectedProfile
+        val scopeKey = sessionScopeKey(resumed.storedSessionId, profile)
+        pendingOperation = pendingOperation?.let { operation ->
+            if (operation.uncertain &&
+                operation.storedSessionId == resumed.storedSessionId &&
+                operation.scopeKey == scopeKey
+            ) {
+                operation.copy(
+                    gateway = activeGateway,
+                    generation = generation,
+                    runtimeSessionId = resumed.runtimeSessionId,
+                    profile = profile,
+                    scopeKey = scopeKey,
+                )
+            } else {
+                operation
+            }
+        }
+        pendingStop = pendingStop?.let { stop ->
+            if ((stop.uncertain || (stop.gateway === activeGateway && stop.generation == generation)) &&
+                stop.storedSessionId == resumed.storedSessionId &&
+                stop.scopeKey == scopeKey
+            ) {
+                stop.copy(
+                    gateway = activeGateway,
+                    generation = generation,
+                    runtimeSessionId = resumed.runtimeSessionId,
+                    profile = profile,
+                    scopeKey = scopeKey,
+                )
+            } else {
+                stop
+            }
+        }
+    }
+
+    private fun resolvePendingOperation(
+        resumed: ResumedSession,
+    ): PendingOperationResolution? {
+        val operation = pendingOperation ?: return null
+        if (!operation.uncertain) return null
+        val text = operation.text.trim()
+        val latestUserText = resumed.messages.asReversed()
+            .firstOrNull { it.role == "user" }
+            ?.text
+            ?.trim()
+        val admitted = when (operation.kind) {
+            ActiveTurnOperationKind.Steer,
+            ActiveTurnOperationKind.Redirect -> resumed.inflightCorrections.any {
+                it.text.trim() == text
+            } || latestUserText == text
+            ActiveTurnOperationKind.Queue,
+            ActiveTurnOperationKind.Submit -> resumed.queuedUserTexts.any {
+                it.trim() == text
+            } || resumed.queuedUserText.trim() == text ||
+                resumed.inflightUserText.trim() == text ||
+                latestUserText == text
+        }
+        if (admitted) {
+            pendingOperation = null
+            clearAcceptedDraft(operation)
+            mutableState.value = mutableState.value.copy(
+                deliveryStatus = DeliveryStatus.Accepted,
+                lastAction = operation.kind.composerAction(),
+                errorMessage = null,
+            )
+            return PendingOperationResolution.Accepted
+        }
+
+        if (resumeIsSettled(resumed)) {
+            pendingOperation = null
+            discardOptimisticSubmission(operation)
+            mutableState.value = mutableState.value.copy(
+                turnState = if (operation.kind == ActiveTurnOperationKind.Submit) {
+                    TurnState.Idle
+                } else {
+                    mutableState.value.turnState
+                },
+                deliveryStatus = DeliveryStatus.Rejected,
+                lastAction = operation.kind.composerAction(),
+                errorMessage = "Hermes did not confirm that action; your draft is still here.",
+            )
+            return PendingOperationResolution.Rejected
+        }
+
+        mutableState.value = mutableState.value.copy(
+            deliveryStatus = DeliveryStatus.Uncertain,
+            lastAction = operation.kind.composerAction(),
+            errorMessage = "Delivery uncertain; reconnecting before you try again.",
+        )
+        return PendingOperationResolution.Unresolved
+    }
+
+    private fun resolvePendingStopAfterResume(
+        resumed: ResumedSession,
+        correctionResolution: PendingOperationResolution?,
+    ) {
+        val stop = pendingStop ?: return
+        if (!resumeIsSettled(resumed)) {
+            mutableState.value = mutableState.value.copy(
+                deliveryStatus = DeliveryStatus.Uncertain,
+                lastAction = ComposerAction.Stop,
+                errorMessage = "Stop delivery uncertain; reconnecting before you try again.",
+            )
+            return
+        }
+
+        pendingStop = null
+        val correctionUnresolved = correctionResolution == PendingOperationResolution.Unresolved ||
+            (correctionResolution == null &&
+                stop.correctionSequence != null &&
+                pendingOperation?.sequence == stop.correctionSequence)
+        val correctionRejected = correctionResolution == PendingOperationResolution.Rejected
+        mutableState.value = mutableState.value.copy(
+            deliveryStatus = when {
+                !stop.rpcAccepted -> DeliveryStatus.Rejected
+                correctionUnresolved -> DeliveryStatus.Uncertain
+                else -> DeliveryStatus.Accepted
+            },
+            lastAction = ComposerAction.Stop,
+            errorMessage = when {
+                !stop.rpcAccepted -> "Stop was not confirmed; reconnect before trying again."
+                correctionUnresolved -> "Turn stopped; the correction was not confirmed, so your draft is still here."
+                correctionRejected -> "Turn stopped; the correction was not delivered, so your draft is still here."
+                else -> null
+            },
+        )
+    }
+
+    private fun resumeIsSettled(resumed: ResumedSession): Boolean {
+        val hasQueuedInput = resumed.queuedUserTexts.isNotEmpty() || resumed.queuedUserText.isNotBlank()
+        if (hasQueuedInput || resumed.inflightStreaming) return false
+        if (resumed.running == false) return true
+        return resumed.status?.lowercase() in setOf("idle", "complete", "completed", "interrupted")
+    }
+
+    private fun isCurrentStop(stop: PendingStop): Boolean =
+        pendingStop?.sequence == stop.sequence &&
+            gateway === stop.gateway &&
+            gatewayGeneration == stop.generation &&
+            currentRuntimeSessionId == stop.runtimeSessionId &&
+            currentStoredSessionId == stop.storedSessionId &&
+            mutableState.value.activeSummary?.profile == stop.profile &&
+            sessionScopeKey(stop.storedSessionId, stop.profile) == stop.scopeKey
+
+
     private fun resumedTurnState(resumed: ResumedSession): TurnState {
-        if (resumed.running == true || resumed.hasLiveProjection) return TurnState.Running
-        if (resumed.running == false) return TurnState.Idle
+        if (resumed.running == true) return TurnState.Running
+        if (resumed.running == false) {
+            return if (
+                resumed.queuedUserTexts.isNotEmpty() ||
+                resumed.queuedUserText.isNotBlank() ||
+                resumed.inflightStreaming
+            ) {
+                TurnState.Running
+            } else {
+                TurnState.Idle
+            }
+        }
+        if (resumed.hasLiveProjection) return TurnState.Running
         return when (resumed.status?.lowercase()) {
             "running", "streaming", "busy", "working", "queued" -> TurnState.Running
             "idle", "complete", "completed", "interrupted" -> TurnState.Idle
@@ -1628,6 +1863,7 @@ internal class CelesteViewModel(
         val activeGateway = gateway
         gateway = null
         pendingOperation = null
+        pendingStop = null
         gatewayGeneration += 1
         reconnectJob?.cancel()
         reconnectJob = null

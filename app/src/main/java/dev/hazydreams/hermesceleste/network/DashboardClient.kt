@@ -83,6 +83,11 @@ data class ConversationMessage(
     val interim: Boolean = false,
 )
 
+data class InflightCorrection(
+    val text: String,
+    val assistantOffset: Int? = null,
+)
+
 data class ResumedSession(
     val runtimeSessionId: String,
     val storedSessionId: String,
@@ -90,6 +95,15 @@ data class ResumedSession(
     val running: Boolean? = null,
     val status: String? = null,
     val inflightAssistantText: String = "",
+    val inflightUserText: String = "",
+    val inflightCorrections: List<InflightCorrection> = emptyList(),
+    val correctionOffsets: List<Int> = emptyList(),
+    val inflightStreaming: Boolean = false,
+    val inflightError: String? = null,
+    /** Accepted next-turn inputs in gateway FIFO order. */
+    val queuedUserTexts: List<String> = emptyList(),
+    /** Compatibility shorthand for the first queued input, if present. */
+    val queuedUserText: String = "",
     val hasLiveProjection: Boolean = false,
     val supportsActiveTurnRedirect: Boolean = false,
 )
@@ -544,20 +558,7 @@ class DashboardClient(
             if (runtimeId.isBlank()) {
                 throw InvalidDashboardResponse("Hermes returned no runtime session identity.")
             }
-            ResumedSession(
-                runtimeSessionId = runtimeId,
-                storedSessionId = result["resumed"]?.jsonPrimitive?.contentOrNull
-                    ?: result["session_key"]?.jsonPrimitive?.contentOrNull
-                    ?: storedSessionId,
-                messages = decodeGatewayMessages(result["messages"]?.jsonArray.orEmpty()),
-                running = result["running"]?.jsonPrimitive?.booleanOrNull
-                    ?: (result["info"] as? JsonObject)?.get("running")?.jsonPrimitive?.booleanOrNull,
-                status = result["status"]?.jsonPrimitive?.contentOrNull
-                    ?: (result["info"] as? JsonObject)?.get("status")?.jsonPrimitive?.contentOrNull,
-                inflightAssistantText = inflightAssistantText(result["inflight"]),
-                hasLiveProjection = result["inflight"].isTruthy() || result["queued"].isTruthy(),
-                supportsActiveTurnRedirect = result.explicitRedirectCapability() == true,
-            )
+            decodeResumedSession(result, storedSessionId)
         }
     }
 

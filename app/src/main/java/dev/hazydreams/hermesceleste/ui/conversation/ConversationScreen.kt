@@ -119,17 +119,25 @@ internal fun ConversationScreen(
         policy = busyInputPolicy,
         redirectSupported = redirectSupported,
     )
-    val primaryAction = if (deliveryStatus == DeliveryStatus.Pending && selectedAction != ComposerAction.Stop) {
-        ComposerAction.None
+    val primaryAction = if (
+        deliveryStatus == DeliveryStatus.Pending || deliveryStatus == DeliveryStatus.Uncertain
+    ) {
+        if (selectedAction == ComposerAction.Stop) ComposerAction.Stop else ComposerAction.None
     } else {
         selectedAction
     }
     val hasReadyPayload = (draft.isNotBlank() || attachments.isNotEmpty()) &&
         attachments.all { it.readiness == AttachmentReadiness.Ready }
     val textActionAvailable = draft.isNotBlank() && attachments.isEmpty() &&
-        deliveryStatus != DeliveryStatus.Pending
-    val queueActionAvailable = hasReadyPayload && deliveryStatus != DeliveryStatus.Pending
-
+        deliveryStatus != DeliveryStatus.Pending && deliveryStatus != DeliveryStatus.Uncertain
+    val queueActionAvailable = hasReadyPayload &&
+        deliveryStatus != DeliveryStatus.Pending && deliveryStatus != DeliveryStatus.Uncertain
+    val attachmentCopy = attachmentAccessibilityCopy(
+        turnState = turnState,
+        attachments = attachments,
+        deliveryStatus = deliveryStatus,
+        lastAction = lastAction,
+    )
     LaunchedEffect(visibleMessageCount, streamingText.length) {
         if (visibleMessageCount > 0) listState.animateScrollToItem(visibleMessageCount - 1)
     }
@@ -228,24 +236,19 @@ internal fun ConversationScreen(
                     .padding(horizontal = 16.dp, vertical = 14.dp),
             ) {
                 if (attachments.isNotEmpty()) {
-                    val attachmentReady = attachments.all { it.readiness == AttachmentReadiness.Ready }
                     Text(
-                        text = if (attachmentReady) {
-                            "${attachments.size} attachment${if (attachments.size == 1) "" else "s"} will queue with the next turn."
+                        text = attachmentCopy,
+                        color = if (attachments.all { it.readiness == AttachmentReadiness.Ready }) {
+                            CelesteMuted
                         } else {
-                            "Finish uploading or retry the attachment before sending."
+                            CelesteError
                         },
-                        color = if (attachmentReady) CelesteMuted else CelesteError,
                         fontSize = 12.sp,
                         modifier = Modifier
                             .fillMaxWidth()
                             .padding(horizontal = 8.dp, vertical = 2.dp)
                             .semantics {
-                                contentDescription = if (attachmentReady) {
-                                    "Attachment payload will be queued with the next turn"
-                                } else {
-                                    "Attachment is not ready; text will not be sent by itself"
-                                }
+                                contentDescription = attachmentCopy
                             },
                     )
                     Spacer(Modifier.height(7.dp))
@@ -458,6 +461,36 @@ internal fun ConversationScreen(
                 }
             }
         }
+    }
+}
+
+internal fun attachmentAccessibilityCopy(
+    turnState: TurnState,
+    attachments: List<AttachmentDraft>,
+    deliveryStatus: DeliveryStatus,
+    lastAction: ComposerAction?,
+): String {
+    if (attachments.isEmpty()) return ""
+    val count = attachments.size
+    val noun = if (count == 1) "attachment" else "attachments"
+    if (attachments.any { it.readiness != AttachmentReadiness.Ready }) {
+        return "Attachment is not ready; finish uploading or retry before sending. Text will not be sent by itself."
+    }
+    return when {
+        deliveryStatus == DeliveryStatus.Uncertain ->
+            "$count $noun delivery is uncertain; the draft is preserved and will not be resent automatically."
+        deliveryStatus == DeliveryStatus.Pending && lastAction == ComposerAction.Queue ->
+            "$count $noun is being queued for the next turn."
+        deliveryStatus == DeliveryStatus.Pending ->
+            "$count $noun is being sent with this message."
+        deliveryStatus == DeliveryStatus.Accepted && lastAction == ComposerAction.Queue ->
+            "$count $noun queued for the next turn."
+        turnState == TurnState.Running ->
+            "$count $noun will be queued with the next turn."
+        turnState == TurnState.Idle ->
+            "$count $noun will be sent with this message."
+        else ->
+            "$count $noun draft is saved while Celeste reconnects; it will not be sent automatically."
     }
 }
 

@@ -5,6 +5,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
@@ -43,7 +44,24 @@ class GatewaySessionApiTest {
             resumePayload = buildJsonObject {
                 put("session_id", "runtime-7")
                 put("resumed", "stored-7")
-                put("running", false)
+                put("running", true)
+                put(
+                    "inflight",
+                    buildJsonObject {
+                        put("user", "original prompt")
+                        put("assistant", "before correction after correction")
+                        put("streaming", true)
+                        put("corrections", buildJsonArray {
+                            add("first correction")
+                            add("second correction")
+                        })
+                        put("correction_offsets", buildJsonArray {
+                            add(17)
+                            add(36)
+                        })
+                    },
+                )
+                put("queued", buildJsonObject { put("user", "queued prompt") })
                 put(
                     "capabilities",
                     buildJsonObject { put("supports_active_turn_redirect", true) },
@@ -54,6 +72,13 @@ class GatewaySessionApiTest {
         val resumed = gateway.resumeStoredSession("stored-7")
 
         assertTrue(resumed.supportsActiveTurnRedirect)
+        assertEquals("original prompt", resumed.inflightUserText)
+        assertEquals(
+            listOf("first correction", "second correction"),
+            resumed.inflightCorrections.map { it.text },
+        )
+        assertEquals(listOf(17, 36), resumed.correctionOffsets)
+        assertEquals("queued prompt", resumed.queuedUserText)
         assertNull(
             buildJsonObject { put("version", "new-enough") }
                 .explicitRedirectCapability(),
@@ -66,6 +91,19 @@ class GatewaySessionApiTest {
 
         assertEquals(RedirectOutcome.Unsupported, gateway.redirectSession("runtime-7", "change direction"))
     }
+
+    @Test
+    fun stopRequiresTheAuthoritativeInterruptedAcceptance() = runBlocking {
+        val gateway = RecordingGateway(interruptStatus = "interrupting")
+
+        try {
+            gateway.interruptSession("runtime-7")
+            throw AssertionError("an intermediate interrupt status must not be accepted")
+        } catch (error: java.io.IOException) {
+            assertTrue(error.message.orEmpty().contains("did not confirm"))
+        }
+    }
+
     @Test
     fun queuedSubmissionKeepsTheWholeAttachmentEnvelope() = runBlocking {
         val gateway = RecordingGateway()
@@ -108,6 +146,7 @@ class GatewaySessionApiTest {
         private val redirectError: Throwable? = null,
         private val steerError: Throwable? = null,
         private val resumePayload: JsonObject? = null,
+        private val interruptStatus: String = "interrupted",
     ) : GatewayConnection {
         private val mutableState = MutableStateFlow<GatewayConnectionState>(GatewayConnectionState.Connected)
         override val state = mutableState
@@ -133,7 +172,7 @@ class GatewaySessionApiTest {
                 "session.steer" -> buildJsonObject { put("status", "queued") }
                 "session.redirect" -> buildJsonObject { put("status", "redirected") }
                 "prompt.submit" -> buildJsonObject { put("status", "queued") }
-                "session.interrupt" -> buildJsonObject { put("status", "interrupted") }
+                "session.interrupt" -> buildJsonObject { put("status", interruptStatus) }
                 else -> buildJsonObject {}
             }
         }

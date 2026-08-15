@@ -387,7 +387,7 @@ class CelesteViewModelTest {
                 "prompt.submit" -> buildJsonObject { put("status", "streaming") }
                 "session.steer" -> buildJsonObject { put("status", "queued") }
                 "session.redirect" -> buildJsonObject { put("status", "redirected") }
-                "session.interrupt" -> buildJsonObject { put("status", "interrupting") }
+                "session.interrupt" -> buildJsonObject { put("status", "interrupted") }
                 else -> buildJsonObject {}
             }
         }

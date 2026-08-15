@@ -10,6 +10,7 @@ import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
@@ -95,29 +96,7 @@ suspend fun GatewayConnection.resumeStoredSession(storedSessionId: String): Resu
         },
         timeoutMillis = 30_000,
     ).asObject("Hermes returned no resumed session.")
-
-    val runtimeId = result.string("session_id")
-        ?.takeIf(String::isNotBlank)
-        ?: throw IOException("Hermes returned no runtime session identity.")
-    val info = result["info"] as? JsonObject
-    val running = result.boolean("running") ?: info?.boolean("running")
-    val status = result.string("status") ?: info?.string("status")
-    val inflight = result["inflight"]
-    val queued = result["queued"]
-
-    return ResumedSession(
-        runtimeSessionId = runtimeId,
-        storedSessionId = result.string("resumed")
-            ?: result.string("stored_session_id")
-            ?: result.string("session_key")
-            ?: storedSessionId,
-        messages = decodeGatewayMessages(result["messages"]?.jsonArray.orEmpty()),
-        running = running,
-        status = status,
-        inflightAssistantText = inflightAssistantText(inflight),
-        hasLiveProjection = inflight.isTruthy() || queued.isTruthy(),
-        supportsActiveTurnRedirect = result.explicitRedirectCapability() == true,
-    )
+    return decodeResumedSession(result, storedSessionId)
 }
 
 suspend fun GatewayConnection.submitPrompt(runtimeSessionId: String, text: String): JsonObject {
@@ -233,10 +212,14 @@ suspend fun GatewayConnection.redirectSession(
 
 suspend fun GatewayConnection.interruptSession(runtimeSessionId: String): JsonObject {
     require(runtimeSessionId.isNotBlank()) { "No Hermes conversation is open." }
-    return request(
+    val result = request(
         method = "session.interrupt",
         params = buildJsonObject { put("session_id", runtimeSessionId) },
     ).asObject("Hermes returned no interrupt status.")
+    if (result.string("status")?.lowercase() != "interrupted") {
+        throw IOException("Hermes did not confirm that the active turn was interrupted.")
+    }
+    return result
 }
 
 internal fun decodeGatewayMessages(elements: List<JsonElement>): List<ConversationMessage> {
@@ -275,13 +258,128 @@ private fun decodeGatewayMessage(element: JsonElement): ConversationMessage? {
 private fun JsonElement?.scalarIdentity(): String? =
     (this as? JsonPrimitive)?.contentOrNull?.takeIf(String::isNotBlank)
 
-internal fun inflightAssistantText(element: JsonElement?): String {
-    val row = element as? JsonObject ?: return ""
-    return sequenceOf("assistant", "text", "content")
-        .mapNotNull(row::string)
-        .firstOrNull(String::isNotBlank)
+private data class DecodedInflightSnapshot(
+    val user: String,
+    val assistant: String,
+    val streaming: Boolean,
+    val corrections: List<InflightCorrection>,
+    val error: String?,
+)
+
+internal fun decodeResumedSession(
+    result: JsonObject,
+    requestedStoredSessionId: String,
+): ResumedSession {
+    val runtimeId = result.string("session_id")
+        ?.takeIf(String::isNotBlank)
+        ?: throw IOException("Hermes returned no runtime session identity.")
+    val info = result["info"] as? JsonObject
+    val running = result.boolean("running") ?: info?.boolean("running")
+    val status = result.string("status") ?: info?.string("status")
+    val inflightSnapshot = decodeInflightSnapshot(result["inflight"])
+    val inflightCorrections = inflightSnapshot?.corrections.orEmpty()
+    val correctionOffsets = inflightCorrections
+        .map { it.assistantOffset }
+        .takeIf { offsets -> offsets.isNotEmpty() && offsets.all { it != null } }
+        ?.map { requireNotNull(it) }
         .orEmpty()
+    val queuedUserTexts = decodeQueuedUserTexts(
+        result["queued"] ?: result["queued_prompts"],
+    )
+
+    return ResumedSession(
+        runtimeSessionId = runtimeId,
+        storedSessionId = result.string("resumed")
+            ?: result.string("stored_session_id")
+            ?: result.string("session_key")
+            ?: requestedStoredSessionId,
+        messages = decodeGatewayMessages(result["messages"]?.jsonArray.orEmpty()),
+        running = running,
+        status = status,
+        inflightAssistantText = inflightSnapshot?.assistant.orEmpty(),
+        inflightUserText = inflightSnapshot?.user.orEmpty(),
+        inflightCorrections = inflightCorrections,
+        correctionOffsets = correctionOffsets,
+        inflightStreaming = inflightSnapshot?.streaming == true,
+        inflightError = inflightSnapshot?.error,
+        queuedUserTexts = queuedUserTexts,
+        queuedUserText = queuedUserTexts.firstOrNull().orEmpty(),
+        hasLiveProjection = inflightSnapshot != null || queuedUserTexts.isNotEmpty(),
+        supportsActiveTurnRedirect = result.explicitRedirectCapability() == true,
+    )
 }
+
+internal fun decodeInflightCorrections(element: JsonElement?): List<InflightCorrection> {
+    val row = element as? JsonObject ?: return emptyList()
+    val rawCorrections = row["corrections"] as? JsonArray ?: return emptyList()
+    val rawOffsets = row["correction_offsets"] as? JsonArray
+    return rawCorrections.mapIndexedNotNull { index, correction ->
+        val text = (correction as? JsonPrimitive)?.contentOrNull?.trim().orEmpty()
+        if (text.isBlank()) {
+            null
+        } else {
+            val offset = rawOffsets
+                ?.getOrNull(index)
+                ?.let { it as? JsonPrimitive }
+                ?.intOrNull
+                ?.takeIf { it >= 0 }
+            InflightCorrection(text = text, assistantOffset = offset)
+        }
+    }
+}
+
+private fun decodeInflightSnapshot(element: JsonElement?): DecodedInflightSnapshot? {
+    val row = element as? JsonObject ?: return null
+    val user = row.string("user").orEmpty().trim()
+    val assistant = row.string("assistant")
+        ?: row.string("text")
+        ?: row.string("content")
+        ?: ""
+    val streaming = row.boolean("streaming") == true
+    val corrections = decodeInflightCorrections(row)
+    val error = row.string("error")?.takeIf(String::isNotBlank)
+    if (user.isBlank() && assistant.isBlank() && !streaming && corrections.isEmpty() && error == null) {
+        return null
+    }
+    return DecodedInflightSnapshot(
+        user = user,
+        assistant = assistant,
+        streaming = streaming,
+        corrections = corrections,
+        error = error,
+    )
+}
+
+private fun decodeQueuedUserTexts(element: JsonElement?): List<String> = when (element) {
+    is JsonArray -> element.flatMap(::decodeQueuedUserTexts)
+    is JsonObject -> {
+        val nested = listOf("prompts", "queued_prompts", "items", "queue")
+            .asSequence()
+            .mapNotNull { key -> element[key] }
+            .firstOrNull()
+        if (nested != null) {
+            decodeQueuedUserTexts(nested)
+        } else {
+            listOfNotNull(
+                queuedScalarText(element["user"]),
+                queuedScalarText(element["text"]),
+                queuedScalarText(element["content"]),
+            ).firstOrNull()?.let(::listOf).orEmpty()
+        }
+    }
+    is JsonPrimitive -> queuedScalarText(element)?.let(::listOf).orEmpty()
+    else -> emptyList()
+}.map(String::trim).filter(String::isNotBlank)
+
+private fun queuedScalarText(element: JsonElement?): String? {
+    val primitive = element as? JsonPrimitive ?: return null
+    val encoded = primitive.toString()
+    if (encoded.length < 2 || encoded.first() != '"' || encoded.last() != '"') return null
+    return primitive.contentOrNull?.takeIf(String::isNotBlank)
+}
+
+internal fun inflightAssistantText(element: JsonElement?): String =
+    decodeInflightSnapshot(element)?.assistant.orEmpty()
 
 internal fun JsonElement?.isTruthy(): Boolean = when (this) {
     null, JsonNull -> false
