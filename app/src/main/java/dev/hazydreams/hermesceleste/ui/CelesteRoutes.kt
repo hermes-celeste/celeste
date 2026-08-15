@@ -18,6 +18,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -50,6 +51,12 @@ internal fun CelesteRoutes(ui: CelesteUiState, viewModel: CelesteViewModel) {
     val activeSummary = ui.activeSummary
     val sessions = ui.sessions
     var destination by rememberSaveable { mutableStateOf(CelesteDestination.Content) }
+
+    LaunchedEffect(destination, activeSummary?.id, viewModel) {
+        viewModel.setConversationsDestinationVisible(
+            visible = destination == CelesteDestination.Content && activeSummary == null,
+        )
+    }
 
     when (destination) {
         CelesteDestination.Settings -> {
@@ -101,6 +108,7 @@ internal fun CelesteRoutes(ui: CelesteUiState, viewModel: CelesteViewModel) {
                 selectedProfile = ui.selectedProfile,
                 loadingMessage = ui.loadingMessage,
                 errorMessage = ui.errorMessage,
+                sessionRefreshAnnouncementToken = ui.sessionRefreshAnnouncementToken,
                 onProfileSelected = viewModel::selectProfile,
                 onNewConversation = viewModel::createNewConversation,
                 onSessionSelected = viewModel::openSession,

@@ -400,6 +400,15 @@ class CelesteViewModelTest {
         runCurrent()
         assertTrue(dashboard.listPageCalls > callsBeforePoll)
 
+        viewModel.setConversationsDestinationVisible(false)
+        val callsAfterSettings = dashboard.listPageCalls
+        advanceTimeBy(30_000)
+        runCurrent()
+        assertEquals(callsAfterSettings, dashboard.listPageCalls)
+
+        viewModel.setConversationsDestinationVisible(true)
+        viewModel.onForeground()
+        runCurrent()
         viewModel.onBackground()
         val callsAfterBackground = dashboard.listPageCalls
         advanceTimeBy(30_000)
@@ -447,6 +456,52 @@ class CelesteViewModelTest {
         assertEquals(2, gateway.methods.count { it == "session.resume" })
         assertEquals(TurnState.Idle, viewModel.state.value.turnState)
         viewModel.leaveConversation()
+    }
+
+    @Test
+    fun foregroundHealthCheckReconcilesTheTypedGatewayListWhenRestRefreshFails() = runTest {
+        val gateway = FakeGateway()
+        val dashboard = FakeDashboard(gateway)
+        val viewModel = openConversation(gateway, dashboard)
+        advanceUntilIdle()
+
+        dashboard.listPageFailure = IOException("REST temporarily unavailable")
+        gateway.sessionListPayload = Json.parseToJsonElement(
+            """{"sessions":[{"id":"stored-42","title":"Gateway refresh","started_at":1,"last_active":200,"message_count":3,"source":"desktop","profile":"default"}]}""",
+        ) as JsonObject
+
+        viewModel.onForeground()
+        advanceUntilIdle()
+
+        assertEquals("Gateway refresh", viewModel.state.value.sessions?.single()?.title)
+        assertEquals(1, gateway.methods.count { it == "session.list" })
+        viewModel.leaveConversation()
+    }
+
+    @Test
+    fun sessionRefreshAnnouncesVisibleChangesButNotConversationUpdates() = runTest {
+        val gateway = FakeGateway()
+        val dashboard = FakeDashboard(gateway)
+        val viewModel = openConversation(gateway, dashboard)
+        advanceUntilIdle()
+        assertEquals(0L, viewModel.state.value.sessionRefreshAnnouncementToken)
+
+        dashboard.sessionPage = dashboard.sessionPage?.copy(
+            sessions = listOf(dashboard.session.copy(title = "Updated while open", lastActive = 2.0)),
+        )
+        viewModel.onForeground()
+        advanceUntilIdle()
+        assertEquals(0L, viewModel.state.value.sessionRefreshAnnouncementToken)
+        assertEquals("Updated while open", viewModel.state.value.sessions?.single()?.title)
+
+        dashboard.sessionPage = dashboard.sessionPage?.copy(
+            sessions = listOf(dashboard.session.copy(title = "Updated in list", lastActive = 3.0)),
+        )
+        viewModel.leaveConversation()
+        advanceUntilIdle()
+
+        assertEquals(1L, viewModel.state.value.sessionRefreshAnnouncementToken)
+        assertEquals("Updated in list", viewModel.state.value.sessions?.single()?.title)
     }
 
     @Test
@@ -532,6 +587,7 @@ class CelesteViewModelTest {
         var profileFailure: Throwable? = null
         var sessionPage: SessionListPage? = null
         var listPageGate: CompletableDeferred<SessionListPage>? = null
+        var listPageFailure: Throwable? = null
         var listPageCalls = 0
 
         val session = StoredSession(
@@ -576,6 +632,10 @@ class CelesteViewModelTest {
             offset: Int,
         ): SessionListPage {
             listPageCalls += 1
+            listPageFailure?.let { failure ->
+                listPageFailure = null
+                throw failure
+            }
             val gate = listPageGate
             if (gate != null) return gate.await()
             return sessionPage ?: SessionListPage(
@@ -622,6 +682,9 @@ class CelesteViewModelTest {
         var submitGate: CompletableDeferred<JsonObject>? = null
         var submitResponse: JsonObject = buildJsonObject { put("status", "streaming") }
         var sessionChangeEventsSupported = false
+        var sessionListPayload: JsonObject = Json.parseToJsonElement(
+            """{"sessions":[{"id":"stored-42","title":"Shared conversation","started_at":1,"last_active":1,"message_count":0,"source":"desktop","profile":"default"}]}""",
+        ) as JsonObject
         var resumePayload: JsonObject = resumePayload(messages = emptyList(), running = false)
 
         override suspend fun connect() {
@@ -652,7 +715,7 @@ class CelesteViewModelTest {
                         failHealthCheck = false
                         throw IOException("stale socket")
                     }
-                    buildJsonObject { put("sessions", "healthy") }
+                    sessionListPayload
                 }
                 "prompt.submit" -> {
                     submitFailure?.let { throw it }

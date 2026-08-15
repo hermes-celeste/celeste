@@ -168,7 +168,7 @@ class DashboardClientTest {
         assertEquals(30.0, page.sessions[1].startedAt, 0.0)
         assertNull(page.sessions[2].lastActive)
         assertEquals(0.0, page.sessions[2].startedAt, 0.0)
-        assertEquals(SessionOrdering.AUTHORITATIVE_RECENCY, page.ordering)
+        assertEquals(SessionOrdering.SERVER_ORDER, page.ordering)
     }
 
     @Test
@@ -188,6 +188,56 @@ class DashboardClientTest {
         assertEquals(0.0, page.sessions.single().startedAt, 0.0)
         assertNull(page.sessions.single().lastActive)
         assertEquals(SessionOrdering.SERVER_ORDER, page.ordering)
+    }
+
+    @Test
+    fun missingRestActivityPermanentlyFallsBackToRpcForThisGeneration() = runBlocking {
+        val client = DashboardClient()
+        val baseUrl = server.url("/").toString().trimEnd('/')
+        server.enqueue(
+            MockResponse.Builder()
+                .code(200)
+                .body("""{"sessions":[{"id":"legacy","started_at":40}]}""")
+                .build(),
+        )
+        server.enqueue(sessionListWebSocket())
+        server.enqueue(sessionListWebSocket())
+
+        val first = client.listSessionPage(baseUrl, GatewayCredential.None)
+        val second = client.listSessionPage(baseUrl, GatewayCredential.None)
+
+        assertEquals(SessionOrdering.SERVER_ORDER, first.ordering)
+        assertEquals(listOf("s1", "s2"), second.sessions.map(StoredSession::id))
+        assertEquals(3, server.requestCount)
+        assertEquals("/api/profiles/sessions", server.takeRequest().url.encodedPath)
+        assertEquals("/api/ws", server.takeRequest().url.encodedPath)
+        assertEquals("/api/ws", server.takeRequest().url.encodedPath)
+    }
+
+    @Test
+    fun unsupportedRpcMethodIsInvalidatedUntilTheAuthenticationGenerationChanges() = runBlocking {
+        val client = DashboardClient()
+        val baseUrl = server.url("/").toString().trimEnd('/')
+        server.enqueue(MockResponse.Builder().code(404).build())
+        server.enqueue(rpcErrorWebSocket(code = -32601))
+
+        assertThrows(InvalidDashboardResponse::class.java) {
+            runBlocking { client.listSessionPage(baseUrl, GatewayCredential.None) }
+        }
+        assertThrows(InvalidDashboardResponse::class.java) {
+            runBlocking { client.listSessionPage(baseUrl, GatewayCredential.None) }
+        }
+        assertEquals(2, server.requestCount)
+
+        client.clearAuthentication()
+        server.enqueue(
+            MockResponse.Builder()
+                .code(200)
+                .body("""{"sessions":[]}""")
+                .build(),
+        )
+        assertTrue(client.listSessionPage(baseUrl, GatewayCredential.None).sessions.isEmpty())
+        assertEquals(3, server.requestCount)
     }
 
     @Test
@@ -792,6 +842,23 @@ class DashboardClientTest {
                         assertEquals("session.list", request["method"]?.jsonPrimitive?.content)
                         webSocket.send(
                             """{"jsonrpc":"2.0","id":"session-list","result":{"sessions":[{"id":"s1","title":"This conversation","preview":"perfect. lets build that.","started_at":123.5,"message_count":42,"source":"desktop","profile_name":"work"},{"id":"s2","title":"Older chat","preview":"hello","started_at":100,"message_count":2,"source":"cli"}]}}""",
+                        )
+                    }
+
+                    override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
+                        webSocket.close(code, reason)
+                    }
+                },
+            )
+            .build()
+
+    private fun rpcErrorWebSocket(code: Int): MockResponse =
+        MockResponse.Builder()
+            .webSocketUpgrade(
+                object : WebSocketListener() {
+                    override fun onMessage(webSocket: WebSocket, text: String) {
+                        webSocket.send(
+                            """{"jsonrpc":"2.0","id":"session-list","error":{"code":$code,"message":"method unavailable"}}""",
                         )
                     }
 

@@ -37,6 +37,41 @@ class SessionRecencyTest {
     }
 
     @Test
+    fun equalActivityWithUnknownStartedAtUsesDurableIdTieBreak() {
+        val rows = listOf(
+            session(id = "a", startedAt = 0.0, lastActive = 200.0),
+            session(id = "z", startedAt = Double.NaN, lastActive = 200.0),
+        )
+
+        assertEquals(listOf("z", "a"), orderSessions(rows).map(StoredSession::id))
+    }
+
+    @Test
+    fun localBumpWinsAnExactActivityTie() {
+        val origin = "https://hermes.test"
+        val rows = listOf(
+            session(id = "remote", startedAt = 300.0, lastActive = 200.0),
+            session(id = "local", startedAt = 100.0, lastActive = 100.0),
+        )
+        val identity = sessionIdentity(origin, rows[1])
+
+        assertEquals(
+            listOf("local", "remote"),
+            orderSessions(
+                sessions = rows,
+                origin = origin,
+                overlays = mapOf(
+                    identity to PendingLocalActivity(
+                        bumpSeconds = 200.0,
+                        operationId = 1,
+                        delivery = LocalActivityDelivery.PENDING,
+                    ),
+                ),
+            ).map(StoredSession::id),
+        )
+    }
+
+    @Test
     fun fallsBackToValidStartedAtAndLeavesUnknownRowsLast() {
         val rows = listOf(
             session(id = "a-unknown", startedAt = 0.0, lastActive = 0.0),

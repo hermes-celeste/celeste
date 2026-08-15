@@ -1,6 +1,12 @@
 package dev.hazydreams.hermesceleste.network
 
 import java.util.Locale
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.doubleOrNull
+import kotlinx.serialization.json.intOrNull
 
 /** The source used to order one bounded dashboard session page. */
 enum class SessionOrdering {
@@ -50,6 +56,27 @@ internal data class ReconciledSessionRows(
 
 internal fun validEpochSeconds(value: Double?): Double? =
     value?.takeIf { it.isFinite() && it > 0.0 }
+
+internal fun decodeStoredSession(
+    element: JsonElement,
+    fallbackProfile: String? = null,
+): StoredSession? {
+    val row = element as? JsonObject ?: return null
+    val id = (row["id"] as? JsonPrimitive)?.contentOrNull?.takeIf(String::isNotBlank)
+        ?: return null
+    val suppliedProfile = (row["profile"] as? JsonPrimitive)?.contentOrNull
+        ?: (row["profile_name"] as? JsonPrimitive)?.contentOrNull
+    return StoredSession(
+        id = id,
+        title = (row["title"] as? JsonPrimitive)?.contentOrNull.orEmpty(),
+        preview = (row["preview"] as? JsonPrimitive)?.contentOrNull.orEmpty(),
+        startedAt = validEpochSeconds((row["started_at"] as? JsonPrimitive)?.doubleOrNull) ?: 0.0,
+        messageCount = (row["message_count"] as? JsonPrimitive)?.intOrNull ?: 0,
+        source = (row["source"] as? JsonPrimitive)?.contentOrNull.orEmpty(),
+        profile = suppliedProfile ?: fallbackProfile ?: "default",
+        lastActive = validEpochSeconds((row["last_active"] as? JsonPrimitive)?.doubleOrNull),
+    )
+}
 
 internal fun effectiveRemoteActivity(session: StoredSession): Double? =
     validEpochSeconds(session.lastActive) ?: validEpochSeconds(session.startedAt)
@@ -196,14 +223,19 @@ internal fun orderSessions(
             } else {
                 val leftStarted = validEpochSeconds(left.session.startedAt)
                 val rightStarted = validEpochSeconds(right.session.startedAt)
+                val leftOverlay = validEpochSeconds(left.overlay?.bumpSeconds)
+                val rightOverlay = validEpochSeconds(right.overlay?.bumpSeconds)
+                val leftOverlayIsEffective = leftOverlay != null && leftActivity == leftOverlay
+                val rightOverlayIsEffective = rightOverlay != null && rightActivity == rightOverlay
                 compareNullableDescending(leftActivity, rightActivity).takeIf { it != 0 }
+                    ?: when {
+                        leftOverlayIsEffective && !rightOverlayIsEffective -> -1
+                        !leftOverlayIsEffective && rightOverlayIsEffective -> 1
+                        else -> 0
+                    }.takeIf { it != 0 }
                     ?: compareNullableDescending(leftStarted, rightStarted).takeIf { it != 0 }
-                    ?: if (leftStarted != null && rightStarted != null) {
-                        right.session.id.compareTo(left.session.id).takeIf { it != 0 }
-                            ?: left.index.compareTo(right.index)
-                    } else {
-                        left.index.compareTo(right.index)
-                    }
+                    ?: right.session.id.compareTo(left.session.id).takeIf { it != 0 }
+                    ?: left.index.compareTo(right.index)
             }
         }
     }

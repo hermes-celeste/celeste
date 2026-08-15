@@ -1,7 +1,9 @@
 package dev.hazydreams.hermesceleste.ui.sessions
 
+import android.provider.Settings
 import java.util.Locale
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.focusable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -12,9 +14,11 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.animateItem
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -25,13 +29,22 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.mergeDescendants
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
@@ -60,6 +73,25 @@ internal fun sessionRowKey(session: StoredSession): String =
         "${profile.length}:$profile:${session.id.length}:${session.id}"
     }
 
+internal fun shouldReduceMotion(animationDurationScale: Float): Boolean =
+    !animationDurationScale.isFinite() || animationDurationScale <= 0f
+
+@Composable
+private fun rememberReducedMotion(): Boolean {
+    val context = LocalContext.current
+    return remember(context) {
+        shouldReduceMotion(
+            runCatching {
+                Settings.Global.getFloat(
+                    context.contentResolver,
+                    Settings.Global.ANIMATOR_DURATION_SCALE,
+                    1f,
+                )
+            }.getOrDefault(1f),
+        )
+    }
+}
+
 internal fun sessionAccessibilityLabel(
     session: StoredSession,
     profiles: List<DashboardProfile>,
@@ -86,12 +118,47 @@ internal fun SessionListScreen(
     selectedProfile: String,
     loadingMessage: String?,
     errorMessage: String?,
+    sessionRefreshAnnouncementToken: Long = 0L,
     onProfileSelected: (String) -> Unit,
     onNewConversation: () -> Unit,
     onSessionSelected: (StoredSession) -> Unit,
     onSettings: () -> Unit,
 ) {
     var profileMenuExpanded by remember { mutableStateOf(false) }
+    val reducedMotion = rememberReducedMotion()
+    val listState = rememberLazyListState()
+    val rowKeys = sessions.map(::sessionRowKey)
+    val focusRequesters = remember { mutableMapOf<String, FocusRequester>() }
+    rowKeys.forEach { rowKey ->
+        focusRequesters.getOrPut(rowKey) { FocusRequester() }
+    }
+    focusRequesters.keys.retainAll(rowKeys.toSet())
+    var focusedRowKey by remember { mutableStateOf<String?>(null) }
+    var previousRowKeys by remember { mutableStateOf<List<String>?>(null) }
+
+    LaunchedEffect(rowKeys) {
+        val previousKeys = previousRowKeys
+        val anchorIndex = listState.firstVisibleItemIndex
+        val anchorOffset = listState.firstVisibleItemScrollOffset
+        val anchorKey = previousKeys?.getOrNull(anchorIndex)
+        previousRowKeys = rowKeys
+        if (anchorKey != null) {
+            val newIndex = rowKeys.indexOf(anchorKey)
+            if (newIndex >= 0 && newIndex != listState.firstVisibleItemIndex) {
+                listState.scrollToItem(newIndex, anchorOffset)
+            }
+        }
+
+        val focusedKey = focusedRowKey
+        val focusedIndex = focusedKey?.let(rowKeys::indexOf) ?: -1
+        if (focusedIndex >= 0) {
+            if (listState.layoutInfo.visibleItemsInfo.none { it.index == focusedIndex }) {
+                listState.scrollToItem(focusedIndex)
+            }
+            withFrameNanos { }
+            focusRequesters[focusedKey]?.requestFocus()
+        }
+    }
 
     CelesteBackdrop(showOrnament = false) {
         Column(
@@ -183,14 +250,30 @@ internal fun SessionListScreen(
                 }
             }
 
+            if (sessionRefreshAnnouncementToken > 0L) {
+                key(sessionRefreshAnnouncementToken) {
+                    Box(
+                        modifier = Modifier
+                            .size(1.dp)
+                            .semantics {
+                                liveRegion = LiveRegionMode.Polite
+                                contentDescription = "Conversations updated"
+                            },
+                    )
+                }
+            }
+
             LazyColumn(
                 modifier = Modifier.fillMaxWidth(),
+                state = listState,
                 contentPadding = PaddingValues(start = 28.dp, end = 28.dp, top = 4.dp, bottom = 40.dp),
             ) {
                 itemsIndexed(
                     items = sessions,
                     key = { _, session -> sessionRowKey(session) },
                 ) { _, session ->
+                    val rowKey = sessionRowKey(session)
+                    val focusRequester = focusRequesters.getValue(rowKey)
                     val nowSeconds = System.currentTimeMillis() / 1000.0
                     val activityLabel = relativeActivityLabel(
                         session = session,
@@ -199,9 +282,14 @@ internal fun SessionListScreen(
                     val accessibleLabel = sessionAccessibilityLabel(session, profiles, nowSeconds)
                     Column(
                         modifier = Modifier
-                            .animateItem()
+                            .then(if (reducedMotion) Modifier else Modifier.animateItem())
                             .fillMaxWidth()
                             .clickable(enabled = loadingMessage == null) { onSessionSelected(session) }
+                            .focusRequester(focusRequester)
+                            .focusable()
+                            .onFocusChanged { focusState ->
+                                if (focusState.isFocused) focusedRowKey = rowKey
+                            }
                             .semantics(mergeDescendants = true) {
                                 contentDescription = accessibleLabel
                                 stateDescription = activityLabel ?: "Activity time unavailable"

@@ -12,6 +12,7 @@ import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.put
 
 data class CreatedSession(
@@ -78,6 +79,41 @@ suspend fun GatewayConnection.resumeStoredSession(storedSessionId: String): Resu
         status = status,
         inflightAssistantText = inflightAssistantText(inflight),
         hasLiveProjection = inflight.isTruthy() || queued.isTruthy(),
+    )
+}
+
+suspend fun GatewayConnection.listStoredSessionPage(
+    profile: String = "all",
+    limit: Int = 200,
+): SessionListPage {
+    val boundedLimit = limit.coerceIn(1, 200)
+    val result = request(
+        method = "session.list",
+        params = buildJsonObject {
+            put("limit", boundedLimit)
+            if (profile.isNotBlank() && !profile.equals("all", ignoreCase = true)) {
+                put("profile", profile)
+            }
+        },
+        timeoutMillis = 8_000,
+    ).asObject("Hermes returned no session list.")
+    val rows = result["sessions"] as? JsonArray
+        ?: throw IOException("Hermes returned no session list.")
+    val sessions = rows.mapNotNull { element ->
+        decodeStoredSession(
+            element = element,
+            fallbackProfile = profile.takeUnless { it.isBlank() || it.equals("all", ignoreCase = true) },
+        )
+    }
+    return SessionListPage(
+        sessions = sessions,
+        total = result["total"]?.jsonPrimitive?.intOrNull ?: sessions.size,
+        limit = result["limit"]?.jsonPrimitive?.intOrNull ?: boundedLimit,
+        ordering = if (sessions.isNotEmpty() && sessions.all { validEpochSeconds(it.lastActive) != null }) {
+            SessionOrdering.AUTHORITATIVE_RECENCY
+        } else {
+            SessionOrdering.SERVER_ORDER
+        },
     )
 }
 

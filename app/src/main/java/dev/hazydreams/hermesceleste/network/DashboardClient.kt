@@ -3,6 +3,7 @@ package dev.hazydreams.hermesceleste.network
 import java.io.IOException
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.ConcurrentHashMap
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
@@ -16,6 +17,7 @@ import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.booleanOrNull
@@ -189,6 +191,8 @@ class DashboardRpcException(
     message: String,
 ) : DashboardFailure(message)
 
+private class UnsupportedSessionListCapability(message: String) : IOException(message)
+
 private class DashboardCookieJar : CookieJar {
     private val cookies = mutableListOf<Cookie>()
 
@@ -308,9 +312,11 @@ class DashboardClient(
         .followRedirects(false)
         .build(),
 ) : DashboardService {
-    // Compatibility is deliberately process-memory only. A future server or
-    // origin gets a fresh attempt; no protocol capability is persisted.
-    private val restSessionListUnsupportedOrigins = ConcurrentHashMap.newKeySet<String>()
+    // Compatibility is process-memory only. A new authentication generation
+    // gets a fresh capability attempt; no protocol capability is persisted.
+    private val capabilityGeneration = AtomicLong(0L)
+    private val restSessionListUnsupportedGenerations = ConcurrentHashMap<String, Long>()
+    private val rpcSessionListUnsupportedGenerations = ConcurrentHashMap<String, Long>()
 
     override suspend fun probe(rawBaseUrl: String): DashboardProbeResult = withContext(Dispatchers.IO) {
         val baseUrl = DashboardUrlPolicy.normalize(rawBaseUrl)
@@ -366,9 +372,19 @@ class DashboardClient(
         credential: GatewayCredential,
         limit: Int,
     ): List<StoredSession> {
-        val authParameter = resolveWebSocketCredential(baseUrl, credential)
-        val wsUrl = buildWebSocketUrl(baseUrl, authParameter?.first, authParameter?.second)
-        return withTimeout(15_000) { requestSessionList(wsUrl, limit.coerceIn(1, 500)) }
+        val normalizedBaseUrl = DashboardUrlPolicy.normalize(baseUrl)
+        if (isRpcSessionListUnsupported(normalizedBaseUrl)) {
+            throw incompatibleSessionListFailure()
+        }
+        val authParameter = resolveWebSocketCredential(normalizedBaseUrl, credential)
+        val wsUrl = buildWebSocketUrl(normalizedBaseUrl, authParameter?.first, authParameter?.second)
+        return try {
+            withTimeout(15_000) { requestSessionList(wsUrl, limit.coerceIn(1, 500)) }
+        } catch (error: DashboardRpcException) {
+            if (error.code != -32601) throw error
+            invalidateRpcSessionList(normalizedBaseUrl)
+            throw incompatibleSessionListFailure(error)
+        }
     }
 
     override suspend fun listSessionPage(
@@ -381,7 +397,7 @@ class DashboardClient(
         val normalizedBaseUrl = DashboardUrlPolicy.normalize(baseUrl)
         val boundedLimit = limit.coerceIn(1, 200)
         val boundedOffset = offset.coerceAtLeast(0)
-        if (normalizedBaseUrl !in restSessionListUnsupportedOrigins) {
+        if (!isRestSessionListUnsupported(normalizedBaseUrl)) {
             try {
                 return withContext(Dispatchers.IO) {
                     requestRestSessionPage(
@@ -394,10 +410,15 @@ class DashboardClient(
                 }
             } catch (error: TransportUnavailable) {
                 if (error.statusCode != 404 && error.statusCode != 405) throw error
-                restSessionListUnsupportedOrigins += normalizedBaseUrl
+                invalidateRestSessionList(normalizedBaseUrl)
+            } catch (_: UnsupportedSessionListCapability) {
+                invalidateRestSessionList(normalizedBaseUrl)
             }
         }
 
+        if (isRpcSessionListUnsupported(normalizedBaseUrl)) {
+            throw incompatibleSessionListFailure()
+        }
         return try {
             val authParameter = resolveWebSocketCredential(normalizedBaseUrl, credential)
             val wsUrl = buildWebSocketUrl(
@@ -413,13 +434,9 @@ class DashboardClient(
                 )
             }
         } catch (error: DashboardRpcException) {
-            if (error.code == -32601) {
-                throw InvalidDashboardResponse(
-                    "Hermes does not provide a compatible conversation list.",
-                    error,
-                )
-            }
-            throw error
+            if (error.code != -32601) throw error
+            invalidateRpcSessionList(normalizedBaseUrl)
+            throw incompatibleSessionListFailure(error)
         }
     }
 
@@ -478,6 +495,7 @@ class DashboardClient(
     }
 
     override fun restoreAuthentication(baseUrl: String, material: AuthenticationMaterial): Boolean {
+        resetCapabilityGeneration()
         val jar = cookieJar as? DashboardCookieJar ?: return false
         jar.clear()
         val url = authenticationScopeUrl(baseUrl) ?: return false
@@ -489,8 +507,34 @@ class DashboardClient(
 
     override fun clearAuthentication() {
         (cookieJar as? DashboardCookieJar)?.clear()
-        restSessionListUnsupportedOrigins.clear()
+        resetCapabilityGeneration()
     }
+
+    private fun resetCapabilityGeneration() {
+        restSessionListUnsupportedGenerations.clear()
+        rpcSessionListUnsupportedGenerations.clear()
+        capabilityGeneration.incrementAndGet()
+    }
+
+    private fun isRestSessionListUnsupported(origin: String): Boolean =
+        restSessionListUnsupportedGenerations[origin] == capabilityGeneration.get()
+
+    private fun isRpcSessionListUnsupported(origin: String): Boolean =
+        rpcSessionListUnsupportedGenerations[origin] == capabilityGeneration.get()
+
+    private fun invalidateRestSessionList(origin: String) {
+        restSessionListUnsupportedGenerations[origin] = capabilityGeneration.get()
+    }
+
+    private fun invalidateRpcSessionList(origin: String) {
+        rpcSessionListUnsupportedGenerations[origin] = capabilityGeneration.get()
+    }
+
+    private fun incompatibleSessionListFailure(cause: Throwable? = null): InvalidDashboardResponse =
+        InvalidDashboardResponse(
+            "Hermes does not provide a compatible conversation list.",
+            cause,
+        )
 
     private fun authenticationScopeUrl(baseUrl: String): HttpUrl? = runCatching {
         "${DashboardUrlPolicy.normalize(baseUrl)}/api/status".toHttpUrl()
@@ -618,6 +662,17 @@ class DashboardClient(
                 },
             )
         }
+        val missingLastActive = rows.any { element ->
+            val row = element as? JsonObject ?: return@any false
+            val id = (row["id"] as? JsonPrimitive)?.contentOrNull
+            id != null && id.isNotBlank() &&
+                (row["last_active"] == null || row["last_active"] == JsonNull)
+        }
+        if (missingLastActive) {
+            throw UnsupportedSessionListCapability(
+                "Hermes conversation rows do not provide last_active.",
+            )
+        }
         val errors = (root["errors"] as? JsonArray).orEmpty().mapNotNull { element ->
             val row = element as? JsonObject ?: return@mapNotNull null
             val failedProfile = (row["profile"] as? JsonPrimitive)?.contentOrNull
@@ -631,14 +686,16 @@ class DashboardClient(
         val total = (root["total"] as? JsonPrimitive)?.intOrNull ?: sessions.size
         val responseOffset = (root["offset"] as? JsonPrimitive)?.intOrNull ?: offset
         val responseLimit = (root["limit"] as? JsonPrimitive)?.intOrNull ?: limit
-        val usableNumericValue = sessions.any { effectiveRemoteActivity(it) != null }
+        val hasAuthoritativeActivity = sessions.isNotEmpty() && sessions.all {
+            validEpochSeconds(it.lastActive) != null
+        }
         return SessionListPage(
             sessions = sessions,
             total = total,
             offset = responseOffset,
             limit = responseLimit,
             errors = errors,
-            ordering = if (usableNumericValue) {
+            ordering = if (hasAuthoritativeActivity) {
                 SessionOrdering.AUTHORITATIVE_RECENCY
             } else {
                 SessionOrdering.SERVER_ORDER
@@ -825,23 +882,7 @@ class DashboardClient(
     private fun decodeSession(
         element: JsonElement,
         fallbackProfile: String? = null,
-    ): StoredSession? {
-        val row = element as? JsonObject ?: return null
-        val id = (row["id"] as? JsonPrimitive)?.contentOrNull?.takeIf(String::isNotBlank)
-            ?: return null
-        val suppliedProfile = (row["profile"] as? JsonPrimitive)?.contentOrNull
-            ?: (row["profile_name"] as? JsonPrimitive)?.contentOrNull
-        return StoredSession(
-            id = id,
-            title = (row["title"] as? JsonPrimitive)?.contentOrNull.orEmpty(),
-            preview = (row["preview"] as? JsonPrimitive)?.contentOrNull.orEmpty(),
-            startedAt = validEpochSeconds((row["started_at"] as? JsonPrimitive)?.doubleOrNull) ?: 0.0,
-            messageCount = (row["message_count"] as? JsonPrimitive)?.intOrNull ?: 0,
-            source = (row["source"] as? JsonPrimitive)?.contentOrNull.orEmpty(),
-            profile = suppliedProfile ?: fallbackProfile ?: "default",
-            lastActive = validEpochSeconds((row["last_active"] as? JsonPrimitive)?.doubleOrNull),
-        )
-    }
+    ): StoredSession? = decodeStoredSession(element, fallbackProfile)
 
     private fun decodeProfile(element: JsonElement): DashboardProfile {
         if (element is JsonPrimitive && element.isString) {

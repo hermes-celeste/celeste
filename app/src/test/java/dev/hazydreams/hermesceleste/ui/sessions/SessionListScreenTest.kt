@@ -5,6 +5,7 @@ import dev.hazydreams.hermesceleste.network.StoredSession
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class SessionListScreenTest {
@@ -41,6 +42,32 @@ class SessionListScreenTest {
 
         assertEquals("Unknown. 0 messages", label)
         assertFalse(label.contains("Active"))
+    }
+
+    @Test
+    fun profileQualifiedKeysKeepTheFocusedAnchorStableWhenRowsReorder() {
+        val focused = session(id = "focused", profile = "work")
+        val oldRows = listOf(
+            session(id = "first"),
+            focused,
+            session(id = "last"),
+        )
+        val reorderedRows = listOf(
+            oldRows[2],
+            oldRows[0],
+            focused.copy(title = "Focused renamed"),
+        )
+        val focusedKey = sessionRowKey(focused)
+
+        assertEquals(2, reorderedRows.map(::sessionRowKey).indexOf(focusedKey))
+        assertEquals(focusedKey, sessionRowKey(reorderedRows[2]))
+    }
+
+    @Test
+    fun reducedMotionDisablesPlacementTravelAtZeroOrInvalidAnimationScale() {
+        assertFalse(shouldReduceMotion(1f))
+        assertTrue(shouldReduceMotion(0f))
+        assertTrue(shouldReduceMotion(Float.NaN))
     }
 
     private fun session(
