@@ -3,7 +3,9 @@ package dev.hazydreams.hermesceleste
 import dev.hazydreams.hermesceleste.ui.conversation.ConversationScrollPolicy
 import dev.hazydreams.hermesceleste.ui.conversation.ScrollCommand
 import dev.hazydreams.hermesceleste.ui.conversation.activeBottomOcclusionPx
+import dev.hazydreams.hermesceleste.ui.conversation.hasUsableViewportGeometry
 import dev.hazydreams.hermesceleste.ui.conversation.ScrollPolicyInput
+import dev.hazydreams.hermesceleste.ui.conversation.terminalBottomClearancePx
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -28,8 +30,22 @@ class ConversationScrollPolicyTest {
 
     @Test
     fun bottomOcclusionUsesTheLargerInsetOnly() {
-        assertEquals(320, activeBottomOcclusionPx(320, 48))
-        assertEquals(48, activeBottomOcclusionPx(0, 48))
+        assertEquals(320, activeBottomOcclusionPx(320, 48, 24))
+        assertEquals(48, activeBottomOcclusionPx(0, 48, 24))
+        assertEquals(56, activeBottomOcclusionPx(0, 24, 56))
+    }
+
+    @Test
+    fun terminalClearanceIsMeasuredAgainstTheUsableViewportEnd() {
+        assertEquals(12, terminalBottomClearancePx(100, 88, 200))
+        assertEquals(-8, terminalBottomClearancePx(100, 108, 200))
+    }
+
+    @Test
+    fun viewportGeometryIsPendingUntilTheDockAndListHaveUsableBounds() {
+        assertFalse(hasUsableViewportGeometry(0, 0, 400))
+        assertFalse(hasUsableViewportGeometry(120, 400, 400))
+        assertTrue(hasUsableViewportGeometry(120, 0, 400))
     }
 
     @Test

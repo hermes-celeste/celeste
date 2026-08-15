@@ -79,6 +79,7 @@ internal data class CelesteUiState(
     val turnState: TurnState = TurnState.Idle,
     val loadingMessage: String? = null,
     val errorMessage: String? = null,
+    val conversationProjectionGeneration: Long = 0L,
 )
 
 private data class LoadedDashboard(
@@ -591,6 +592,7 @@ internal class CelesteViewModel(
             messages = emptyList(),
             streamingText = "",
             draft = "",
+            conversationProjectionGeneration = mutableState.value.conversationProjectionGeneration + 1,
             turnState = TurnState.Synchronizing,
             loadingMessage = "Opening ${summary.title.ifBlank { "conversation" }}…",
             errorMessage = null,
@@ -628,6 +630,7 @@ internal class CelesteViewModel(
             messages = emptyList(),
             streamingText = "",
             draft = "",
+            conversationProjectionGeneration = snapshot.conversationProjectionGeneration + 1,
             turnState = TurnState.Synchronizing,
             loadingMessage = "Starting a new $selectedProfile conversation…",
             errorMessage = null,
@@ -691,6 +694,7 @@ internal class CelesteViewModel(
             messages = emptyList(),
             streamingText = "",
             draft = "",
+            conversationProjectionGeneration = mutableState.value.conversationProjectionGeneration + 1,
             turnState = TurnState.Idle,
             loadingMessage = null,
             errorMessage = null,
@@ -837,6 +841,8 @@ internal class CelesteViewModel(
                     mutableState.value = mutableState.value.copy(
                         turnState = TurnState.Reconnecting,
                         errorMessage = connectionState.reason,
+                        conversationProjectionGeneration =
+                            mutableState.value.conversationProjectionGeneration + 1,
                     )
                     scheduleReconnect(wasRunning)
                 }
@@ -873,6 +879,8 @@ internal class CelesteViewModel(
         mutableState.value = mutableState.value.copy(
             messages = resumed.messages,
             streamingText = streamingSuffix,
+            conversationProjectionGeneration =
+                mutableState.value.conversationProjectionGeneration + 1,
             turnState = if (resumed.running == true || resumed.hasLiveProjection) {
                 TurnState.Running
             } else {
@@ -1059,6 +1067,8 @@ internal class CelesteViewModel(
                 sessions = mutableState.value.sessions?.map { session ->
                     if (session.id == previousStoredId) updatedSummary else session
                 },
+                conversationProjectionGeneration =
+                    mutableState.value.conversationProjectionGeneration + 1,
                 turnState = TurnState.Idle,
                 errorMessage = null,
             )
@@ -1077,7 +1087,11 @@ internal class CelesteViewModel(
         val activeGateway = gateway ?: return
         val storedSessionId = currentStoredSessionId ?: mutableState.value.activeSummary?.id ?: return
         if (reconnectJob?.isActive == true) return
-        mutableState.value = mutableState.value.copy(turnState = TurnState.Reconnecting)
+        mutableState.value = mutableState.value.copy(
+            turnState = TurnState.Reconnecting,
+            conversationProjectionGeneration =
+                mutableState.value.conversationProjectionGeneration + 1,
+        )
         reconnectJob = viewModelScope.launch {
             while (gateway === activeGateway) {
                 val delayMillis = if (immediate && reconnectAttempts == 0) {

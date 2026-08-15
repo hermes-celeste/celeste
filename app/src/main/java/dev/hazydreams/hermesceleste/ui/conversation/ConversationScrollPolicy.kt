@@ -7,8 +7,27 @@ package dev.hazydreams.hermesceleste.ui.conversation
  * measured geometry and transition state, while the ViewModel remains authoritative
  * for the transcript itself.
  */
-internal fun activeBottomOcclusionPx(imeBottomPx: Int, navigationBottomPx: Int): Int =
-    maxOf(imeBottomPx, navigationBottomPx)
+internal fun activeBottomOcclusionPx(
+    imeBottomPx: Int,
+    navigationBottomPx: Int,
+    systemGesturesBottomPx: Int = 0,
+): Int = maxOf(imeBottomPx, navigationBottomPx, systemGesturesBottomPx)
+
+/**
+ * Positive values mean that the terminal row ends above the usable viewport
+ * boundary. Negative values mean that it is still occluded by the dock.
+ */
+internal fun terminalBottomClearancePx(
+    terminalOffsetPx: Int,
+    terminalSizePx: Int,
+    viewportEndOffsetPx: Int,
+): Int = viewportEndOffsetPx - (terminalOffsetPx + terminalSizePx)
+
+internal fun hasUsableViewportGeometry(
+    dockHeightPx: Int,
+    viewportStartOffsetPx: Int,
+    viewportEndOffsetPx: Int,
+): Boolean = dockHeightPx > 0 && viewportEndOffsetPx > viewportStartOffsetPx
 
 internal class ConversationScrollPolicy(
     private val nearBottomThresholdDp: Float = 40f,

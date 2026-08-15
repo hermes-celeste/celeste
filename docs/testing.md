@@ -83,7 +83,11 @@ scripts/celeste-env adb install -r /path/to/Hermes-Celeste-latest.apk
 
 Use a real device for Android-only behavior such as lifecycle transitions, IME/insets, system back, permissions, network changes, launcher assets, and performance. Record the flows and device conditions exercised rather than reporting “tested on device” without specifics.
 
-There is currently no `app/src/androidTest` suite. The configured instrumentation runner and connected-device tasks do not constitute device coverage; report Android runtime behavior as untested unless it was explicitly exercised.
+The DF-02 viewport scenarios live under `app/src/androidTest`. They are a device harness, not device evidence: the suite covers IME open/close and system Back, rotation, cutout-gated behavior, gesture and three-button navigation-gated behavior, large font scale, terminal-row clearance, and TalkBack semantics. Report Android runtime behavior as untested unless the scenarios were explicitly exercised on a device.
+
+### DF-02 physical device gate
+
+Before marking DF-02 accepted, record the actual device/API, keyboard and IME animation behavior, portrait/landscape configuration, cutout or waterfall configuration, navigation mode, default and large font scale, and TalkBack service/version. Exercise idle, composing, running, reconnecting, and error states with enough synthetic-length streaming text to grow the terminal row. Confirm the composer clears the measured IME/navigation/gesture occlusion without a double gap, history readers retain their anchor, following readers remain at latest, the first Back dismisses the IME, and the second Back leaves the conversation. This change records the gate only; no physical-device result is claimed here.
 
 Base-path-prefixed dashboard routing is supported in source but does not yet have a direct MockWebServer regression. Add one when route joining changes.
 

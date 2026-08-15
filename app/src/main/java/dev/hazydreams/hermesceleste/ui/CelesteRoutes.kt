@@ -91,6 +91,7 @@ internal fun CelesteRoutes(ui: CelesteUiState, viewModel: CelesteViewModel) {
                     onInterrupt = viewModel::interrupt,
                     onReconnect = viewModel::reconnectNow,
                     onBack = viewModel::leaveConversation,
+                    projectionGeneration = ui.conversationProjectionGeneration,
                 )
             }
 

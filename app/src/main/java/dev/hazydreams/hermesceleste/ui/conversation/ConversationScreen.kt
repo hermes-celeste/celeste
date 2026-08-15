@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.WindowInsetsSides
 import androidx.compose.foundation.layout.asPaddingValues
+import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -22,6 +23,7 @@ import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.systemGestures
 import androidx.compose.foundation.layout.union
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.lazy.LazyColumn
@@ -95,6 +97,12 @@ import kotlinx.coroutines.launch
 import kotlin.math.abs
 
 @Composable
+internal fun conversationBottomOcclusionInsets(): WindowInsets =
+    WindowInsets.ime
+        .union(WindowInsets.navigationBars)
+        .union(WindowInsets.systemGestures)
+
+@Composable
 internal fun ConversationScreen(
     summary: StoredSession,
     messages: List<ConversationMessage>,
@@ -108,26 +116,36 @@ internal fun ConversationScreen(
     onInterrupt: () -> Unit,
     onReconnect: () -> Unit,
     onBack: () -> Unit,
+    projectionGeneration: Long = 0L,
+    bottomOcclusion: WindowInsets? = null,
+    safeDrawingInsets: WindowInsets? = null,
 ) {
     val focusManager = LocalFocusManager.current
     val keyboardController = LocalSoftwareKeyboardController.current
     val density = LocalDensity.current
     val layoutDirection = LocalLayoutDirection.current
     val configuration = LocalConfiguration.current
-    val safeDrawingInsets = WindowInsets.safeDrawing
-    val safeDrawingPadding = safeDrawingInsets.asPaddingValues()
+    val activeBottomOcclusion = bottomOcclusion ?: conversationBottomOcclusionInsets()
+    val activeSafeDrawingInsets = safeDrawingInsets ?: WindowInsets.safeDrawing
+    val safeDrawingPadding = activeSafeDrawingInsets.asPaddingValues()
     val safeTopPadding = safeDrawingPadding.calculateTopPadding()
     val headerTopPadding = maxOf(34.dp - safeTopPadding, 10.dp)
-    val bottomOcclusion = remember {
-        WindowInsets.ime.union(WindowInsets.navigationBars)
-    }
     val imeVisible = WindowInsets.ime.getBottom(density) > 0
     var composerFocused by remember(summary.id) { mutableStateOf(false) }
+    var previousImeVisible by remember(summary.id) { mutableStateOf(false) }
     var dockHeightPx by remember(summary.id) { mutableIntStateOf(0) }
 
-    // ConversationScreen owns the second Back. The first one is consumed here
-    // whenever the IME or the composer still owns focus, before route navigation.
-    BackHandler {
+    LaunchedEffect(summary.id, imeVisible, composerFocused) {
+        // Some Android versions let the IME consume Back without clearing the
+        // focused field. Clear that stale focus as soon as the IME actually
+        // reports hidden, so the next Back can leave the conversation.
+        if (previousImeVisible && !imeVisible && composerFocused) {
+            focusManager.clearFocus(force = true)
+        }
+        previousImeVisible = imeVisible
+    }
+
+    fun handleConversationBack() {
         if (imeVisible || composerFocused) {
             focusManager.clearFocus(force = true)
             keyboardController?.hide()
@@ -136,12 +154,16 @@ internal fun ConversationScreen(
         }
     }
 
+    // ConversationScreen owns the second Back. The first one is consumed here
+    // whenever the IME or the composer still owns focus, before route navigation.
+    BackHandler { handleConversationBack() }
+
     CelesteBackdrop(showOrnament = false) {
         Column(
             Modifier
                 .fillMaxSize()
-                .windowInsetsPadding(safeDrawingInsets.only(WindowInsetsSides.Horizontal))
-                .windowInsetsPadding(safeDrawingInsets.only(WindowInsetsSides.Top))
+                .windowInsetsPadding(activeSafeDrawingInsets.only(WindowInsetsSides.Horizontal))
+                .windowInsetsPadding(activeSafeDrawingInsets.only(WindowInsetsSides.Top))
                 .padding(top = headerTopPadding),
         ) {
             Row(
@@ -149,7 +171,7 @@ internal fun ConversationScreen(
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 TextButton(
-                    onClick = onBack,
+                    onClick = ::handleConversationBack,
                     contentPadding = PaddingValues(horizontal = 6.dp, vertical = 8.dp),
                 ) {
                     Text("←  Back", color = CelesteBlue, fontWeight = FontWeight.SemiBold)
@@ -207,10 +229,12 @@ internal fun ConversationScreen(
                     summaryId = summary.id,
                     messages = messages,
                     streamingText = streamingText,
+                    projectionGeneration = projectionGeneration,
+                    bottomOcclusion = activeBottomOcclusion,
                     dockClearance = with(density) { dockHeightPx.toDp() },
-                    safeTopInsetPx = safeDrawingInsets.getTop(density),
-                    safeLeftInsetPx = safeDrawingInsets.getLeft(density, layoutDirection),
-                    safeRightInsetPx = safeDrawingInsets.getRight(density, layoutDirection),
+                    safeTopInsetPx = activeSafeDrawingInsets.getTop(density),
+                    safeLeftInsetPx = activeSafeDrawingInsets.getLeft(density, layoutDirection),
+                    safeRightInsetPx = activeSafeDrawingInsets.getRight(density, layoutDirection),
                     configurationWidthDp = configuration.screenWidthDp,
                     configurationHeightDp = configuration.screenHeightDp,
                     configurationOrientation = configuration.orientation,
@@ -219,7 +243,7 @@ internal fun ConversationScreen(
                 )
                 ComposerDock(
                     modifier = Modifier.align(Alignment.BottomCenter),
-                    bottomOcclusion = bottomOcclusion,
+                    bottomOcclusion = activeBottomOcclusion,
                     draft = draft,
                     turnState = turnState,
                     onDraftChange = onDraftChange,
@@ -241,6 +265,8 @@ private fun ConversationViewport(
     summaryId: String,
     messages: List<ConversationMessage>,
     streamingText: String,
+    projectionGeneration: Long,
+    bottomOcclusion: WindowInsets,
     dockClearance: Dp,
     safeTopInsetPx: Int,
     safeLeftInsetPx: Int,
@@ -271,12 +297,11 @@ private fun ConversationViewport(
     var programmaticScrollGeneration by remember(summaryId) { mutableStateOf<Long?>(null) }
     var activeScrollJob by remember(summaryId) { mutableStateOf<Job?>(null) }
     var previousGeometry by remember(summaryId) { mutableStateOf<ViewportGeometry?>(null) }
+    var previousItemKeys by remember(summaryId) { mutableStateOf<List<String>?>(null) }
+    var previousProjectionGeneration by remember(summaryId) { mutableStateOf<Long?>(null) }
     val geometry = ViewportGeometry(
         dockHeightPx = with(density) { dockClearance.roundToPx() },
-        bottomInsetPx = activeBottomOcclusionPx(
-            imeBottomPx = WindowInsets.ime.getBottom(density),
-            navigationBottomPx = WindowInsets.navigationBars.getBottom(density),
-        ),
+        bottomInsetPx = bottomOcclusion.getBottom(density),
         safeTopInsetPx = safeTopInsetPx,
         safeLeftInsetPx = safeLeftInsetPx,
         safeRightInsetPx = safeRightInsetPx,
@@ -352,6 +377,7 @@ private fun ConversationViewport(
         activeScrollJob = scope.launch {
             scrollForGeneration(generation) {
                 listState.animateScrollToItem(itemCount - 1)
+                settleTerminalRow(listState, itemCount)
             }
         }
     }
@@ -413,12 +439,19 @@ private fun ConversationViewport(
         }
     }
 
-    LaunchedEffect(itemCount, summaryId) {
+    LaunchedEffect(itemCount, summaryId, geometry, projectionGeneration) {
         if (initialProjectionHandled || itemCount == 0) return@LaunchedEffect
         snapshotFlow {
             listState.layoutInfo.totalItemsCount == itemCount &&
-                listState.layoutInfo.viewportEndOffset > listState.layoutInfo.viewportStartOffset
+                hasUsableViewportGeometry(
+                    dockHeightPx = geometry.dockHeightPx,
+                    viewportStartOffsetPx = listState.layoutInfo.viewportStartOffset,
+                    viewportEndOffsetPx = listState.layoutInfo.viewportEndOffset,
+                )
         }.filter { it }.first()
+        if (!awaitStableUsableGeometry(listState, itemCount, geometry, bottomOcclusion, density)) {
+            return@LaunchedEffect
+        }
         if (initialProjectionHandled) return@LaunchedEffect
         val decision = policy.decide(
             ScrollPolicyInput(
@@ -433,7 +466,7 @@ private fun ConversationViewport(
         if (decision.command == ScrollCommand.FollowLatest) {
             val generation = decision.transitionGeneration
             scrollForGeneration(generation) {
-                listState.scrollToItem(itemCount - 1)
+                settleTerminalRow(listState, itemCount)
             }
         }
     }
@@ -447,12 +480,19 @@ private fun ConversationViewport(
         followsLatest,
         transitionGeneration,
         transitionActive,
+        projectionGeneration,
     ) {
         if (!followsLatest || itemCount == 0) return@LaunchedEffect
         snapshotFlow {
             terminalLayoutSignature(listState.layoutInfo, itemCount)
         }.distinctUntilChanged().collectLatest {
             if (transitionActive) return@collectLatest
+            if (!hasUsableViewportGeometry(
+                    dockHeightPx = geometry.dockHeightPx,
+                    viewportStartOffsetPx = listState.layoutInfo.viewportStartOffset,
+                    viewportEndOffsetPx = listState.layoutInfo.viewportEndOffset,
+                )
+            ) return@collectLatest
             val decision = policy.decide(
                 ScrollPolicyInput(
                     followsLatest = followsLatest,
@@ -465,30 +505,47 @@ private fun ConversationViewport(
             withFrameNanos { }
             val generation = transitionGeneration
             scrollForGeneration(generation) {
-                listState.scrollToItem(itemCount - 1)
+                settleTerminalRow(listState, itemCount)
             }
         }
     }
 
-    LaunchedEffect(geometry, summaryId) {
+    LaunchedEffect(geometry, itemKeys, summaryId, projectionGeneration) {
         val previous = previousGeometry
+        val previousKeys = previousItemKeys
+        val previousProjection = previousProjectionGeneration
         previousGeometry = geometry
-        if (previous == null || previous == geometry) return@LaunchedEffect
+        previousItemKeys = itemKeys
+        previousProjectionGeneration = projectionGeneration
+        val geometryChanged = previous != null && previous != geometry
+        val projectionChanged = previousKeys != null && previousKeys != itemKeys
+        val generationChanged = previousProjection != null && previousProjection != projectionGeneration
+        if (!geometryChanged && !projectionChanged && !generationChanged) return@LaunchedEffect
 
         val generation = transitionGeneration + 1
         activeScrollJob?.cancel()
         activeScrollJob = null
         transitionGeneration = generation
         transitionActive = true
+        if (itemCount == 0) {
+            pendingAnchor = null
+            lastHistoryAnchor = null
+            recoveryNeeded = false
+            transitionActive = false
+            return@LaunchedEffect
+        }
         val shouldRestoreAnchor = !followsLatest
         if (shouldRestoreAnchor) {
             pendingAnchor = lastHistoryAnchor ?: captureAnchor()
         }
 
-        // Two settled frames let the dock, IME, and list report their new bounds
-        // before a follow or anchor command is issued.
-        withFrameNanos { }
-        withFrameNanos { }
+        // Require two identical usable samples so a zero/stale inset or a
+        // cancelled animation is not treated as settled just because two
+        // frames elapsed.
+        if (!awaitStableUsableGeometry(listState, itemCount, geometry, bottomOcclusion, density)) {
+            transitionActive = false
+            return@LaunchedEffect
+        }
         if (generation != transitionGeneration) return@LaunchedEffect
 
         val anchor = pendingAnchor
@@ -510,7 +567,7 @@ private fun ConversationViewport(
         when (decision.command) {
             ScrollCommand.FollowLatest -> {
                 scrollForGeneration(generation) {
-                    listState.scrollToItem(itemCount - 1)
+                    settleTerminalRow(listState, itemCount)
                 }
             }
 
@@ -522,7 +579,7 @@ private fun ConversationViewport(
                         anchor = anchor,
                     )
                     if (decision.fallbackToLatest || !restored) {
-                        listState.scrollToItem(itemCount - 1)
+                        settleTerminalRow(listState, itemCount)
                         recoveryNeeded = true
                     }
                 }
@@ -551,14 +608,30 @@ private fun ConversationViewport(
             itemsIndexed(
                 items = messages,
                 key = { index, _ -> transcriptKeys[index] },
-            ) { _, message ->
-                MessageBubble(message)
+            ) { index, message ->
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .semantics {
+                            if (!hasStreamingRow && index == itemCount - 1) {
+                                contentDescription = "Terminal transcript row"
+                            }
+                        },
+                ) {
+                    MessageBubble(message)
+                }
             }
             if (hasStreamingRow) {
                 item(key = STREAMING_TRANSCRIPT_KEY) {
-                    MessageBubble(
-                        ConversationMessage(role = "assistant", text = streamingText, pending = true),
-                    )
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .semantics { contentDescription = "Terminal transcript row" },
+                    ) {
+                        MessageBubble(
+                            ConversationMessage(role = "assistant", text = streamingText, pending = true),
+                        )
+                    }
                 }
             }
         }
@@ -661,7 +734,7 @@ private fun ComposerDock(
             when (turnState) {
                 TurnState.Running -> OutlinedButton(
                     onClick = onInterrupt,
-                    modifier = Modifier.height(46.dp),
+                    modifier = Modifier.defaultMinSize(minHeight = 46.dp),
                     shape = RoundedCornerShape(23.dp),
                     border = androidx.compose.foundation.BorderStroke(1.dp, CelesteCoral),
                     colors = ButtonDefaults.outlinedButtonColors(contentColor = CelesteCoral),
@@ -669,7 +742,7 @@ private fun ComposerDock(
 
                 TurnState.Reconnecting -> OutlinedButton(
                     onClick = onReconnect,
-                    modifier = Modifier.height(46.dp),
+                    modifier = Modifier.defaultMinSize(minHeight = 46.dp),
                     shape = RoundedCornerShape(23.dp),
                     border = androidx.compose.foundation.BorderStroke(1.dp, CelesteBlue),
                     colors = ButtonDefaults.outlinedButtonColors(contentColor = CelesteBlue),
@@ -681,7 +754,7 @@ private fun ComposerDock(
                         focusManager.clearFocus()
                     },
                     enabled = draft.isNotBlank() && turnState == TurnState.Idle,
-                    modifier = Modifier.height(46.dp),
+                    modifier = Modifier.defaultMinSize(minHeight = 46.dp),
                     shape = RoundedCornerShape(23.dp),
                     colors = ButtonDefaults.buttonColors(
                         containerColor = CelesteInk,
@@ -762,6 +835,73 @@ private suspend fun restoreTranscriptAnchor(
         listState.scrollBy((currentOffset - anchor.relativeOffsetPx).toFloat())
     }
     return true
+}
+
+private data class GeometrySample(
+    val dockHeightPx: Int,
+    val bottomInsetPx: Int,
+    val totalItemsCount: Int,
+    val viewportStartOffset: Int,
+    val viewportEndOffset: Int,
+)
+
+private suspend fun awaitStableUsableGeometry(
+    listState: LazyListState,
+    itemCount: Int,
+    geometry: ViewportGeometry,
+    bottomOcclusion: WindowInsets,
+    density: androidx.compose.ui.unit.Density,
+): Boolean {
+    var previous: GeometrySample? = null
+    var stableFrames = 0
+    repeat(12) {
+        withFrameNanos { }
+        val layoutInfo = listState.layoutInfo
+        val sample = GeometrySample(
+            dockHeightPx = geometry.dockHeightPx,
+            bottomInsetPx = bottomOcclusion.getBottom(density),
+            totalItemsCount = layoutInfo.totalItemsCount,
+            viewportStartOffset = layoutInfo.viewportStartOffset,
+            viewportEndOffset = layoutInfo.viewportEndOffset,
+        )
+        if (sample == previous) {
+            stableFrames += 1
+        } else {
+            previous = sample
+            stableFrames = 1
+        }
+        if (sample.totalItemsCount == itemCount &&
+            hasUsableViewportGeometry(
+                dockHeightPx = sample.dockHeightPx,
+                viewportStartOffsetPx = sample.viewportStartOffset,
+                viewportEndOffsetPx = sample.viewportEndOffset,
+            ) &&
+            stableFrames >= 2
+        ) {
+            return true
+        }
+    }
+    return false
+}
+
+private suspend fun settleTerminalRow(
+    listState: LazyListState,
+    itemCount: Int,
+) {
+    if (itemCount == 0) return
+    listState.scrollToItem(itemCount - 1)
+    withFrameNanos { }
+    val layoutInfo = listState.layoutInfo
+    val terminal = layoutInfo.visibleItemsInfo.firstOrNull { it.index == itemCount - 1 }
+        ?: return
+    val clearance = terminalBottomClearancePx(
+        terminalOffsetPx = terminal.offset,
+        terminalSizePx = terminal.size,
+        viewportEndOffsetPx = layoutInfo.viewportEndOffset,
+    )
+    if (clearance < 0) {
+        listState.scrollBy(-clearance.toFloat())
+    }
 }
 
 private fun terminalLayoutSignature(
