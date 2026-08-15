@@ -81,6 +81,7 @@ data class ConversationMessage(
     val id: String? = null,
     val pending: Boolean = false,
     val interim: Boolean = false,
+    val toolCallId: String? = null,
 )
 
 data class ResumedSession(

@@ -99,27 +99,17 @@ class ConversationActivityUiTest {
     }
 
     @Test
-    fun mountedConversationRendersActionLabelsAndRecoveryLiveRegions() {
+    fun mountedConversationRendersSupportedActionAndRecoveryLiveRegions() {
         val fixture = mutableStateOf(
             ConversationFixture(
                 turnState = TurnState.Running,
                 draft = "draft",
-                actionModel = ConversationActionModel(ActiveTurnAction.SteerWithMessage),
+                actionModel = ConversationActionModel(ActiveTurnAction.Unavailable),
             ),
         )
         mount(fixture)
 
-        composeTestRule.onNodeWithText("Steer with message").assertExists()
-
-        transition(
-            fixture,
-            ConversationFixture(
-                turnState = TurnState.Running,
-                draft = "draft",
-                actionModel = ConversationActionModel(ActiveTurnAction.QueueMessage),
-            ),
-        )
-        composeTestRule.onNodeWithText("Queue message").assertExists()
+        composeTestRule.onNodeWithText("Unavailable").assertExists()
 
         transition(
             fixture,

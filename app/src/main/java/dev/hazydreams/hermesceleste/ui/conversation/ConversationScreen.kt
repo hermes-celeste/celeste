@@ -86,7 +86,6 @@ internal fun ConversationScreen(
     onBack: () -> Unit,
     activityCandidates: ConversationActivityCandidates = ConversationActivityCandidates(),
     actionModel: ConversationActionModel = ConversationActionModel(),
-    onActiveTurnAction: (() -> Unit)? = null,
 ) {
     val listState = rememberLazyListState()
     val focusManager = LocalFocusManager.current
@@ -233,8 +232,7 @@ internal fun ConversationScreen(
                 OutlinedTextField(
                     value = draft,
                     onValueChange = onDraftChange,
-                    enabled = activity.draftEnabled &&
-                        (turnState != TurnState.Running || onActiveTurnAction != null),
+                    enabled = activity.draftEnabled,
                     modifier = Modifier.fillMaxWidth(),
                     placeholder = {
                         Text(
@@ -252,12 +250,6 @@ internal fun ConversationScreen(
                                 when (activity.composerAction) {
                                     ConversationComposerAction.SendMessage -> {
                                         onSend()
-                                        focusManager.clearFocus()
-                                    }
-
-                                    ConversationComposerAction.SteerWithMessage,
-                                    ConversationComposerAction.QueueMessage -> {
-                                        onActiveTurnAction?.invoke()
                                         focusManager.clearFocus()
                                     }
 
@@ -306,19 +298,6 @@ internal fun ConversationScreen(
                             shape = RoundedCornerShape(23.dp),
                             border = androidx.compose.foundation.BorderStroke(1.dp, CelesteError),
                             colors = ButtonDefaults.outlinedButtonColors(contentColor = CelesteError),
-                        ) { Text(activity.composerAction.label, fontWeight = FontWeight.SemiBold) }
-
-                        ConversationComposerAction.SteerWithMessage,
-                        ConversationComposerAction.QueueMessage -> OutlinedButton(
-                            onClick = {
-                                onActiveTurnAction?.invoke()
-                                focusManager.clearFocus()
-                            },
-                            enabled = draft.isNotBlank() && onActiveTurnAction != null,
-                            modifier = Modifier.height(46.dp),
-                            shape = RoundedCornerShape(23.dp),
-                            border = androidx.compose.foundation.BorderStroke(1.dp, CelesteBlue),
-                            colors = ButtonDefaults.outlinedButtonColors(contentColor = CelesteBlue),
                         ) { Text(activity.composerAction.label, fontWeight = FontWeight.SemiBold) }
 
                         ConversationComposerAction.SendMessage -> Button(

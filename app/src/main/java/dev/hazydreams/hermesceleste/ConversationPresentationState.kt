@@ -3,14 +3,12 @@ package dev.hazydreams.hermesceleste
 import dev.hazydreams.hermesceleste.network.ConversationMessage
 
 /**
- * The active-turn action contract consumed by DF-05. DF-06 can replace the
- * interrupt-only default with steering or queueing without changing the
- * conversation surface or inventing protocol behavior here.
+ * The active-turn action contract currently supported by DF-05. DF-06 can
+ * extend this with steering or queueing once its protocol ordering contract is
+ * implemented; the conversation surface must not advertise unwired actions.
  */
 internal enum class ActiveTurnAction {
     StopResponse,
-    SteerWithMessage,
-    QueueMessage,
     Unavailable,
 }
 

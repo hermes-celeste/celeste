@@ -23,8 +23,6 @@ internal enum class ActivityAnnouncementMode {
 internal enum class ConversationComposerAction(val label: String) {
     SendMessage("Send message"),
     StopResponse("Stop response"),
-    SteerWithMessage("Steer with message"),
-    QueueMessage("Queue message"),
     RetryConnection("Retry connection"),
     Retry("Retry"),
     Unavailable("Unavailable"),
@@ -146,8 +144,6 @@ internal fun selectConversationActivity(
     }
     val draftEnabled = when {
         turnState == TurnState.Idle || turnState == TurnState.Reconnecting -> true
-        turnState == TurnState.Running -> actionModel.activeTurn == ActiveTurnAction.SteerWithMessage ||
-            actionModel.activeTurn == ActiveTurnAction.QueueMessage
         else -> false
     }
 
@@ -161,8 +157,6 @@ internal fun selectConversationActivity(
 
 private fun ActiveTurnAction.toComposerAction(): ConversationComposerAction = when (this) {
     ActiveTurnAction.StopResponse -> ConversationComposerAction.StopResponse
-    ActiveTurnAction.SteerWithMessage -> ConversationComposerAction.SteerWithMessage
-    ActiveTurnAction.QueueMessage -> ConversationComposerAction.QueueMessage
     ActiveTurnAction.Unavailable -> ConversationComposerAction.Unavailable
 }
 

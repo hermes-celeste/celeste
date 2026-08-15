@@ -10,8 +10,6 @@ import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonArray
-import kotlinx.serialization.json.jsonObject
-import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 
 data class CreatedSession(
@@ -134,7 +132,20 @@ private fun decodeGatewayMessage(element: JsonElement): ConversationMessage? {
             ?: row["message_id"].scalarIdentity(),
         pending = row.boolean("pending") == true,
         interim = row.boolean("interim") == true,
+        toolCallId = row.toolCallIdentity(),
     )
+}
+
+internal fun JsonObject.toolCallIdentity(): String? {
+    val keys = sequenceOf("tool_call_id", "tool_id", "call_id")
+    val direct = keys.mapNotNull { key -> string(key) }
+        .firstOrNull(String::isNotBlank)
+    if (direct != null) return direct
+
+    return sequenceOf("tool_call", "tool")
+        .mapNotNull { key -> this[key] as? JsonObject }
+        .flatMap { nested -> keys.mapNotNull { key -> nested.string(key) } }
+        .firstOrNull(String::isNotBlank)
 }
 
 private fun JsonElement?.scalarIdentity(): String? =
@@ -162,7 +173,7 @@ private fun JsonElement.asObject(errorMessage: String): JsonObject =
     this as? JsonObject ?: throw IOException(errorMessage)
 
 internal fun JsonObject.string(key: String): String? =
-    get(key)?.jsonPrimitive?.contentOrNull
+    (get(key) as? JsonPrimitive)?.contentOrNull
 
 internal fun JsonObject.boolean(key: String): Boolean? =
-    get(key)?.jsonPrimitive?.booleanOrNull
+    (get(key) as? JsonPrimitive)?.booleanOrNull

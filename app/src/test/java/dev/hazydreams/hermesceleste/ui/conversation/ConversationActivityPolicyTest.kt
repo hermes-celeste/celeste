@@ -72,27 +72,6 @@ class ConversationActivityPolicyTest {
     }
 
     @Test
-    fun futureSteerAndQueueActionsHaveExplicitLabelsAndDraftCapability() {
-        val steer = selectConversationActivity(
-            scope = scope(),
-            turnState = TurnState.Running,
-            actionModel = ConversationActionModel(ActiveTurnAction.SteerWithMessage),
-        )
-        val queue = selectConversationActivity(
-            scope = scope(),
-            turnState = TurnState.Running,
-            actionModel = ConversationActionModel(ActiveTurnAction.QueueMessage),
-        )
-
-        assertEquals(ConversationComposerAction.SteerWithMessage, steer.composerAction)
-        assertEquals("Steer with message", steer.composerAction.label)
-        assertTrue(steer.draftEnabled)
-        assertEquals(ConversationComposerAction.QueueMessage, queue.composerAction)
-        assertEquals("Queue message", queue.composerAction.label)
-        assertTrue(queue.draftEnabled)
-    }
-
-    @Test
     fun visibleStreamingOutputReplacesWorkingAndKeepsTheAnnouncementKeyStable() {
         val first = selectConversationActivity(
             scope = scope(),

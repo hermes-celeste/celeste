@@ -15,8 +15,10 @@ import dev.hazydreams.hermesceleste.network.GatewayConnectionState
 import dev.hazydreams.hermesceleste.network.GatewayCredential
 import dev.hazydreams.hermesceleste.network.GatewayEvent
 import dev.hazydreams.hermesceleste.network.StoredSession
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
@@ -24,8 +26,10 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.resetMain
+import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonNull
@@ -112,16 +116,32 @@ class CelesteViewModelTest {
         gateway.emit("message.start")
         gateway.emit(
             "tool.start",
-            """{"name":"terminal","args_text":"pwd"}""",
+            """{"name":"terminal","args_text":"pwd","tool_call_id":"call-1"}""",
+        )
+        gateway.emit(
+            "tool.start",
+            """{"name":"terminal","args_text":"pwd","tool_call_id":"call-1"}""",
         )
         advanceUntilIdle()
 
         val pending = viewModel.state.value.messages.single { it.role == "tool" }
         assertTrue(pending.pending)
         assertEquals("terminal", pending.toolName)
+        assertEquals("call-1", pending.toolCallId)
         assertEquals(pending.id, viewModel.state.value.activityCandidates.pendingTool?.identity)
 
-        gateway.emit("tool.complete", """{"name":"terminal","output":"/home/juno"}""")
+        gateway.emit(
+            "tool.complete",
+            """{"name":"terminal","output":"/home/juno","tool_call_id":"call-1"}""",
+        )
+        gateway.emit(
+            "tool.complete",
+            """{"name":"terminal","output":"duplicate","tool_call_id":"call-1"}""",
+        )
+        gateway.emit(
+            "tool.complete",
+            """{"name":"missing","output":"unmatched"}""",
+        )
         advanceUntilIdle()
 
         val completed = viewModel.state.value.messages.single { it.role == "tool" }
@@ -129,6 +149,43 @@ class CelesteViewModelTest {
         assertFalse(completed.pending)
         assertEquals("/home/juno", completed.text)
         assertNull(viewModel.state.value.activityCandidates.pendingTool)
+        viewModel.leaveConversation()
+    }
+
+    @Test
+    fun concurrentSameNameToolsCompleteByProtocolIdentity() = runTest {
+        val gateway = FakeGateway()
+        val viewModel = openConversation(gateway)
+
+        gateway.emit(
+            "tool.start",
+            """{"name":"terminal","args_text":"pwd","tool_call_id":"call-a"}""",
+        )
+        gateway.emit(
+            "tool.start",
+            """{"name":"terminal","args_text":"ls","tool_call_id":"call-b"}""",
+        )
+        gateway.emit(
+            "tool.complete",
+            """{"name":"terminal","output":"files","tool_call_id":"call-b"}""",
+        )
+        advanceUntilIdle()
+
+        val afterSecondCompletion = viewModel.state.value.messages.filter { it.role == "tool" }
+        assertEquals(2, afterSecondCompletion.size)
+        assertTrue(afterSecondCompletion.single { it.toolCallId == "call-a" }.pending)
+        assertEquals("files", afterSecondCompletion.single { it.toolCallId == "call-b" }.text)
+        assertFalse(afterSecondCompletion.single { it.toolCallId == "call-b" }.pending)
+
+        gateway.emit(
+            "tool.complete",
+            """{"name":"terminal","output":"/home/juno","tool_call_id":"call-a"}""",
+        )
+        advanceUntilIdle()
+
+        val completed = viewModel.state.value.messages.filter { it.role == "tool" }
+        assertTrue(completed.all { !it.pending })
+        assertEquals("/home/juno", completed.single { it.toolCallId == "call-a" }.text)
         viewModel.leaveConversation()
     }
 
@@ -148,6 +205,45 @@ class CelesteViewModelTest {
         gateway.emit("message.delta", """{"text":"current"}""")
         advanceUntilIdle()
         assertEquals("current", viewModel.state.value.streamingText)
+        viewModel.leaveConversation()
+    }
+
+    @Test
+    fun cancelledPromptCannotWriteAfterSwitchingConversation() = runTest {
+        val firstGateway = FakeGateway()
+        val secondGateway = FakeGateway()
+        val dashboard = FakeDashboard(firstGateway)
+        val viewModel = CelesteViewModel(
+            dashboard = dashboard,
+            reconnectDelayMillis = { _, _ -> 0L },
+        )
+        advanceUntilIdle()
+        viewModel.updateDashboardUrl("http://hermes.test:9119")
+        viewModel.findDashboard()
+        viewModel.loadSessions()
+        advanceUntilIdle()
+        viewModel.openSession(dashboard.session)
+        advanceUntilIdle()
+
+        val promptGate = CompletableDeferred<Unit>()
+        firstGateway.promptGate = promptGate
+        viewModel.updateDraft("old conversation prompt")
+        viewModel.sendMessage()
+        runCurrent()
+        assertEquals(1, firstGateway.methods.count { it == "prompt.submit" })
+
+        dashboard.queueGateway(secondGateway)
+        val replacement = dashboard.session.copy(id = "stored-replacement", title = "Replacement")
+        viewModel.openSession(replacement)
+        advanceUntilIdle()
+
+        promptGate.complete(Unit)
+        advanceUntilIdle()
+
+        assertEquals("Replacement", viewModel.state.value.activeSummary?.title)
+        assertTrue(viewModel.state.value.messages.isEmpty())
+        assertEquals(1, firstGateway.methods.count { it == "prompt.submit" })
+        assertEquals(1, secondGateway.methods.count { it == "session.resume" })
         viewModel.leaveConversation()
     }
 
@@ -186,6 +282,37 @@ class CelesteViewModelTest {
     }
 
     @Test
+    fun authoritativeIdleTransitionsClearStreamingAndActivityCandidates() = runTest {
+        val gateway = FakeGateway()
+        val viewModel = openConversation(gateway)
+
+        gateway.emit("message.start")
+        gateway.emit("message.delta", """{"text":"stale stream"}""")
+        advanceUntilIdle()
+        assertEquals("stale stream", viewModel.state.value.streamingText)
+
+        gateway.emit("session.busy", """{"busy":false}""")
+        advanceUntilIdle()
+        assertEquals(TurnState.Idle, viewModel.state.value.turnState)
+        assertEquals("", viewModel.state.value.streamingText)
+        assertEquals(ConversationActivityCandidates(), viewModel.state.value.activityCandidates)
+
+        gateway.emit(
+            "tool.start",
+            """{"name":"terminal","args_text":"pwd","tool_call_id":"call-1"}""",
+        )
+        advanceUntilIdle()
+        assertTrue(viewModel.state.value.activityCandidates.pendingTool != null)
+
+        gateway.emit("session.info", """{"running":false}""")
+        advanceUntilIdle()
+        assertEquals(TurnState.Idle, viewModel.state.value.turnState)
+        assertEquals("", viewModel.state.value.streamingText)
+        assertEquals(ConversationActivityCandidates(), viewModel.state.value.activityCandidates)
+        viewModel.leaveConversation()
+    }
+
+    @Test
     fun cancellationEventIsSilentThroughTheSharedFailureSanitizer() = runTest {
         val gateway = FakeGateway()
         val viewModel = openConversation(gateway)
@@ -195,6 +322,21 @@ class CelesteViewModelTest {
 
         assertEquals(TurnState.Idle, viewModel.state.value.turnState)
         assertNull(viewModel.state.value.errorMessage)
+        viewModel.leaveConversation()
+    }
+
+    @Test
+    fun rawServerErrorBodiesUseFixedFailureCopy() = runTest {
+        val gateway = FakeGateway()
+        val viewModel = openConversation(gateway)
+
+        gateway.emit(
+            "message.error",
+            """{"message":{"url":"https://private.test/api","token":"secret","path":"/home/user/.ssh/id_rsa"}}""",
+        )
+        advanceUntilIdle()
+
+        assertEquals("Hermes reported an error.", viewModel.state.value.errorMessage)
         viewModel.leaveConversation()
     }
 
@@ -307,7 +449,7 @@ class CelesteViewModelTest {
 
         assertEquals(ConnectionPhase.ManualSetup, viewModel.state.value.connectionPhase)
         assertNull(viewModel.state.value.sessions)
-        assertEquals("Hermes rejected profile access.", viewModel.state.value.errorMessage)
+        assertEquals("Could not load Hermes conversations.", viewModel.state.value.errorMessage)
     }
 
     @Test
@@ -403,6 +545,11 @@ class CelesteViewModelTest {
         private val authRequired: Boolean = false,
     ) : DashboardService {
         var profileFailure: Throwable? = null
+        private val queuedGateways = mutableListOf<FakeGateway>()
+
+        fun queueGateway(next: FakeGateway) {
+            queuedGateways += next
+        }
 
         val session = StoredSession(
             id = "stored-42",
@@ -455,7 +602,8 @@ class CelesteViewModelTest {
         override fun createGateway(
             baseUrl: String,
             credential: GatewayCredential,
-        ): GatewayConnection = gateway
+        ): GatewayConnection =
+            if (queuedGateways.isEmpty()) gateway else queuedGateways.removeAt(0)
     }
 
     private class FakeGateway : GatewayConnection {
@@ -470,6 +618,7 @@ class CelesteViewModelTest {
         var createCount = 0
         var failHealthCheck = false
         var connectFailure: Throwable? = null
+        var promptGate: CompletableDeferred<Unit>? = null
         var resumePayload: JsonObject = resumePayload(messages = emptyList(), running = false)
 
         override suspend fun connect() {
@@ -502,7 +651,12 @@ class CelesteViewModelTest {
                     }
                     buildJsonObject { put("sessions", "healthy") }
                 }
-                "prompt.submit" -> buildJsonObject { put("status", "streaming") }
+                "prompt.submit" -> {
+                    promptGate?.let { gate ->
+                        withContext(NonCancellable) { gate.await() }
+                    }
+                    buildJsonObject { put("status", "streaming") }
+                }
                 "session.interrupt" -> buildJsonObject { put("status", "interrupting") }
                 else -> buildJsonObject {}
             }
