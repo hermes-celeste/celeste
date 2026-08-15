@@ -189,7 +189,10 @@ class CelesteViewModelTest {
 
         assertEquals(ConnectionPhase.ManualSetup, viewModel.state.value.connectionPhase)
         assertNull(viewModel.state.value.sessions)
-        assertEquals("Hermes rejected profile access.", viewModel.state.value.errorMessage)
+        val notice = requireNotNull(viewModel.state.value.notice)
+        assertEquals(UiNoticeCategory.AuthenticationRequired, notice.category)
+        assertEquals(UiRecoveryAction.SignIn, notice.recovery)
+        assertEquals("Your Hermes sign-in has expired. Sign in again.", notice.message)
     }
 
     @Test

@@ -5,6 +5,7 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
@@ -27,6 +28,8 @@ import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
+import okhttp3.Call
+import okhttp3.Callback
 import okhttp3.Cookie
 import okhttp3.CookieJar
 import okhttp3.HttpUrl
@@ -374,9 +377,11 @@ class DashboardClient(
             .post(ByteArray(0).toRequestBody(null))
             .build()
         try {
-            httpClient.newCall(request).execute().use { response ->
+            executeHttp(request).use { response ->
                 if (response.code !in 200..399) throw failureFor(response.code, "Hermes sign-out")
             }
+        } catch (error: CancellationException) {
+            throw error
         } catch (error: DashboardFailure) {
             throw error
         } catch (error: IOException) {
@@ -444,7 +449,7 @@ class DashboardClient(
         }
     }
 
-    private fun fetchProviders(baseUrl: String): List<AuthProvider> {
+    private suspend fun fetchProviders(baseUrl: String): List<AuthProvider> {
         val root = executeJson(
             Request.Builder()
                 .url("$baseUrl/api/auth/providers")
@@ -462,7 +467,7 @@ class DashboardClient(
             .getOrElse { throw IOException("Hermes authentication providers could not be read.") }
     }
 
-    private fun mintWebSocketTicket(baseUrl: String): String {
+    private suspend fun mintWebSocketTicket(baseUrl: String): String {
         val root = executeJson(
             Request.Builder()
                 .url("$baseUrl/api/auth/ws-ticket")
@@ -476,18 +481,50 @@ class DashboardClient(
             ?: throw IOException("Hermes did not return a WebSocket ticket.")
     }
 
-    private fun executeJson(request: Request, operation: String) = try {
-        httpClient.newCall(request).execute().use { response ->
+    private suspend fun executeJson(request: Request, operation: String) = try {
+        executeHttp(request).use { response ->
             if (!response.isSuccessful) throw failureFor(response.code, operation)
             val body = response.body.string()
             runCatching { json.parseToJsonElement(body) }
                 .getOrElse { throw InvalidDashboardResponse("$operation returned an unreadable response.", it) }
         }
+    } catch (error: CancellationException) {
+        throw error
     } catch (error: DashboardFailure) {
         throw error
     } catch (error: IOException) {
         throw TransportUnavailable("Could not reach Hermes for $operation.", error)
     }
+
+    /**
+     * OkHttp's blocking execute does not reliably observe coroutine cancellation.
+     * Keep the call cancellable so parent/job cancellation reaches the socket and
+     * remains CancellationException rather than becoming a dashboard failure.
+     */
+    private suspend fun executeHttp(request: Request): Response =
+        suspendCancellableCoroutine { continuation ->
+            val call = httpClient.newCall(request)
+            val completed = AtomicBoolean(false)
+            continuation.invokeOnCancellation {
+                if (completed.compareAndSet(false, true)) call.cancel()
+            }
+            call.enqueue(object : Callback {
+                override fun onFailure(call: Call, error: IOException) {
+                    if (completed.compareAndSet(false, true)) {
+                        continuation.resumeWithException(error)
+                    }
+                }
+
+                override fun onResponse(call: Call, response: Response) {
+                    if (completed.compareAndSet(false, true)) {
+                        continuation.resume(response)
+                    } else {
+                        response.close()
+                    }
+                }
+            })
+        }
+
 
     private fun failureFor(code: Int, operation: String): DashboardFailure = when (code) {
         401, 403 -> AuthenticationRejected("$operation needs sign-in.")

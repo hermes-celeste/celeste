@@ -4,6 +4,8 @@ import java.io.IOException
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicLong
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
@@ -102,10 +104,10 @@ class HermesGateway(
 
         val endpoint = try {
             endpointProvider()
+        } catch (error: CancellationException) {
+            throw error
         } catch (error: Throwable) {
-            mutableState.value = GatewayConnectionState.Disconnected(
-                error.message ?: "Could not refresh the Hermes connection.",
-            )
+            mutableState.value = GatewayConnectionState.Disconnected(connectionFailureReason(error))
             throw error
         }
 
@@ -145,22 +147,20 @@ class HermesGateway(
             override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
                 if (generation != socketGeneration.get()) return
                 handleDisconnect(
-                    reason = reason.ifBlank { "Hermes closed the connection ($code)." },
+                    reason = "Hermes connection closed.",
                     opened = opened,
+                    error = TransportUnavailable("Hermes connection closed before a response was received."),
                 )
             }
 
             override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
                 if (generation != socketGeneration.get()) return
-                val reason = when (response?.code) {
-                    401, 403 -> "Hermes rejected the dashboard credential."
-                    else -> t.message ?: "The Hermes connection failed."
-                }
                 val error = when (response?.code) {
-                    401, 403 -> AuthenticationRejected(reason)
-                    else -> IOException(reason, t)
+                    401, 403 -> AuthenticationRejected("Hermes rejected the dashboard credential.")
+                    429 -> RateLimited("Hermes rate-limited the dashboard connection.")
+                    else -> TransportUnavailable("Could not open the Hermes connection.", t)
                 }
-                handleDisconnect(reason, opened, error)
+                handleDisconnect(connectionFailureReason(error), opened, error)
             }
         }
 
@@ -168,13 +168,26 @@ class HermesGateway(
         socket = candidate
         try {
             withTimeout(connectTimeoutMillis) { opened.await() }
+        } catch (error: CancellationException) {
+            if (socket === candidate) {
+                candidate.cancel()
+                socket = null
+                if (error is TimeoutCancellationException &&
+                    mutableState.value !is GatewayConnectionState.Disconnected
+                ) {
+                    mutableState.value = GatewayConnectionState.Disconnected(
+                        "Hermes did not finish connecting.",
+                    )
+                }
+            }
+            throw error
         } catch (error: Throwable) {
             if (socket === candidate) {
                 candidate.cancel()
                 socket = null
                 if (mutableState.value !is GatewayConnectionState.Disconnected) {
                     mutableState.value = GatewayConnectionState.Disconnected(
-                        error.message ?: "Hermes did not finish connecting.",
+                        connectionFailureReason(error),
                     )
                 }
             }
@@ -222,6 +235,15 @@ class HermesGateway(
         mutableState.value = GatewayConnectionState.Closed
         failPending(IOException("Hermes connection closed."))
         active?.close(1000, "Celeste closed the connection")
+    }
+
+    private fun connectionFailureReason(error: Throwable): String = when (error) {
+        is AuthenticationRejected -> "Hermes rejected the dashboard credential."
+        is RateLimited -> "Hermes is busy right now."
+        is InvalidDashboardResponse -> "Hermes returned an unexpected response."
+        is TransportUnavailable -> "Hermes is unavailable right now."
+        is TimeoutCancellationException -> "Hermes did not finish connecting."
+        else -> "The Hermes connection failed."
     }
 
     private fun handleFrame(root: JsonObject) {

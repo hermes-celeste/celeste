@@ -30,6 +30,8 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -86,7 +88,7 @@ internal fun CelesteRoutes(ui: CelesteUiState, viewModel: CelesteViewModel) {
                     draft = ui.draft,
                     turnState = ui.turnState,
                     loadingMessage = ui.loadingMessage,
-                    errorMessage = ui.errorMessage,
+                    notice = ui.notice,
                     onDraftChange = viewModel::updateDraft,
                     onSend = viewModel::sendMessage,
                     onInterrupt = viewModel::interrupt,
@@ -100,10 +102,11 @@ internal fun CelesteRoutes(ui: CelesteUiState, viewModel: CelesteViewModel) {
                 profiles = ui.profiles,
                 selectedProfile = ui.selectedProfile,
                 loadingMessage = ui.loadingMessage,
-                errorMessage = ui.errorMessage,
+                notice = ui.notice,
                 onProfileSelected = viewModel::selectProfile,
                 onNewConversation = viewModel::createNewConversation,
                 onSessionSelected = viewModel::openSession,
+                onRetry = viewModel::loadSessions,
                 onSettings = { destination = CelesteDestination.Settings },
             )
 
@@ -111,7 +114,7 @@ internal fun CelesteRoutes(ui: CelesteUiState, viewModel: CelesteViewModel) {
                 ui.connectionPhase == ConnectionPhase.Restoring -> ConnectionLoadingScreen()
 
             ui.connectionPhase == ConnectionPhase.RestoreFailed -> ConnectionUnavailableScreen(
-                errorMessage = ui.errorMessage,
+                notice = ui.notice,
                 onRetry = viewModel::retrySavedConnection,
                 onSettings = { destination = CelesteDestination.Gateway },
             )
@@ -143,7 +146,7 @@ private fun GatewaySettingsRoute(
             sessionToken = ui.sessionToken,
             connectionPhase = ui.connectionPhase,
             loadingMessage = ui.loadingMessage,
-            errorMessage = ui.errorMessage,
+            notice = ui.notice,
         ),
         actions = GatewaySettingsActions(
             onUsernameChange = viewModel::updateUsername,
@@ -284,6 +287,7 @@ internal fun EditorialDivider(modifier: Modifier = Modifier) {
 @Composable
 internal fun StatusMessage(message: String, color: Color, showSpinner: Boolean = false) {
     Row(
+        modifier = Modifier.semantics { stateDescription = message },
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(9.dp),
     ) {

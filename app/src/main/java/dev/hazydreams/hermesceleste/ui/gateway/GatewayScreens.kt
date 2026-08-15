@@ -54,6 +54,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import dev.hazydreams.hermesceleste.ConnectionPhase
+import dev.hazydreams.hermesceleste.UiNotice
 import dev.hazydreams.hermesceleste.connection.SavedAuthMode
 import dev.hazydreams.hermesceleste.network.DashboardProbeResult
 import dev.hazydreams.hermesceleste.ui.CelesteBackdrop
@@ -83,7 +84,7 @@ internal data class GatewaySettingsUiState(
     val sessionToken: String,
     val connectionPhase: ConnectionPhase,
     val loadingMessage: String?,
-    val errorMessage: String?,
+    val notice: UiNotice?,
 )
 
 internal data class GatewaySettingsActions(
@@ -125,7 +126,7 @@ internal fun ConnectionLoadingScreen() {
 
 @Composable
 internal fun ConnectionUnavailableScreen(
-    errorMessage: String?,
+    notice: UiNotice?,
     onRetry: () -> Unit,
     onSettings: () -> Unit,
 ) {
@@ -147,9 +148,9 @@ internal fun ConnectionUnavailableScreen(
                 color = CelesteMuted,
                 style = MaterialTheme.typography.bodyLarge,
             )
-            errorMessage?.let {
+            notice?.let {
                 Spacer(Modifier.height(26.dp))
-                StatusMessage(it, CelesteError)
+                StatusMessage(it.message, CelesteError)
             }
             Spacer(Modifier.height(34.dp))
             CelestePrimaryButton(
@@ -233,7 +234,7 @@ internal fun GatewaySettingsScreen(
     val sessionToken = state.sessionToken
     val connectionPhase = state.connectionPhase
     val loadingMessage = state.loadingMessage
-    val errorMessage = state.errorMessage
+    val notice = state.notice
     val onBack = actions.onBack
     var address by rememberSaveable(dashboardUrl) { mutableStateOf(dashboardUrl) }
     var confirmForgetConnection by remember { mutableStateOf(false) }
@@ -366,14 +367,12 @@ internal fun GatewaySettingsScreen(
                 EditorialDivider()
             }
 
-            val visibleError = errorMessage.takeUnless {
-                connectionPhase == ConnectionPhase.AuthenticationRequired
-            }
-            AnimatedVisibility(visibleError != null || loadingMessage != null) {
+            val visibleNotice = notice
+            AnimatedVisibility(visibleNotice != null || loadingMessage != null) {
                 Column(modifier = Modifier.padding(vertical = 22.dp)) {
                     loadingMessage?.let { StatusMessage(it, CelesteBlue, showSpinner = true) }
-                    if (loadingMessage != null && visibleError != null) Spacer(Modifier.height(10.dp))
-                    visibleError?.let { StatusMessage(it, CelesteError) }
+                    if (loadingMessage != null && visibleNotice != null) Spacer(Modifier.height(10.dp))
+                    visibleNotice?.let { StatusMessage(it.message, CelesteError) }
                 }
             }
 
@@ -385,7 +384,7 @@ internal fun GatewaySettingsScreen(
             }
             val showPrimaryAction = !isConnected || addressChanged
             if (showPrimaryAction) {
-                Spacer(Modifier.height(if (visibleError == null && loadingMessage == null) 28.dp else 4.dp))
+                Spacer(Modifier.height(if (visibleNotice == null && loadingMessage == null) 28.dp else 4.dp))
                 CelestePrimaryButton(
                     text = when {
                         effectiveProbe == null -> "Find my Hermes"
