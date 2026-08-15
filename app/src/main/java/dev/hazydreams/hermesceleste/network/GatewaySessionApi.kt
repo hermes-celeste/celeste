@@ -104,8 +104,7 @@ suspend fun GatewayConnection.resumeStoredSession(
             ?: originKey,
         profile = firstResumeString(result, info, "profile", "profile_id", "profile_name")
             ?: profile?.trim()?.takeIf(String::isNotBlank),
-        serverReasoningAllowed = reasoningDisplayCapability(result)
-            ?: info?.let(::reasoningDisplayCapability),
+        serverReasoningAllowed = null,
     )
 }
 
@@ -117,17 +116,6 @@ private fun firstResumeString(
     .mapNotNull { key -> result.string(key) ?: info?.string(key) }
     .map(String::trim)
     .firstOrNull(String::isNotBlank)
-
-/** Read only an explicit server disclosure bit; reasoning effort is not a capability bit. */
-private fun reasoningDisplayCapability(value: JsonObject): Boolean? {
-    sequenceOf("show_reasoning", "reasoning_visible", "reasoning_enabled", "server_reasoning")
-        .mapNotNull(value::boolean)
-        .firstOrNull()
-        ?.let { return it }
-    (value["display"] as? JsonObject)?.boolean("show_reasoning")?.let { return it }
-    (value["capabilities"] as? JsonObject)?.boolean("reasoning")?.let { return it }
-    return null
-}
 
 suspend fun GatewayConnection.submitPrompt(runtimeSessionId: String, text: String): JsonObject {
     require(runtimeSessionId.isNotBlank()) { "No Hermes conversation is open." }

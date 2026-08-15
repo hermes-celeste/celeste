@@ -1,11 +1,15 @@
 package dev.hazydreams.hermesceleste.network
 
 import java.time.Instant
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.booleanOrNull
+import kotlinx.serialization.json.buildJsonArray
+import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
 
 /** The origin/profile/session chain that authorizes an activity projection. */
@@ -214,6 +218,12 @@ private val sessionTokenHeaderPattern = Regex(
 private val credentialAssignmentPattern = Regex(
     "(?i)(\\b(?:api[_-]?key|api[_-]?secret|access[_-]?token|refresh[_-]?token|auth[_-]?token|session[_-]?token|id[_-]?token|client[_-]?secret|password|passwd|secret|credential|private[_-]?key|token)\\s*[:=]\\s*[\\\"']?)[^\\\"'\\s,}&]+",
 )
+private val quotedCredentialAssignmentPattern = Regex(
+    """(?i)([\"'](?:api[_-]?key|api[_-]?secret|access[_-]?token|refresh[_-]?token|auth[_-]?token|session[_-]?token|id[_-]?token|client[_-]?secret|password|passwd|secret|credential|private[_-]?key|token|key)[\"']\s*:\s*)(\"(?:\\.|[^\"\\])*\"|[^,}\]\s]+)""",
+)
+private val credentialJsonKeyPattern = Regex(
+    "(?i)^(?:api[_-]?key|api[_-]?secret|access[_-]?token|refresh[_-]?token|auth[_-]?token|session[_-]?token|id[_-]?token|client[_-]?secret|password|passwd|secret|credential|private[_-]?key|token|key)$",
+)
 private val credentialQueryPattern = Regex(
     "(?i)([?&](?:api[_-]?key|api[_-]?secret|access[_-]?token|refresh[_-]?token|auth[_-]?token|session[_-]?token|id[_-]?token|client[_-]?secret|password|secret|credential|token|key)=)[^&#\\s]+",
 )
@@ -226,15 +236,43 @@ private val hiddenReasoningTagPattern = Regex(
 )
 
 private fun redactActivitySecrets(raw: String): String {
-    var safe = privateKeyPattern.replace(raw, "[redacted]")
+    var safe = redactStructuredJson(raw)
+    safe = privateKeyPattern.replace(safe, "[redacted]")
     safe = authorizationHeaderPattern.replace(safe) { "${it.groupValues[1]}[redacted]" }
     safe = authorizationValuePattern.replace(safe) { "${it.groupValues[1]}[redacted]" }
     safe = bearerPattern.replace(safe, "Bearer [redacted]")
     safe = cookieHeaderPattern.replace(safe) { "${it.groupValues[1]}[redacted]" }
     safe = sessionTokenHeaderPattern.replace(safe) { "${it.groupValues[1]}[redacted]" }
     safe = credentialAssignmentPattern.replace(safe) { "${it.groupValues[1]}[redacted]" }
+    safe = quotedCredentialAssignmentPattern.replace(safe) {
+        "${it.groupValues[1]}\"[redacted]\""
+    }
     safe = credentialQueryPattern.replace(safe) { "${it.groupValues[1]}[redacted]" }
     return knownTokenPattern.replace(safe, "[redacted]")
+}
+
+private fun redactStructuredJson(raw: String): String {
+    val element = runCatching { Json.parseToJsonElement(raw) }.getOrNull()
+    return when (element) {
+        is JsonObject, is JsonArray -> redactJsonElement(element).toString()
+        else -> raw
+    }
+}
+
+private fun redactJsonElement(element: JsonElement): JsonElement = when (element) {
+    is JsonObject -> buildJsonObject {
+        element.forEach { (key, value) ->
+            if (credentialJsonKeyPattern.matches(key)) {
+                put(key, JsonPrimitive("[redacted]"))
+            } else {
+                put(key, redactJsonElement(value))
+            }
+        }
+    }
+    is JsonArray -> buildJsonArray {
+        element.forEach { add(redactJsonElement(it)) }
+    }
+    else -> element
 }
 
 private fun takeCodePoints(value: String, count: Int): String {
@@ -292,7 +330,7 @@ internal object AgentActivityReducer {
                 if (
                     reasoningEnabled &&
                     projection.serverReasoningAllowed != false &&
-                    event.payload.booleanValue("verbose") != false
+                    event.payload.booleanValue("verbose") == true
                 ) {
                     applyReasoningSummary(projection, event.payload)
                 } else {
@@ -313,7 +351,6 @@ internal object AgentActivityReducer {
                     projection
                 }
             }
-            "session.info" -> applySessionInfo(projection, event.payload)
             "message.complete" -> settleOpenItems(
                 projection,
                 failed = event.payload.isFailure(),
@@ -814,7 +851,10 @@ internal object AgentActivityReducer {
                 (input == null || tool.input?.text == input.text) &&
                 (output == null || tool.output?.text == output.text)
         }
-        return matches.singleOrNull()?.index ?: -1
+        // With no event ID, one or more matching terminal rows are enough to
+        // identify a replay. If the snapshot contains duplicate rows, adding
+        // another indistinguishable card would amplify the server's ambiguity.
+        return matches.firstOrNull()?.index ?: -1
     }
 
     private fun applyReasoningSummary(
@@ -930,14 +970,6 @@ internal object AgentActivityReducer {
                 ActivityPresentationState.Available
             },
         )
-    }
-
-    private fun applySessionInfo(
-        projection: AgentActivityProjection,
-        payload: JsonObject,
-    ): AgentActivityProjection {
-        val serverAllowed = payload.reasoningDisplayCapability() ?: return projection
-        return AgentActivityReducer.applyServerReasoningCapability(projection, serverAllowed)
     }
 
     private fun malformed(projection: AgentActivityProjection): AgentActivityProjection =
@@ -1143,15 +1175,7 @@ internal fun decodeGatewayActivity(elements: List<JsonElement>): List<ActivityIt
                 // server-authored `reasoning` summary is eligible here.
                 val detail = row.reasoningDetailFrom(listOf("reasoning"), REASONING_ACTIVITY_DETAIL_LIMIT)
                     ?: return@mapNotNull null
-                // A persisted assistant `reasoning` field is not proof that the
-                // text was user-visible. Require either an explicit disclosure
-                // capability or the source-verified verbose marker; omission is
-                // deliberately fail-closed to protect provider/model reasoning.
-                val explicitCapability = row.reasoningDisplayCapability()
-                if (
-                    explicitCapability == false ||
-                    (explicitCapability != true && row.booleanValue("verbose") != true)
-                ) return@mapNotNull null
+                if (row.booleanValue("verbose") != true) return@mapNotNull null
                 ServerReasoningActivity(
                     uiKey = "",
                     source = ReasoningSource.ServerSummary,
@@ -1174,21 +1198,6 @@ private fun JsonObject.stringValue(key: String): String? =
 
 private fun JsonObject.booleanValue(key: String): Boolean? =
     (this[key] as? JsonPrimitive)?.booleanOrNull
-
-private fun JsonObject.reasoningDisplayCapability(): Boolean? {
-    val direct = sequenceOf(
-        "show_reasoning",
-        "reasoning_visible",
-        "reasoning_enabled",
-        "server_reasoning",
-    ).mapNotNull(::booleanValue).firstOrNull()
-    if (direct != null) return direct
-    val display = this["display"] as? JsonObject
-    display?.booleanValue("show_reasoning")?.let { return it }
-    val capabilities = this["capabilities"] as? JsonObject
-    capabilities?.booleanValue("reasoning")?.let { return it }
-    return null
-}
 
 private fun JsonObject.isFailure(): Boolean =
     booleanLike("is_error", "failed") ||

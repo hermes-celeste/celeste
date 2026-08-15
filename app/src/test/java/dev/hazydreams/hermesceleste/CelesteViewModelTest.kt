@@ -137,7 +137,7 @@ class CelesteViewModelTest {
         )
         gateway.emit(
             "reasoning.available",
-            """{"text":"<server-summary>","label":"Server summary"}""",
+            """{"text":"<server-summary>","label":"Server summary","verbose":true}""",
         )
         gateway.emit(
             "tool.complete",
@@ -176,6 +176,34 @@ class CelesteViewModelTest {
             viewModel.state.value.agentActivity?.capability,
         )
         assertTrue(gateway.methods.none { it.contains("activity", ignoreCase = true) })
+        viewModel.leaveConversation()
+    }
+
+    @Test
+    fun finalAssistantContentDoesNotRepeatServerReasoningSummary() = runTest {
+        val gateway = FakeGateway()
+        val viewModel = openConversation(gateway)
+
+        gateway.emit(
+            "reasoning.available",
+            """{"text":"<server-summary>","verbose":true}""",
+        )
+        gateway.emit(
+            "message.complete",
+            """{"content":"<server-summary>\n<assistant-content>","status":"complete"}""",
+        )
+        advanceUntilIdle()
+
+        val state = viewModel.state.value
+        assertEquals("<assistant-content>", state.messages.single { it.role == "assistant" }.text)
+        assertEquals(
+            "<server-summary>",
+            state.agentActivity?.items
+                ?.filterIsInstance<ServerReasoningActivity>()
+                ?.single()
+                ?.text
+                ?.text,
+        )
         viewModel.leaveConversation()
     }
 

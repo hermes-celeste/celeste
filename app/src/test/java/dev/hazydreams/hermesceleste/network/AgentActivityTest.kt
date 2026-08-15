@@ -14,37 +14,18 @@ class AgentActivityTest {
     private val now = Instant.parse("2026-08-15T12:00:00Z")
 
     @Test
-    fun statusCapabilityDecodingDistinguishesUnknownUnsupportedAndSupportedModes() {
-        assertEquals(
-            ActivityCapabilityState.Unknown,
-            decodeActivityCapability(buildJsonObject {}),
-        )
-        assertEquals(
-            ActivityCapabilityState.Unsupported,
-            decodeActivityCapability(buildJsonObject { put("activity_supported", false) }),
-        )
-        assertEquals(
-            ActivityCapabilityState.ToolOnly,
-            decodeActivityCapability(
-                buildJsonObject {
-                    put(
-                        "activity",
-                        buildJsonObject {
-                            put("supported", true)
-                            put("tools", true)
-                        },
-                    )
-                },
-            ),
-        )
-        assertEquals(
-            ActivityCapabilityState.ToolAndServerReasoning,
-            decodeActivityCapability(
-                buildJsonObject {
-                    put("activity", buildJsonObject { put("server_reasoning", true) })
-                },
-            ),
-        )
+    fun statusCapabilityDecodingIgnoresUndocumentedFields() {
+        listOf(
+            buildJsonObject { put("activity_capability", "tool_only") },
+            buildJsonObject { put("activity_support", "available") },
+            buildJsonObject { put("activity_supported", false) },
+            buildJsonObject { put("activity", buildJsonObject { put("server_reasoning", true) }) },
+            buildJsonObject {
+                put("capabilities", buildJsonObject { put("activity", "legacy") })
+            },
+        ).forEach { status ->
+            assertEquals(ActivityCapabilityState.Unknown, decodeActivityCapability(status))
+        }
     }
 
     @Test
@@ -59,6 +40,31 @@ class AgentActivityTest {
         assertFalse(detail.text.contains("synthetic-bearer-token"))
         assertFalse(detail.text.contains("synthetic-api-key"))
         assertEquals(24, detail.text.codePointCount(0, detail.text.length))
+    }
+
+    @Test
+    fun sanitizerRedactsNestedAndQuotedJsonCredentials() {
+        val structured = sanitizeActivityDetail(
+            """{"credentials":{"password":"synthetic-json-password","api_key":"synthetic-json-api-key"},"safe":"<tool-output>"}""",
+            maxCodePoints = 1_000,
+        )
+        val quotedKeyText = sanitizeActivityDetail(
+            """payload {"password":"synthetic-quoted-password"} trailing""",
+            maxCodePoints = 1_000,
+        )
+
+        listOf(structured, quotedKeyText).forEach { detail ->
+            assertTrue(detail.wasRedacted)
+            assertTrue(detail.text.contains("[redacted]"))
+        }
+        listOf(
+            "synthetic-json-password",
+            "synthetic-json-api-key",
+            "synthetic-quoted-password",
+        ).forEach { secret ->
+            assertFalse(structured.text.contains(secret))
+            assertFalse(quotedKeyText.text.contains(secret))
+        }
     }
 
     @Test
@@ -87,7 +93,10 @@ class AgentActivityTest {
             event(
                 type = "reasoning.available",
                 sessionId = "runtime-7",
-                payload = buildJsonObject { put("text", "<server-summary>") },
+                payload = buildJsonObject {
+                    put("text", "<server-summary>")
+                    put("verbose", true)
+                },
             ),
             now = now,
         )
@@ -116,13 +125,36 @@ class AgentActivityTest {
     }
 
     @Test
+    fun reasoningAvailableWithoutVerboseIsSuppressedFailClosed() {
+        val projection = initialActivityProjection(
+            originKey = "https://hermes.test",
+            profile = "default",
+            storedSessionId = "stored-42",
+            runtimeSessionId = "runtime-7",
+        )
+        val suppressed = reduceActivityEvent(
+            projection,
+            event(
+                type = "reasoning.available",
+                sessionId = "runtime-7",
+                payload = buildJsonObject { put("text", "<undisclosed-summary>") },
+            ),
+            now = now,
+        )
+
+        assertEquals(projection, suppressed)
+        assertTrue(suppressed.items.isEmpty())
+        assertEquals(ActivityCapabilityState.Unknown, suppressed.capability)
+    }
+
+    @Test
     fun snapshotDecoderKeepsToolDetailsAndServerReasoningAsDifferentItems() {
         val items = decodeGatewayActivity(
             Json.parseToJsonElement(
                 """
                 [
                   {"role":"tool","name":"terminal","tool_call_id":"call-1","args":"<tool-input>","output":"<tool-output>"},
-                  {"role":"assistant","reasoning":"<server-summary>","content":"<assistant-content>"}
+                  {"role":"assistant","reasoning":"<server-summary>","verbose":true,"content":"<assistant-content>"}
                 ]
                 """.trimIndent(),
             ).jsonArray,
@@ -279,7 +311,10 @@ class AgentActivityTest {
             event(
                 type = "reasoning.available",
                 sessionId = "runtime-7",
-                payload = buildJsonObject { put("text", "<server-summary>") },
+                payload = buildJsonObject {
+                    put("text", "<server-summary>")
+                    put("verbose", true)
+                },
             ),
             now = now,
         )
@@ -424,28 +459,27 @@ class AgentActivityTest {
     }
 
     @Test
-    fun terminalReplayWithoutEventIdDoesNotCreateSecondCard() {
+    fun duplicateTerminalRowsWithoutEventIdDoNotAmplifyReplay() {
         val projection = initialActivityProjection(
             originKey = "https://hermes.test",
             profile = "default",
             storedSessionId = "stored-42",
             runtimeSessionId = "runtime-7",
         )
+        val terminalRow = ToolActivity(
+            uiKey = "",
+            callId = null,
+            name = "terminal",
+            phase = ToolPhase.Completed,
+            input = null,
+            output = sanitizeActivityDetail("<tool-output>", TOOL_ACTIVITY_DETAIL_LIMIT),
+            startedAt = null,
+            finishedAt = now,
+            correlation = CorrelationQuality.LegacyName,
+        )
         val terminalSnapshot = AgentActivityReducer.applySnapshot(
             projection = projection,
-            items = listOf(
-                ToolActivity(
-                    uiKey = "",
-                    callId = null,
-                    name = "terminal",
-                    phase = ToolPhase.Completed,
-                    input = null,
-                    output = sanitizeActivityDetail("<tool-output>", TOOL_ACTIVITY_DETAIL_LIMIT),
-                    startedAt = null,
-                    finishedAt = now,
-                    correlation = CorrelationQuality.LegacyName,
-                ),
-            ),
+            items = listOf(terminalRow, terminalRow),
             binding = ActivityBinding(
                 originKey = "https://hermes.test/",
                 profile = "default",
@@ -470,7 +504,7 @@ class AgentActivityTest {
         )
 
         assertEquals(terminalSnapshot, replay)
-        assertEquals(1, replay.items.filterIsInstance<ToolActivity>().size)
+        assertEquals(2, replay.items.filterIsInstance<ToolActivity>().size)
     }
 
     @Test

@@ -53,84 +53,20 @@ data class DashboardProbeResult(
     val authRequired: Boolean,
     val providers: List<AuthProvider>,
     val version: String?,
-    /** Explicit server declaration only; absent means capability is unknown. */
+    /** `/api/status` has no source-verified activity capability contract. */
     val activityCapability: ActivityCapabilityState = ActivityCapabilityState.Unknown,
 ) {
     val supportsPassword: Boolean = providers.any(AuthProvider::supportsPassword)
 }
 
 /**
- * Decode only explicit activity declarations from /api/status. A version string
- * is deliberately not used as a feature gate because Hermes has no contractual
- * minimum version for this projection yet.
+ * `/api/status` does not currently expose a documented activity capability
+ * field. Leave the capability unknown until Hermes publishes a source-verified
+ * contract; observed activity events remain the feature evidence.
  */
-internal fun decodeActivityCapability(status: JsonObject): ActivityCapabilityState {
-    val direct = sequenceOf(
-        status["activity_capability"],
-        status["activity_support"],
-        status["activity"],
-    ).mapNotNull(::activityCapabilityFromElement).firstOrNull()
-    if (direct != null) return direct
+internal fun decodeActivityCapability(_status: JsonObject): ActivityCapabilityState =
+    ActivityCapabilityState.Unknown
 
-    if (
-        (status["activity_supported"] as? JsonPrimitive)?.booleanOrNull == false ||
-        (status["activity_available"] as? JsonPrimitive)?.booleanOrNull == false
-    ) {
-        return ActivityCapabilityState.Unsupported
-    }
-    if (status["activity_legacy"]?.jsonPrimitive?.booleanOrNull == true) {
-        return ActivityCapabilityState.LegacyToolOnly
-    }
-
-    val capabilities = status["capabilities"] as? JsonObject
-    return capabilities?.let { nested ->
-        activityCapabilityFromElement(nested["activity"])
-    } ?: ActivityCapabilityState.Unknown
-}
-
-private fun activityCapabilityFromElement(element: JsonElement?): ActivityCapabilityState? {
-    if (element is JsonObject) {
-        (element["supported"] as? JsonPrimitive)?.booleanOrNull?.let {
-            if (!it) return ActivityCapabilityState.Unsupported
-        }
-        (element["available"] as? JsonPrimitive)?.booleanOrNull?.let {
-            if (!it) return ActivityCapabilityState.Unsupported
-        }
-        (element["legacy"] as? JsonPrimitive)?.booleanOrNull?.let {
-            if (it) return ActivityCapabilityState.LegacyToolOnly
-        }
-        val mode = element["mode"] ?: element["state"] ?: element["capability"]
-        activityCapabilityFromElement(mode)?.let { return it }
-        val hasReasoning = sequenceOf(
-            "server_reasoning",
-            "reasoning",
-            "reasoning_events",
-            "reasoning_stream",
-        ).mapNotNull { key -> (element[key] as? JsonPrimitive)?.booleanOrNull }
-            .firstOrNull { it }
-        if (hasReasoning == true) return ActivityCapabilityState.ToolAndServerReasoning
-        val hasTools = sequenceOf("tools", "tool_events", "tool_activity")
-            .mapNotNull { key -> (element[key] as? JsonPrimitive)?.booleanOrNull }
-            .firstOrNull { it }
-        val explicitlySupported = sequenceOf("supported", "available")
-            .mapNotNull { key -> (element[key] as? JsonPrimitive)?.booleanOrNull }
-            .firstOrNull { it }
-        if (hasTools == true || explicitlySupported == true) return ActivityCapabilityState.ToolOnly
-        return null
-    }
-    val primitive = element as? JsonPrimitive ?: return null
-    primitive.booleanOrNull?.let { return if (it) ActivityCapabilityState.ToolOnly else ActivityCapabilityState.Unsupported }
-    return when (primitive.contentOrNull?.trim()?.lowercase()) {
-        "unsupported", "unavailable", "none", "false", "off" -> ActivityCapabilityState.Unsupported
-        "legacy", "legacy_tool_only", "legacy-tool-only" -> ActivityCapabilityState.LegacyToolOnly
-        "tool_only", "tool-only", "tools", "available" -> ActivityCapabilityState.ToolOnly
-        "tool_and_server_reasoning", "tool-and-server-reasoning", "reasoning" ->
-            ActivityCapabilityState.ToolAndServerReasoning
-        "stale" -> ActivityCapabilityState.Stale
-        "unknown" -> ActivityCapabilityState.Unknown
-        else -> null
-    }
-}
 
 data class StoredSession(
     val id: String,
@@ -658,8 +594,7 @@ class DashboardClient(
                     ?: originKey,
                 profile = firstResumeString(result, info, "profile", "profile_id", "profile_name")
                     ?: profile?.trim()?.takeIf(String::isNotBlank),
-                serverReasoningAllowed = reasoningDisplayCapability(result)
-                    ?: info?.let(::reasoningDisplayCapability),
+                serverReasoningAllowed = null,
             )
         }
     }
@@ -672,16 +607,6 @@ class DashboardClient(
         .mapNotNull { key -> result.string(key) ?: info?.string(key) }
         .map(String::trim)
         .firstOrNull(String::isNotBlank)
-
-    private fun reasoningDisplayCapability(value: JsonObject): Boolean? {
-        sequenceOf("show_reasoning", "reasoning_visible", "reasoning_enabled", "server_reasoning")
-            .mapNotNull(value::boolean)
-            .firstOrNull()
-            ?.let { return it }
-        (value["display"] as? JsonObject)?.boolean("show_reasoning")?.let { return it }
-        (value["capabilities"] as? JsonObject)?.boolean("reasoning")?.let { return it }
-        return null
-    }
 
     private suspend fun <T> requestSingleWebSocketResponse(
         request: Request,

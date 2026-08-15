@@ -1300,13 +1300,21 @@ internal class CelesteViewModel(
         interim: Boolean = false,
     ) {
         val streamed = mutableState.value.streamingText
-        val finalText = when {
+        val rawFinalText = when {
             suppliedContent.isBlank() -> streamed
             streamed.isBlank() -> suppliedContent
             suppliedContent.startsWith(streamed) -> suppliedContent
             streamed.startsWith(suppliedContent) -> streamed
             else -> suppliedContent
         }.trimEnd()
+        // Hermes can include the same explicitly disclosed reasoning summary in
+        // the assistant's final content. Keep the labelled activity item, but do
+        // not render that summary a second time as ordinary assistant text.
+        val finalText = if (interim) {
+            rawFinalText
+        } else {
+            deduplicateReasoningFromFinalContent(rawFinalText)
+        }
         val currentMessages = mutableState.value.messages
         val previous = currentMessages.lastOrNull()
         val continuesInterim = !interim &&
@@ -1315,6 +1323,8 @@ internal class CelesteViewModel(
             finalText.isNotBlank() &&
             (finalText.startsWith(previous.text) || previous.text.startsWith(finalText))
         val messages = when {
+            !interim && previous?.let(::isReasoningOnlyInterim) == true && finalText.isBlank() ->
+                currentMessages.dropLast(1)
             continuesInterim -> currentMessages.dropLast(1) + previous.copy(
                 text = if (finalText.length >= previous.text.length) finalText else previous.text,
                 interim = false,
@@ -1332,6 +1342,35 @@ internal class CelesteViewModel(
             streamingText = "",
             turnState = if (keepRunning) TurnState.Running else TurnState.Idle,
         )
+    }
+
+    private fun deduplicateReasoningFromFinalContent(raw: String): String {
+        var content = raw
+        val reasoningDetails = mutableState.value.agentActivity?.items
+            .filterIsInstance<ServerReasoningActivity>()
+            .map { it.text.text.trim() }
+            .filter(String::isNotBlank)
+            .distinct()
+            .sortedByDescending { it.length }
+        reasoningDetails.forEach { reasoning ->
+            val normalized = content.trim()
+            content = when {
+                normalized == reasoning -> ""
+                normalized.startsWith(reasoning) -> normalized.removePrefix(reasoning).trimStart()
+                normalized.endsWith(reasoning) -> normalized.removeSuffix(reasoning).trimEnd()
+                else -> content
+            }
+        }
+        return content
+    }
+
+    private fun isReasoningOnlyInterim(message: ConversationMessage): Boolean {
+        if (message.role != "assistant" || !message.interim) return false
+        val text = message.text.trim()
+        return mutableState.value.agentActivity?.items
+            ?.filterIsInstance<ServerReasoningActivity>()
+            ?.any { it.text.text.trim() == text && text.isNotBlank() }
+            == true
     }
 
     private suspend fun recreateBlankSession(
