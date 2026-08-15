@@ -44,25 +44,44 @@ class ActiveTurnProjectionTest {
     }
 
     @Test
-    fun resumeProjectionAddsInflightUserAndCorrectionsOnlyOnce() {
+    fun repeatedCorrectionsAndOriginalMatchingCorrectionKeepIndexedFifoOccurrences() {
         val resumed = ResumedSession(
             runtimeSessionId = "runtime-new",
             storedSessionId = "stored-1",
             messages = listOf(
                 ConversationMessage(role = "user", text = "original", id = "user-1"),
+                ConversationMessage(role = "assistant", text = "before", id = "assistant-1"),
             ),
             running = true,
             inflightUserText = "original",
             inflightAssistantText = "working",
-            inflightCorrections = listOf(InflightCorrection("keep going")),
+            inflightCorrections = listOf(
+                InflightCorrection("original"),
+                InflightCorrection("same correction"),
+                InflightCorrection("same correction"),
+            ),
+            inflightStreaming = true,
             hasLiveProjection = true,
         )
 
         val first = projectResumedTurn(resumed)
         val second = projectResumedTurn(resumed.copy(messages = first.messages))
 
-        assertEquals(1, first.messages.count { it.role == "user" && it.text == "original" })
-        assertEquals(1, first.messages.count { it.role == "user" && it.text == "keep going" })
-        assertEquals(1, second.messages.count { it.role == "user" && it.text == "keep going" })
+        assertEquals(
+            listOf("original", "before", "working", "original", "same correction", "same correction"),
+            first.messages.map { it.text },
+        )
+        assertEquals(
+            listOf(
+                "inflight-correction-0-stored-1",
+                "inflight-correction-1-stored-1",
+                "inflight-correction-2-stored-1",
+            ),
+            first.messages
+                .mapNotNull { message ->
+                    message.id?.takeIf { it.startsWith("inflight-correction-") }
+                },
+        )
+        assertEquals(first.messages, second.messages)
     }
 }

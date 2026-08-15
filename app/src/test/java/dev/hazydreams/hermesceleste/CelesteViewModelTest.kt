@@ -333,6 +333,71 @@ class CelesteViewModelTest {
     }
 
     @Test
+    fun uncertainSubmitResolvesFromACompletedDurableOccurrenceWithoutResending() = runTest {
+        val gateway = FakeGateway()
+        val repeatedPrompt = "repeat this prompt"
+        val previous = ConversationMessage(role = "user", text = repeatedPrompt, id = "old-user")
+        gateway.resumePayload = resumePayload(messages = listOf(previous), running = false)
+        val viewModel = openConversation(gateway)
+        gateway.failNext("prompt.submit", IOException("submit response lost after completion"))
+        gateway.resumePayload = resumePayload(
+            messages = listOf(
+                previous,
+                ConversationMessage(role = "assistant", text = "completed", id = "assistant-1"),
+                ConversationMessage(role = "user", text = repeatedPrompt, id = "new-user"),
+            ),
+            running = false,
+        )
+
+        viewModel.updateDraft(repeatedPrompt)
+        viewModel.sendMessage()
+        advanceUntilIdle()
+
+        assertEquals(1, gateway.methods.count { it == "prompt.submit" })
+        assertEquals(2, gateway.methods.count { it == "session.resume" })
+        assertEquals("", viewModel.state.value.draft)
+        assertEquals(DeliveryStatus.Accepted, viewModel.state.value.deliveryStatus)
+        assertEquals(TurnState.Idle, viewModel.state.value.turnState)
+        assertEquals(2, viewModel.state.value.messages.count { it.role == "user" && it.text == repeatedPrompt })
+        viewModel.leaveConversation()
+    }
+
+    @Test
+    fun uncertainQueueResolvesFromACompletedDurableOccurrenceWithoutResending() = runTest {
+        val gateway = FakeGateway()
+        val repeatedPrompt = "repeat this queued input"
+        val previous = ConversationMessage(role = "user", text = repeatedPrompt)
+        gateway.resumePayload = resumePayload(
+            messages = listOf(previous, ConversationMessage(role = "assistant", text = "working")),
+            running = true,
+            inflightAssistantText = "working",
+            inflightStreaming = true,
+        )
+        val viewModel = openConversation(gateway)
+        gateway.failNext("prompt.submit", IOException("queue response lost after completion"))
+        gateway.resumePayload = resumePayload(
+            messages = listOf(
+                previous,
+                ConversationMessage(role = "assistant", text = "completed"),
+                ConversationMessage(role = "user", text = repeatedPrompt),
+            ),
+            running = false,
+        )
+
+        viewModel.updateDraft(repeatedPrompt)
+        viewModel.queueMessage()
+        advanceUntilIdle()
+
+        assertEquals(1, gateway.methods.count { it == "prompt.submit" })
+        assertEquals(2, gateway.methods.count { it == "session.resume" })
+        assertEquals("", viewModel.state.value.draft)
+        assertEquals(DeliveryStatus.Accepted, viewModel.state.value.deliveryStatus)
+        assertEquals(TurnState.Idle, viewModel.state.value.turnState)
+        assertEquals(2, viewModel.state.value.messages.count { it.role == "user" && it.text == repeatedPrompt })
+        viewModel.leaveConversation()
+    }
+
+    @Test
     fun removesPersistedPrefixFromInflightProjection() {
         val suffix = CelesteViewModel.unpersistedInflightText(
             inflight = "Already stored and still arriving",

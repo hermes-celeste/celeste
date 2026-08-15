@@ -18,9 +18,8 @@ internal data class ResumedTurnProjection(
 internal fun projectResumedTurn(resumed: ResumedSession): ResumedTurnProjection {
     val messages = resumed.messages.toMutableList()
     val sessionId = resumed.storedSessionId.ifBlank { resumed.runtimeSessionId }
-    val existingUserTexts = latestUserRun(messages)
-        .map(::normalizedText)
-        .toMutableSet()
+    val existingMessageIds = messages.mapNotNull { it.id?.takeIf(String::isNotBlank) }.toMutableSet()
+    val latestUserOccurrences = latestUserRun(messages).toMutableList()
     val projected = mutableListOf<ConversationMessage>()
 
     val inflightUser = normalizedText(resumed.inflightUserText)
@@ -38,17 +37,25 @@ internal fun projectResumedTurn(resumed: ResumedSession): ResumedTurnProjection 
         }
     ).map(::normalizedText).filter(String::isNotBlank)
 
-    fun isPersistedInLatestUserRun(text: String): Boolean =
-        normalizedText(text) in existingUserTexts
+    fun isPersistedInLatestUserRun(text: String): Boolean {
+        val occurrence = latestUserOccurrences.indexOf(normalizedText(text))
+        if (occurrence < 0) return false
+        latestUserOccurrences.removeAt(occurrence)
+        return true
+    }
 
-    if (inflightUser.isNotBlank() && !isPersistedInLatestUserRun(inflightUser)) {
+    val inflightUserId = "inflight-user-$sessionId"
+    if (inflightUser.isNotBlank() &&
+        inflightUserId !in existingMessageIds &&
+        !isPersistedInLatestUserRun(inflightUser)
+    ) {
         projected += ConversationMessage(
             role = "user",
             text = inflightUser,
-            id = "inflight-user-$sessionId",
+            id = inflightUserId,
             pending = true,
         )
-        existingUserTexts += inflightUser
+        existingMessageIds += inflightUserId
     }
 
     val assistant = resumed.inflightAssistantText
@@ -87,11 +94,10 @@ internal fun projectResumedTurn(resumed: ResumedSession): ResumedTurnProjection 
                 }
                 appendCorrection(
                     projected = projected,
-                    existingUserTexts = existingUserTexts,
+                    existingMessageIds = existingMessageIds,
                     correction = correction,
                     sessionId = sessionId,
                     index = index,
-                    isPersistedInLatestUserRun = ::isPersistedInLatestUserRun,
                 )
                 cursor = boundary
             }
@@ -110,11 +116,10 @@ internal fun projectResumedTurn(resumed: ResumedSession): ResumedTurnProjection 
             corrections.forEachIndexed { index, correction ->
                 appendCorrection(
                     projected = projected,
-                    existingUserTexts = existingUserTexts,
+                    existingMessageIds = existingMessageIds,
                     correction = correction,
                     sessionId = sessionId,
                     index = index,
-                    isPersistedInLatestUserRun = ::isPersistedInLatestUserRun,
                 )
             }
         }
@@ -125,11 +130,10 @@ internal fun projectResumedTurn(resumed: ResumedSession): ResumedTurnProjection 
         corrections.forEachIndexed { index, correction ->
             appendCorrection(
                 projected = projected,
-                existingUserTexts = existingUserTexts,
+                existingMessageIds = existingMessageIds,
                 correction = correction,
                 sessionId = sessionId,
                 index = index,
-                isPersistedInLatestUserRun = ::isPersistedInLatestUserRun,
             )
         }
     }
@@ -161,33 +165,30 @@ internal fun projectResumedTurn(resumed: ResumedSession): ResumedTurnProjection 
 
 private fun appendCorrection(
     projected: MutableList<ConversationMessage>,
-    existingUserTexts: MutableSet<String>,
+    existingMessageIds: MutableSet<String>,
     correction: InflightCorrection,
     sessionId: String,
     index: Int,
-    isPersistedInLatestUserRun: (String) -> Boolean,
 ) {
     val normalized = normalizedText(correction.text)
-    if (normalized.isBlank() ||
-        isPersistedInLatestUserRun(normalized) ||
-        !existingUserTexts.add(normalized) ||
-        projected.any { it.id == "inflight-correction-$index-$sessionId" }
-    ) {
-        return
-    }
+    if (normalized.isBlank()) return
+    // The gateway does not give corrections a durable ID; their FIFO index is
+    // the occurrence identity, so equal correction text must remain distinct.
+    val id = "inflight-correction-$index-$sessionId"
+    if (!existingMessageIds.add(id)) return
     projected += ConversationMessage(
         role = "user",
         text = normalized,
-        id = "inflight-correction-$index-$sessionId",
+        id = id,
         pending = true,
     )
 }
 
-private fun latestUserRun(messages: List<ConversationMessage>): Set<String> {
+private fun latestUserRun(messages: List<ConversationMessage>): List<String> {
     val latestUserIndex = messages.indexOfLast { it.role == "user" }
-    if (latestUserIndex < 0) return emptySet()
+    if (latestUserIndex < 0) return emptyList()
 
-    val texts = mutableSetOf<String>()
+    val texts = mutableListOf<String>()
     for (index in latestUserIndex downTo 0) {
         when {
             messages[index].role == "user" -> texts += normalizedText(messages[index].text)
@@ -195,7 +196,7 @@ private fun latestUserRun(messages: List<ConversationMessage>): Set<String> {
             else -> break
         }
     }
-    return texts.filter(String::isNotBlank).toSet()
+    return texts.filter(String::isNotBlank)
 }
 
 private fun isProjectedLiveAssistant(message: ConversationMessage): Boolean {

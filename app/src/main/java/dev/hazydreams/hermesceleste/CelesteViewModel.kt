@@ -134,11 +134,18 @@ private fun ActiveTurnOperationKind.composerAction(): ComposerAction = when (thi
 
 private data class AdmissionEvidence(
     val scopeKey: String,
+    val durableMessages: List<DurableMessageEvidence>,
     val inflightUserText: String,
     val inflightCorrections: List<CorrectionEvidence>,
     val queuedUserTexts: List<String>,
 )
 
+private data class DurableMessageEvidence(
+    val identity: String,
+    val occurrence: Int,
+    val role: String,
+    val text: String,
+)
 private data class CorrectionEvidence(
     val text: String,
     val assistantOffset: Int?,
@@ -881,6 +888,7 @@ internal class CelesteViewModel(
                 currentStoredSessionId = created.storedSessionId
                 authoritativeAdmissionEvidence = AdmissionEvidence(
                     scopeKey = sessionScopeKey(created.storedSessionId, selectedProfile),
+                    durableMessages = emptyList(),
                     inflightUserText = "",
                     inflightCorrections = emptyList(),
                     queuedUserTexts = emptyList(),
@@ -1547,6 +1555,7 @@ internal class CelesteViewModel(
         scopeKey: String,
     ): AdmissionEvidence = AdmissionEvidence(
         scopeKey = scopeKey,
+        durableMessages = durableMessageEvidence(resumed.messages),
         inflightUserText = resumed.inflightUserText.trim(),
         inflightCorrections = resumed.inflightCorrections.mapNotNull { correction ->
             val text = correction.text.trim()
@@ -1560,6 +1569,48 @@ internal class CelesteViewModel(
             }
         ).map(String::trim).filter(String::isNotBlank),
     )
+
+    private fun durableMessageEvidence(
+        messages: List<ConversationMessage>,
+    ): List<DurableMessageEvidence> {
+        val occurrences = mutableMapOf<String, Int>()
+        return messages.map { message ->
+            val role = message.role.trim()
+            val text = message.text.trim()
+            val identity = message.id
+                ?.trim()
+                ?.takeIf(String::isNotBlank)
+                ?.let { "id:$it" }
+                ?: "content:$role\u0000$text"
+            val occurrence = occurrences[identity] ?: 0
+            occurrences[identity] = occurrence + 1
+            DurableMessageEvidence(
+                identity = identity,
+                occurrence = occurrence,
+                role = role,
+                text = text,
+            )
+        }
+    }
+
+    private fun hasNewDurableUser(
+        operation: PendingOperation,
+        current: AdmissionEvidence,
+    ): Boolean {
+        val baseline = operation.admissionBaseline ?: return false
+        if (baseline.scopeKey != current.scopeKey) return false
+        val target = operation.text.trim()
+        val baselineOccurrences = baseline.durableMessages
+            .map { it.identity to it.occurrence }
+            .toSet()
+        // A matching text is admission evidence only when this occurrence was
+        // not present in the authoritative snapshot taken before dispatch.
+        return current.durableMessages.any { message ->
+            message.role == "user" &&
+                message.text == target &&
+                (message.identity to message.occurrence) !in baselineOccurrences
+        }
+    }
 
     private fun hasNewInflightCorrection(
         operation: PendingOperation,
@@ -1626,8 +1677,10 @@ internal class CelesteViewModel(
         val admitted = when (operation.kind) {
             ActiveTurnOperationKind.Steer,
             ActiveTurnOperationKind.Redirect -> hasNewInflightCorrection(operation, currentEvidence)
-            ActiveTurnOperationKind.Queue -> hasNewQueuedInput(operation, currentEvidence)
-            ActiveTurnOperationKind.Submit -> hasNewQueuedInput(operation, currentEvidence) ||
+            ActiveTurnOperationKind.Queue -> hasNewDurableUser(operation, currentEvidence) ||
+                hasNewQueuedInput(operation, currentEvidence)
+            ActiveTurnOperationKind.Submit -> hasNewDurableUser(operation, currentEvidence) ||
+                hasNewQueuedInput(operation, currentEvidence) ||
                 hasNewInflightUser(operation, currentEvidence)
         }
         if (admitted) {
@@ -1920,6 +1973,7 @@ internal class CelesteViewModel(
             val updatedSummary = previousSummary.copy(id = created.storedSessionId, profile = profile)
             authoritativeAdmissionEvidence = AdmissionEvidence(
                 scopeKey = sessionScopeKey(created.storedSessionId, profile),
+                durableMessages = emptyList(),
                 inflightUserText = "",
                 inflightCorrections = emptyList(),
                 queuedUserTexts = emptyList(),
