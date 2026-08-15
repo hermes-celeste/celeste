@@ -50,14 +50,32 @@ internal fun CelesteRoutes(ui: CelesteUiState, viewModel: CelesteViewModel) {
     val activeSummary = ui.activeSummary
     val sessions = ui.sessions
     var destination by rememberSaveable { mutableStateOf(CelesteDestination.Content) }
+    var settingsReturnDestination by rememberSaveable { mutableStateOf(CelesteDestination.Content) }
+
+    fun openSettings(from: CelesteDestination) {
+        settingsReturnDestination = from
+        destination = CelesteDestination.Settings
+    }
+
+    fun openBrowser() {
+        if (sessions != null) {
+            destination = CelesteDestination.Conversations
+            viewModel.openConversationBrowser()
+        }
+    }
+
+    fun closeBrowser() {
+        viewModel.closeConversationBrowser()
+        destination = CelesteDestination.Content
+    }
 
     when (destination) {
         CelesteDestination.Settings -> {
-            BackHandler { destination = CelesteDestination.Content }
+            BackHandler { destination = settingsReturnDestination }
             SettingsScreen(
                 dashboardUrl = ui.dashboardUrl,
                 connectionPhase = ui.connectionPhase,
-                onBack = { destination = CelesteDestination.Content },
+                onBack = { destination = settingsReturnDestination },
                 onGateway = { destination = CelesteDestination.Gateway },
             )
         }
@@ -76,6 +94,50 @@ internal fun CelesteRoutes(ui: CelesteUiState, viewModel: CelesteViewModel) {
             )
         }
 
+        CelesteDestination.Conversations -> {
+            if (sessions == null) {
+                BackHandler { destination = CelesteDestination.Content }
+                when (ui.connectionPhase) {
+                    ConnectionPhase.CheckingSavedConnection,
+                    ConnectionPhase.Restoring,
+                    -> ConnectionLoadingScreen()
+
+                    ConnectionPhase.RestoreFailed -> ConnectionUnavailableScreen(
+                        errorMessage = ui.errorMessage,
+                        onRetry = viewModel::retrySavedConnection,
+                        onSettings = { destination = CelesteDestination.Gateway },
+                    )
+
+                    else -> GatewaySettingsRoute(ui = ui, viewModel = viewModel, onBack = null)
+                }
+            } else {
+                BackHandler { closeBrowser() }
+                SessionListScreen(
+                    sessions = sessions,
+                    profiles = ui.profiles,
+                    selectedProfile = ui.selectedProfile,
+                    loadingMessage = ui.loadingMessage,
+                    errorMessage = ui.errorMessage,
+                    catalogState = ui.sessionCatalog,
+                    query = ui.sessionQuery,
+                    onQueryChange = viewModel::updateSessionQuery,
+                    onRefresh = viewModel::refreshSessionCatalog,
+                    onRetry = viewModel::refreshSessionCatalog,
+                    onProfileSelected = viewModel::selectProfile,
+                    onNewConversation = {
+                        destination = CelesteDestination.Content
+                        viewModel.createNewConversation()
+                    },
+                    onSessionSelected = { session ->
+                        destination = CelesteDestination.Content
+                        viewModel.openSession(session)
+                    },
+                    onSettings = { openSettings(CelesteDestination.Conversations) },
+                    onBack = ::closeBrowser,
+                )
+            }
+        }
+
         CelesteDestination.Content -> when {
             activeSummary != null -> {
                 BackHandler(onBack = viewModel::leaveConversation)
@@ -92,6 +154,7 @@ internal fun CelesteRoutes(ui: CelesteUiState, viewModel: CelesteViewModel) {
                     onInterrupt = viewModel::interrupt,
                     onReconnect = viewModel::reconnectNow,
                     onBack = viewModel::leaveConversation,
+                    onOpenBrowser = ::openBrowser,
                 )
             }
 
@@ -101,10 +164,15 @@ internal fun CelesteRoutes(ui: CelesteUiState, viewModel: CelesteViewModel) {
                 selectedProfile = ui.selectedProfile,
                 loadingMessage = ui.loadingMessage,
                 errorMessage = ui.errorMessage,
+                catalogState = ui.sessionCatalog,
+                query = ui.sessionQuery,
+                onQueryChange = viewModel::updateSessionQuery,
+                onRefresh = viewModel::refreshSessionCatalog,
+                onRetry = viewModel::refreshSessionCatalog,
                 onProfileSelected = viewModel::selectProfile,
                 onNewConversation = viewModel::createNewConversation,
                 onSessionSelected = viewModel::openSession,
-                onSettings = { destination = CelesteDestination.Settings },
+                onSettings = { openSettings(CelesteDestination.Content) },
             )
 
             ui.connectionPhase == ConnectionPhase.CheckingSavedConnection ||
@@ -123,6 +191,7 @@ internal fun CelesteRoutes(ui: CelesteUiState, viewModel: CelesteViewModel) {
 
 private enum class CelesteDestination {
     Content,
+    Conversations,
     Settings,
     Gateway,
 }

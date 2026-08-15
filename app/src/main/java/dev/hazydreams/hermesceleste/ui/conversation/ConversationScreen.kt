@@ -77,6 +77,7 @@ internal fun ConversationScreen(
     onInterrupt: () -> Unit,
     onReconnect: () -> Unit,
     onBack: () -> Unit,
+    onOpenBrowser: () -> Unit = {},
 ) {
     val listState = rememberLazyListState()
     val focusManager = LocalFocusManager.current
@@ -107,6 +108,12 @@ internal fun ConversationScreen(
                     contentPadding = PaddingValues(horizontal = 6.dp, vertical = 8.dp),
                 ) {
                     Text("←  Back", color = CelesteBlue, fontWeight = FontWeight.SemiBold)
+                }
+                TextButton(
+                    onClick = onOpenBrowser,
+                    contentPadding = PaddingValues(horizontal = 6.dp, vertical = 8.dp),
+                ) {
+                    Text("Conversations", color = CelesteBlue, fontWeight = FontWeight.SemiBold)
                 }
                 Spacer(Modifier.weight(1f))
                 if (turnState == TurnState.Running || turnState == TurnState.Synchronizing) {
