@@ -129,7 +129,16 @@ internal fun projectUiNotice(error: Throwable, scope: UiNoticeScope): UiNotice? 
         is dev.hazydreams.hermesceleste.network.RateLimited -> UiNotice.rateLimited(scope)
         is dev.hazydreams.hermesceleste.network.InvalidDashboardResponse -> UiNotice.invalidResponse(scope)
         is dev.hazydreams.hermesceleste.network.TransportUnavailable -> UiNotice.unavailable(scope)
-        is dev.hazydreams.hermesceleste.network.GatewayRpcException -> UiNotice.genericTurnFailure()
+        is dev.hazydreams.hermesceleste.network.GatewayRpcException -> when (error.code) {
+            401, 403 -> UiNotice.authentication(scope)
+            429 -> UiNotice.rateLimited(scope)
+            -32600, -32601, -32602, -32603 -> UiNotice.invalidResponse(scope)
+            else -> if (scope == UiNoticeScope.Turn) {
+                UiNotice.genericTurnFailure()
+            } else {
+                UiNotice.invalidResponse(scope)
+            }
+        }
         else -> if (scope == UiNoticeScope.Turn) UiNotice.genericTurnFailure() else UiNotice.unavailable(scope)
     }
 }

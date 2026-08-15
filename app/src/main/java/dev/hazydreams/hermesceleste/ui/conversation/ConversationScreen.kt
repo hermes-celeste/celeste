@@ -77,6 +77,7 @@ internal fun ConversationScreen(
     onSend: () -> Unit,
     onInterrupt: () -> Unit,
     onReconnect: () -> Unit,
+    onNoticeAction: (() -> Unit)? = null,
     onBack: () -> Unit,
 ) {
     val listState = rememberLazyListState()
@@ -150,7 +151,14 @@ internal fun ConversationScreen(
                     verticalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
                     loadingMessage?.let { StatusMessage(it, CelesteBlue, showSpinner = true) }
-                    notice?.let { StatusMessage(it.message, CelesteError) }
+                    notice?.let { currentNotice ->
+                        StatusMessage(currentNotice.message, CelesteError)
+                        currentNotice.recoveryLabel?.let { label ->
+                            TextButton(onClick = { (onNoticeAction ?: onReconnect)() }) {
+                                Text(label, color = CelesteBlue)
+                            }
+                        }
+                    }
                 }
             }
 

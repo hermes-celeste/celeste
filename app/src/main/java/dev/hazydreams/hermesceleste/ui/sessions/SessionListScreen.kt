@@ -37,7 +37,6 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import dev.hazydreams.hermesceleste.UiNotice
-import dev.hazydreams.hermesceleste.UiRecoveryAction
 import dev.hazydreams.hermesceleste.network.DashboardProfile
 import dev.hazydreams.hermesceleste.network.StoredSession
 import dev.hazydreams.hermesceleste.ui.CelesteBackdrop
@@ -63,6 +62,7 @@ internal fun SessionListScreen(
     onNewConversation: () -> Unit,
     onSessionSelected: (StoredSession) -> Unit,
     onRetry: () -> Unit,
+    onNoticeAction: (() -> Unit)? = null,
     onSettings: () -> Unit,
 ) {
     var profileMenuExpanded by remember { mutableStateOf(false) }
@@ -153,10 +153,12 @@ internal fun SessionListScreen(
                     verticalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
                     loadingMessage?.let { StatusMessage(it, CelesteBlue, showSpinner = true) }
-                    notice?.let {
-                        StatusMessage(it.message, CelesteError)
-                        if (it.recovery == UiRecoveryAction.Retry) {
-                            TextButton(onClick = onRetry) { Text("Retry", color = CelesteBlue) }
+                    notice?.let { currentNotice ->
+                        StatusMessage(currentNotice.message, CelesteError)
+                        currentNotice.recoveryLabel?.let { label ->
+                            TextButton(
+                                onClick = { (onNoticeAction ?: onRetry)() },
+                            ) { Text(label, color = CelesteBlue) }
                         }
                     }
                 }

@@ -14,7 +14,9 @@ import dev.hazydreams.hermesceleste.network.GatewayConnection
 import dev.hazydreams.hermesceleste.network.GatewayConnectionState
 import dev.hazydreams.hermesceleste.network.GatewayCredential
 import dev.hazydreams.hermesceleste.network.GatewayEvent
+import dev.hazydreams.hermesceleste.network.GatewayRpcException
 import dev.hazydreams.hermesceleste.network.StoredSession
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -24,6 +26,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.resetMain
+import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
 import kotlinx.serialization.json.Json
@@ -35,6 +38,7 @@ import kotlinx.serialization.json.put
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
@@ -212,6 +216,197 @@ class CelesteViewModelTest {
     }
 
     @Test
+    fun foregroundReattachesGatewayCollectorsAfterBackgrounding() = runTest {
+        val gateway = FakeGateway()
+        val viewModel = openConversation(gateway)
+
+        viewModel.onBackground()
+        gateway.emit("message.start")
+        gateway.emit("message.delta", """{"text":"stale background event"}""")
+        runCurrent()
+
+        assertEquals(TurnState.Idle, viewModel.state.value.turnState)
+        assertEquals("", viewModel.state.value.streamingText)
+
+        viewModel.onForeground()
+        advanceUntilIdle()
+        gateway.emit("message.start")
+        gateway.emit("message.delta", """{"text":"after foreground"}""")
+        advanceUntilIdle()
+
+        assertEquals(TurnState.Running, viewModel.state.value.turnState)
+        assertEquals("after foreground", viewModel.state.value.streamingText)
+        viewModel.leaveConversation()
+    }
+
+    @Test
+    fun cancelledReconciliationReleasesItsGlobalGateForForegroundRecovery() = runTest {
+        val gateway = FakeGateway()
+        val viewModel = openConversation(gateway)
+        val resumeGate = CompletableDeferred<Unit>()
+        val resumeEntered = CompletableDeferred<Unit>()
+        gateway.resumeGate = resumeGate
+        gateway.resumeEntered = resumeEntered
+
+        gateway.disconnect("reconnect for cancellation test")
+        resumeEntered.await()
+
+        viewModel.onBackground()
+        runCurrent()
+        resumeGate.complete(Unit)
+
+        viewModel.onForeground()
+        advanceUntilIdle()
+
+        assertTrue(gateway.methods.count { it == "session.resume" } >= 3)
+        assertEquals(TurnState.Idle, viewModel.state.value.turnState)
+        assertNull(viewModel.state.value.notice)
+        viewModel.leaveConversation()
+    }
+
+    @Test
+    fun staleStoppedTurnEventsCannotRearmTheConversation() = runTest {
+        val gateway = FakeGateway()
+        val viewModel = openConversation(gateway)
+        viewModel.updateDraft("Stop this turn")
+        viewModel.sendMessage()
+        gateway.emit("message.start")
+        gateway.emit("message.delta", """{"text":"safe partial"}""")
+        advanceUntilIdle()
+
+        gateway.resumePayload = resumePayload(
+            messages = listOf(
+                ConversationMessage(role = "user", text = "Stop this turn", id = "server-user"),
+                ConversationMessage(role = "assistant", text = "safe partial", id = "server-assistant"),
+            ),
+            running = false,
+        )
+        viewModel.interrupt()
+        advanceUntilIdle()
+
+        gateway.emit("message.start")
+        gateway.emit("message.delta", """{"text":"stale response"}""")
+        gateway.emit("session.busy", """{"busy":true}""")
+        gateway.emit("session.info", """{"running":true}""")
+        advanceUntilIdle()
+
+        assertEquals(TurnState.Idle, viewModel.state.value.turnState)
+        assertEquals("", viewModel.state.value.streamingText)
+        assertEquals(listOf("user", "assistant"), viewModel.state.value.messages.map { it.role })
+        assertEquals("safe partial", viewModel.state.value.messages.last().text)
+        viewModel.leaveConversation()
+    }
+
+    @Test
+    fun profileAndOriginChangesClearGatewayBoundStateAndOldEvents() = runTest {
+        val gateway = FakeGateway()
+        val dashboard = FakeDashboard(gateway)
+        val viewModel = CelesteViewModel(
+            dashboard = dashboard,
+            reconnectDelayMillis = { _, _ -> 0L },
+        )
+        viewModel.updateDashboardUrl("http://first.hermes.test:9119")
+        viewModel.findDashboard()
+        viewModel.loadSessions()
+        advanceUntilIdle()
+        viewModel.openSession(dashboard.session)
+        advanceUntilIdle()
+
+        viewModel.selectProfile("work")
+        advanceUntilIdle()
+
+        assertEquals("work", viewModel.state.value.selectedProfile)
+        assertNotNull(viewModel.state.value.sessions)
+        assertNull(viewModel.state.value.activeSummary)
+        assertTrue(gateway.closeCount > 0)
+
+        gateway.emit("message.error", """{"message":"old profile failure"}""")
+        runCurrent()
+        assertNull(viewModel.state.value.notice)
+
+        dashboard.profileCatalog = listOf(DashboardProfile(name = "default", isDefault = true))
+        viewModel.updateDashboardUrl("http://second.hermes.test:9119")
+        viewModel.findDashboard()
+        advanceUntilIdle()
+
+        assertEquals("http://second.hermes.test:9119", viewModel.state.value.dashboardUrl)
+        assertNull(viewModel.state.value.sessions)
+        assertNull(viewModel.state.value.activeSummary)
+        assertNull(viewModel.state.value.notice)
+
+        viewModel.loadSessions()
+        advanceUntilIdle()
+
+        assertEquals(ConnectionPhase.Connected, viewModel.state.value.connectionPhase)
+        assertEquals("default", viewModel.state.value.selectedProfile)
+        assertEquals("http://second.hermes.test:9119", viewModel.state.value.probe?.baseUrl)
+        viewModel.leaveConversation()
+    }
+
+    @Test
+    fun authRpcFailureKeepsAExplicitSignInRecoveryAction() = runTest {
+        val gateway = FakeGateway()
+        val dashboard = FakeDashboard(gateway)
+        val viewModel = CelesteViewModel(
+            dashboard = dashboard,
+            reconnectDelayMillis = { _, _ -> 0L },
+        )
+        viewModel.updateDashboardUrl("http://hermes.test:9119")
+        viewModel.findDashboard()
+        viewModel.loadSessions()
+        advanceUntilIdle()
+
+        gateway.connectFailure = GatewayRpcException(
+            code = 401,
+            message = "raw auth failure at https://private.example/path",
+        )
+        viewModel.openSession(dashboard.session)
+        advanceUntilIdle()
+
+        val notice = requireNotNull(viewModel.state.value.notice)
+        assertEquals(ConnectionPhase.AuthenticationRequired, viewModel.state.value.connectionPhase)
+        assertEquals(UiNoticeCategory.AuthenticationRequired, notice.category)
+        assertEquals(UiRecoveryAction.SignIn, notice.recovery)
+        assertEquals("Your Hermes sign-in has expired. Sign in again.", notice.message)
+        assertNull(viewModel.state.value.activeSummary)
+    }
+
+    @Test
+    fun protocolRpcFailureKeepsTypedRetryCopyAndRedactsRawErrorText() = runTest {
+        val gateway = FakeGateway()
+        val dashboard = FakeDashboard(gateway)
+        val diagnostics = mutableListOf<SanitizedDiagnostic>()
+        val rawError = "StandaloneCoroutine was cancelled at https://private.example/path /srv/private prompt"
+        val viewModel = CelesteViewModel(
+            dashboard = dashboard,
+            reconnectDelayMillis = { _, _ -> 60_000L },
+            diagnosticsSink = DiagnosticsSink { diagnostics += it },
+        )
+        viewModel.updateDashboardUrl("http://hermes.test:9119")
+        viewModel.findDashboard()
+        viewModel.loadSessions()
+        advanceUntilIdle()
+
+        gateway.resumeFailure = GatewayRpcException(code = -32602, message = rawError)
+        viewModel.openSession(dashboard.session)
+        runCurrent()
+
+        val state = viewModel.state.value
+        val notice = requireNotNull(state.notice)
+        assertEquals(UiNoticeCategory.InvalidResponse, notice.category)
+        assertEquals(UiRecoveryAction.Retry, notice.recovery)
+        assertEquals("Hermes returned an unexpected response. Try again.", notice.message)
+        assertFalse(state.toString().contains(rawError))
+        assertFalse(state.toString().contains("StandaloneCoroutine"))
+        assertTrue(diagnostics.isNotEmpty())
+        assertTrue(diagnostics.none { it.toString().contains(rawError) })
+        assertTrue(diagnostics.none { it.toString().contains("private.example") })
+        assertTrue(diagnostics.none { it.toString().contains("/srv/private") })
+        assertTrue(diagnostics.none { it.toString().contains("prompt") })
+        viewModel.leaveConversation()
+    }
+
+    @Test
     fun createsInTheSelectedProfileAndRecreatesOnlyAnUntouchedDraftSession() = runTest {
         val gateway = FakeGateway()
         val dashboard = FakeDashboard(gateway)
@@ -241,6 +436,8 @@ class CelesteViewModelTest {
         assertEquals(2, gateway.methods.count { it == "session.create" })
         assertEquals(0, gateway.methods.count { it == "session.resume" })
         assertEquals("stored-new-2", viewModel.state.value.activeSummary?.id)
+        assertEquals(TurnState.Idle, viewModel.state.value.turnState)
+        assertNull(viewModel.state.value.notice)
 
         viewModel.updateDraft("Persist this conversation")
         viewModel.sendMessage()
@@ -257,6 +454,8 @@ class CelesteViewModelTest {
         assertEquals(2, gateway.methods.count { it == "session.create" })
         assertEquals(1, gateway.methods.count { it == "session.resume" })
         assertEquals(1, gateway.methods.count { it == "prompt.submit" })
+        assertEquals(TurnState.Idle, viewModel.state.value.turnState)
+        assertNull(viewModel.state.value.notice)
         viewModel.leaveConversation()
     }
 
@@ -288,6 +487,10 @@ class CelesteViewModelTest {
         private val authRequired: Boolean = false,
     ) : DashboardService {
         var profileFailure: Throwable? = null
+        var profileCatalog = listOf(
+            DashboardProfile(name = "default", isDefault = true),
+            DashboardProfile(name = "work"),
+        )
 
         val session = StoredSession(
             id = "stored-42",
@@ -328,10 +531,7 @@ class CelesteViewModelTest {
             credential: GatewayCredential,
         ): List<DashboardProfile> {
             profileFailure?.let { throw it }
-            return listOf(
-                DashboardProfile(name = "default", isDefault = true),
-                DashboardProfile(name = "work"),
-            )
+            return profileCatalog
         }
 
         override fun exportAuthentication(baseUrl: String): AuthenticationMaterial? =
@@ -356,6 +556,10 @@ class CelesteViewModelTest {
         var failHealthCheck = false
         var connectFailure: Throwable? = null
         var resumePayload: JsonObject = resumePayload(messages = emptyList(), running = false)
+        var resumeFailure: Throwable? = null
+        var resumeGate: CompletableDeferred<Unit>? = null
+        var resumeEntered: CompletableDeferred<Unit>? = null
+        var closeCount = 0
 
         override suspend fun connect() {
             connectCount += 1
@@ -371,7 +575,12 @@ class CelesteViewModelTest {
             methods += method
             requests += method to params
             return when (method) {
-                "session.resume" -> resumePayload
+                "session.resume" -> {
+                    resumeEntered?.complete(Unit)
+                    resumeGate?.await()
+                    resumeFailure?.let { throw it }
+                    resumePayload
+                }
                 "session.create" -> {
                     createCount += 1
                     buildJsonObject {
@@ -394,6 +603,7 @@ class CelesteViewModelTest {
         }
 
         override fun close() {
+            closeCount += 1
             mutableState.value = GatewayConnectionState.Closed
         }
 

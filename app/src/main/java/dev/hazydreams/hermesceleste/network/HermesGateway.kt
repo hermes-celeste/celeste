@@ -255,8 +255,7 @@ class HermesGateway(
                 deferred.completeExceptionally(
                     GatewayRpcException(
                         code = error["code"]?.jsonPrimitive?.contentOrNull?.toIntOrNull(),
-                        message = error["message"]?.jsonPrimitive?.contentOrNull
-                            ?: "Hermes request failed.",
+                        message = "Hermes returned a JSON-RPC error.",
                     ),
                 )
             } else {

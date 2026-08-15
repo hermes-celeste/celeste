@@ -38,6 +38,7 @@ import androidx.compose.ui.unit.sp
 import dev.hazydreams.hermesceleste.CelesteUiState
 import dev.hazydreams.hermesceleste.CelesteViewModel
 import dev.hazydreams.hermesceleste.ConnectionPhase
+import dev.hazydreams.hermesceleste.UiRecoveryAction
 import dev.hazydreams.hermesceleste.ui.conversation.ConversationScreen
 import dev.hazydreams.hermesceleste.ui.gateway.ConnectionLoadingScreen
 import dev.hazydreams.hermesceleste.ui.gateway.ConnectionUnavailableScreen
@@ -93,6 +94,13 @@ internal fun CelesteRoutes(ui: CelesteUiState, viewModel: CelesteViewModel) {
                     onSend = viewModel::sendMessage,
                     onInterrupt = viewModel::interrupt,
                     onReconnect = viewModel::reconnectNow,
+                    onNoticeAction = {
+                        if (ui.notice?.recovery == UiRecoveryAction.SignIn) {
+                            destination = CelesteDestination.Gateway
+                        } else {
+                            viewModel.reconnectNow()
+                        }
+                    },
                     onBack = viewModel::leaveConversation,
                 )
             }
@@ -107,6 +115,13 @@ internal fun CelesteRoutes(ui: CelesteUiState, viewModel: CelesteViewModel) {
                 onNewConversation = viewModel::createNewConversation,
                 onSessionSelected = viewModel::openSession,
                 onRetry = viewModel::loadSessions,
+                onNoticeAction = {
+                    when (ui.notice?.recovery) {
+                        UiRecoveryAction.SignIn -> destination = CelesteDestination.Gateway
+                        UiRecoveryAction.Retry -> viewModel.loadSessions()
+                        UiRecoveryAction.None, null -> Unit
+                    }
+                },
                 onSettings = { destination = CelesteDestination.Settings },
             )
 
