@@ -36,6 +36,7 @@ import androidx.compose.ui.unit.sp
 import dev.hazydreams.hermesceleste.CelesteUiState
 import dev.hazydreams.hermesceleste.CelesteViewModel
 import dev.hazydreams.hermesceleste.ConnectionPhase
+import dev.hazydreams.hermesceleste.TurnState
 import dev.hazydreams.hermesceleste.ui.conversation.ConversationScreen
 import dev.hazydreams.hermesceleste.ui.gateway.ConnectionLoadingScreen
 import dev.hazydreams.hermesceleste.ui.gateway.ConnectionUnavailableScreen
@@ -99,6 +100,7 @@ internal fun CelesteRoutes(ui: CelesteUiState, viewModel: CelesteViewModel) {
                 BackHandler { destination = CelesteDestination.Content }
                 when (ui.connectionPhase) {
                     ConnectionPhase.CheckingSavedConnection,
+                    ConnectionPhase.LoadingSessions,
                     ConnectionPhase.Restoring,
                     -> ConnectionLoadingScreen()
 
@@ -134,6 +136,8 @@ internal fun CelesteRoutes(ui: CelesteUiState, viewModel: CelesteViewModel) {
                     },
                     onSettings = { openSettings(CelesteDestination.Conversations) },
                     onBack = ::closeBrowser,
+                    activeSession = activeSummary,
+                    activeSessionRunning = ui.turnState == TurnState.Running,
                 )
             }
         }
@@ -173,9 +177,12 @@ internal fun CelesteRoutes(ui: CelesteUiState, viewModel: CelesteViewModel) {
                 onNewConversation = viewModel::createNewConversation,
                 onSessionSelected = viewModel::openSession,
                 onSettings = { openSettings(CelesteDestination.Content) },
+                activeSession = activeSummary,
+                activeSessionRunning = ui.turnState == TurnState.Running,
             )
 
             ui.connectionPhase == ConnectionPhase.CheckingSavedConnection ||
+                ui.connectionPhase == ConnectionPhase.LoadingSessions ||
                 ui.connectionPhase == ConnectionPhase.Restoring -> ConnectionLoadingScreen()
 
             ui.connectionPhase == ConnectionPhase.RestoreFailed -> ConnectionUnavailableScreen(

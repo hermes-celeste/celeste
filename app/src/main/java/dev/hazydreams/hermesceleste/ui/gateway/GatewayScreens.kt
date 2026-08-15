@@ -494,7 +494,9 @@ private fun StatusDot(phase: ConnectionPhase) {
 
 private fun connectionStatusLabel(phase: ConnectionPhase): String = when (phase) {
     ConnectionPhase.Connected -> "Connected"
-    ConnectionPhase.CheckingSavedConnection, ConnectionPhase.Restoring -> "Connecting"
+    ConnectionPhase.CheckingSavedConnection,
+    ConnectionPhase.LoadingSessions,
+    ConnectionPhase.Restoring -> "Connecting"
     ConnectionPhase.RestoreFailed -> "Unavailable"
     ConnectionPhase.AuthenticationRequired -> "Sign in required"
     ConnectionPhase.ManualSetup -> "Not connected"
@@ -502,7 +504,9 @@ private fun connectionStatusLabel(phase: ConnectionPhase): String = when (phase)
 
 private fun connectionStatusColor(phase: ConnectionPhase): Color = when (phase) {
     ConnectionPhase.Connected -> CelesteCoral
-    ConnectionPhase.CheckingSavedConnection, ConnectionPhase.Restoring -> CelesteGoldText
+    ConnectionPhase.CheckingSavedConnection,
+    ConnectionPhase.LoadingSessions,
+    ConnectionPhase.Restoring -> CelesteGoldText
     ConnectionPhase.RestoreFailed -> CelesteError
     ConnectionPhase.AuthenticationRequired -> CelesteGoldText
     ConnectionPhase.ManualSetup -> CelesteMuted

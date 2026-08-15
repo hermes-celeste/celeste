@@ -27,7 +27,8 @@ class ConversationBrowserSourceTest {
         val source = mainSource("ui/sessions/SessionListScreen.kt")
 
         assertContains(source, "New conversation profile:")
-        assertContains(source, "This does not filter the loaded conversation list.")
+        assertContains(source, "This also scopes the loaded conversation window")
+        assertContains(source, "Profile scope:")
         assertContains(source, "Search loaded conversations")
         assertContains(source, "Search is limited to loaded conversations.")
         assertContains(source, "Refresh conversations")
@@ -45,6 +46,20 @@ class ConversationBrowserSourceTest {
         assertContains(routesSource, "viewModel.openConversationBrowser()")
         assertContains(routesSource, "viewModel.closeConversationBrowser()")
         assertContains(routesSource, "BackHandler { closeBrowser() }")
+        assertContains(routesSource, "ConnectionPhase.LoadingSessions")
+    }
+
+    @Test
+    fun rowsExposeSelectedAndRunningStateToAccessibility() {
+        val source = mainSource("ui/sessions/SessionListScreen.kt")
+
+        assertContains(source, "activeSession: StoredSession? = null")
+        assertContains(source, "activeSessionRunning: Boolean = false")
+        assertContains(source, "selected = selectedKey != null")
+        assertContains(source, "running = activeSessionRunning")
+        assertContains(source, "selected = selected")
+        assertContains(source, "Open and selected")
+        assertContains(source, "Open and running")
     }
 
     private fun assertContains(source: String, expected: String) {

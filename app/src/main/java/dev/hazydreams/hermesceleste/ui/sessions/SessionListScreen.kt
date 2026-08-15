@@ -36,6 +36,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.font.FontWeight
@@ -44,8 +45,10 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import dev.hazydreams.hermesceleste.SessionCatalogState
 import dev.hazydreams.hermesceleste.SessionCatalogStatus
+import dev.hazydreams.hermesceleste.searchLoadedSessions
 import dev.hazydreams.hermesceleste.network.DashboardProfile
 import dev.hazydreams.hermesceleste.network.StoredSession
+import dev.hazydreams.hermesceleste.keyFor
 import dev.hazydreams.hermesceleste.ui.CelesteBackdrop
 import dev.hazydreams.hermesceleste.ui.CelesteBlue
 import dev.hazydreams.hermesceleste.ui.CelesteError
@@ -75,19 +78,30 @@ internal fun SessionListScreen(
     onRefresh: () -> Unit = {},
     onRetry: () -> Unit = onRefresh,
     onBack: (() -> Unit)? = null,
+    activeSession: StoredSession? = null,
+    activeSessionRunning: Boolean = false,
 ) {
     var profileMenuExpanded by remember { mutableStateOf(false) }
-    val catalog = (catalogState ?: legacyCatalogState(
-        sessions = sessions,
-        selectedProfile = selectedProfile,
-        loadingMessage = loadingMessage,
-        errorMessage = errorMessage,
-    )).withQuery(query)
+    val catalog = if (catalogState == null) {
+        legacyCatalogState(
+            sessions = sessions,
+            selectedProfile = selectedProfile,
+            loadingMessage = loadingMessage,
+            errorMessage = errorMessage,
+        ).withQuery(query).let { state ->
+            if (query.isBlank()) state else {
+                state.withSearchResults(query, searchLoadedSessions(state.rows, query))
+            }
+        }
+    } else {
+        catalogState.withQuery(query)
+    }
     val visibleRows = catalog.filteredRows
     val visibleStatus = catalog.status
     val controlsBusy = catalog.phase == SessionCatalogStatus.Loading ||
         catalog.phase == SessionCatalogStatus.Refreshing ||
         catalog.phase == SessionCatalogStatus.Reconnecting
+    val selectedKey = activeSession?.keyFor(catalog.scope?.originKey.orEmpty())
 
     CelesteBackdrop(showOrnament = false) {
         Column(
@@ -113,7 +127,7 @@ internal fun SessionListScreen(
                     Text("Conversations", style = MaterialTheme.typography.headlineLarge)
                     Spacer(Modifier.height(4.dp))
                     Text(
-                        "New conversations use ${selectedProfile.trim().ifBlank { "default" }} profile",
+                        "Profile scope: ${selectedProfile.trim().ifBlank { "default" }} · server order",
                         color = CelesteMuted,
                         style = MaterialTheme.typography.bodyMedium,
                     )
@@ -142,7 +156,7 @@ internal fun SessionListScreen(
                             .height(50.dp)
                             .semantics {
                                 contentDescription =
-                                    "New conversation profile: ${selectedProfile.replaceFirstChar(Char::uppercase)}. This does not filter the loaded conversation list."
+                                    "New conversation profile: ${selectedProfile.replaceFirstChar(Char::uppercase)}. This also scopes the loaded conversation window; All Profiles is not available in Phase 1."
                                 stateDescription = if (profileMenuExpanded) "Expanded" else "Collapsed"
                             },
                         shape = RoundedCornerShape(25.dp),
@@ -312,6 +326,8 @@ internal fun SessionListScreen(
                             session = session,
                             showProfile = profiles.size > 1,
                             enabled = !controlsBusy,
+                            selected = selectedKey != null && session.keyFor(catalog.scope?.originKey.orEmpty()) == selectedKey,
+                            running = activeSessionRunning && selectedKey != null && session.keyFor(catalog.scope?.originKey.orEmpty()) == selectedKey,
                             onClick = { onSessionSelected(session) },
                         )
                     }
@@ -326,6 +342,8 @@ private fun SessionRow(
     session: StoredSession,
     showProfile: Boolean,
     enabled: Boolean,
+    selected: Boolean,
+    running: Boolean,
     onClick: () -> Unit,
 ) {
     val title = session.title.ifBlank { "Untitled conversation" }
@@ -333,15 +351,24 @@ private fun SessionRow(
         if (showProfile && session.profile.isNotBlank()) add(session.profile)
         if (session.messageCount > 0) add("${session.messageCount} messages")
         if (session.source.isNotBlank()) add(session.source)
+        if (selected) add("open")
+        if (running) add("running")
     }.joinToString("  ·  ").ifBlank { "No messages yet" }
+    val accessibilityState = when {
+        !enabled -> "Unavailable"
+        running -> "Open and running"
+        selected -> "Open and selected"
+        else -> "Ready"
+    }
     Column(
         modifier = Modifier
             .fillMaxWidth()
             .clickable(enabled = enabled, role = Role.Button, onClick = onClick)
             .semantics(mergeDescendants = true) {
                 role = Role.Button
+                selected = selected
                 contentDescription = "$title. $metadata. Open conversation."
-                stateDescription = if (enabled) "Ready" else "Unavailable"
+                stateDescription = accessibilityState
             }
             .padding(vertical = 19.dp),
     ) {

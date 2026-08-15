@@ -20,8 +20,8 @@ class SessionCatalogTest {
     }
 
     @Test
-    fun allProfilesScopeKeepsServerOrderAndDeduplicatesRows() {
-        val scope = requireNotNull(SessionScope.allProfiles(origin))
+    fun profileScopeKeepsServerOrderAndDeduplicatesRows() {
+        val scope = requireNotNull(SessionScope.from(origin, "work"))
         val rows = listOf(
             row("work-first", profile = "work"),
             row("default-row"),
@@ -30,12 +30,12 @@ class SessionCatalogTest {
 
         val filtered = SessionCatalogReducer.filterAuthoritativeRows(scope, rows)
 
-        assertEquals(listOf("work-first", "default-row"), filtered.map(StoredSession::id))
+        assertEquals(listOf("work-first"), filtered.map(StoredSession::id))
     }
 
     @Test
     fun sessionScopeRejectsAKeyFromAnotherOrigin() {
-        val scope = requireNotNull(SessionScope.allProfiles(origin))
+        val scope = requireNotNull(SessionScope.from(origin, "work"))
         val foreignKey = requireNotNull(SessionKey.from("https://other.example", "work", "stored-1"))
 
         assertFalse(scope.accepts(foreignKey))
@@ -58,7 +58,7 @@ class SessionCatalogTest {
 
     @Test
     fun lateRequestCannotPublishAfterANewerRequestBegan() {
-        val scope = requireNotNull(SessionScope.allProfiles(origin))
+        val scope = requireNotNull(SessionScope.from(origin, "work"))
         val first = request(scope, requestGeneration = 1)
         val second = request(scope, requestGeneration = 2)
         val loading = SessionCatalogReducer.begin(SessionCatalogState(), first, refreshing = false)
@@ -73,7 +73,7 @@ class SessionCatalogTest {
 
     @Test
     fun refreshFailureRetainsRowsAsStaleButInitialFailureIsError() {
-        val scope = requireNotNull(SessionScope.allProfiles(origin))
+        val scope = requireNotNull(SessionScope.from(origin, "work"))
         val initialRequest = request(scope, requestGeneration = 1)
         val loading = SessionCatalogReducer.begin(SessionCatalogState(), initialRequest, refreshing = false)
         val initialFailure = SessionCatalogReducer.failed(loading, initialRequest, "offline")
@@ -91,6 +91,60 @@ class SessionCatalogTest {
 
         assertEquals(SessionCatalogStatus.Stale, stale.phase)
         assertEquals(listOf("known"), stale.rows.map(StoredSession::id))
+    }
+
+    @Test
+    fun lateResponseFromAnotherProfileCannotPublishIntoTheCurrentScope() {
+        val defaultScope = requireNotNull(SessionScope.from(origin, "default"))
+        val workScope = requireNotNull(SessionScope.from(origin, "work"))
+        val first = request(defaultScope, requestGeneration = 1)
+        val second = request(workScope, requestGeneration = 2)
+        val loading = SessionCatalogReducer.begin(SessionCatalogState(), first, refreshing = false)
+        val switching = SessionCatalogReducer.begin(loading, second, refreshing = false)
+
+        val published = SessionCatalogReducer.succeeded(
+            switching,
+            first,
+            listOf(row("late-default", profile = "default")),
+        )
+
+        assertEquals(switching, published)
+        assertEquals(workScope, published.scope)
+        assertTrue(published.rows.isEmpty())
+    }
+
+    @Test
+    fun reconnectingAndStaleStatesAreNotMaskedByNoResults() {
+        val scope = requireNotNull(SessionScope.from(origin, "default"))
+        val initial = request(scope, requestGeneration = 1)
+        val ready = SessionCatalogReducer.succeeded(
+            SessionCatalogReducer.begin(SessionCatalogState(), initial, refreshing = false),
+            initial,
+            listOf(row("known")),
+        ).withQuery("missing").withSearchResults("missing", emptyList())
+        val refreshingRequest = request(scope, requestGeneration = 2)
+        val refreshing = SessionCatalogReducer.begin(ready, refreshingRequest, refreshing = true)
+
+        assertEquals(SessionCatalogStatus.Refreshing, refreshing.status)
+        val stale = SessionCatalogReducer.failed(refreshing, refreshingRequest, "offline")
+        assertEquals(SessionCatalogStatus.Stale, stale.status)
+    }
+
+    @Test
+    fun reapplyingTheSameQueryDoesNotDiscardDebouncedResults() {
+        val scope = requireNotNull(SessionScope.from(origin, "default"))
+        val row = row("known", title = "Known conversation")
+        val state = SessionCatalogState(
+            phase = SessionCatalogStatus.Ready,
+            scope = scope,
+            rows = listOf(row),
+            query = "known",
+            queryResults = listOf(row),
+            queryInFlight = false,
+        )
+
+        assertEquals(state, state.withQuery("known"))
+        assertEquals(listOf("known"), state.withQuery("known").filteredRows.map(StoredSession::id))
     }
 
     @Test

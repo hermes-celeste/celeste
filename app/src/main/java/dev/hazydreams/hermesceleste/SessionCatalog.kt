@@ -41,20 +41,16 @@ internal data class SessionScope(
     }
 
     companion object {
-        const val ALL_PROFILES = "*"
-
         fun from(origin: String, profile: String): SessionScope? {
             val normalizedOrigin = normalizeOrigin(origin)
             val normalizedProfile = normalizeProfile(profile)
             if (normalizedOrigin.isBlank() || normalizedProfile.isBlank()) return null
             return SessionScope(normalizedOrigin, normalizedProfile)
         }
-
-        fun allProfiles(origin: String): SessionScope? = from(origin, ALL_PROFILES)
     }
 
     fun accepts(key: SessionKey): Boolean =
-        key.originKey == originKey && (profile == ALL_PROFILES || key.profile == profile)
+        key.originKey == originKey && key.profile == profile
 }
 
 /** Captures every generation that must still be current before a list publishes. */
@@ -91,27 +87,44 @@ internal data class SessionCatalogState(
     val errorMessage: String? = null,
     val query: String = "",
     val request: SessionCatalogRequest? = null,
+    val queryResults: List<StoredSession>? = null,
+    val queryInFlight: Boolean = false,
 ) {
     val filteredRows: List<StoredSession>
-        get() = searchLoadedSessions(rows, query)
+        get() = queryResults ?: searchLoadedSessions(rows, query)
 
     /** No-results is a presentation state over a still-authoritative window. */
     val status: SessionCatalogStatus
         get() = if (
             query.isNotBlank() &&
+            !queryInFlight &&
             filteredRows.isEmpty() &&
-            phase in setOf(
-                SessionCatalogStatus.Ready,
-                SessionCatalogStatus.Refreshing,
-                SessionCatalogStatus.Stale,
-            )
+            phase == SessionCatalogStatus.Ready
         ) {
             SessionCatalogStatus.NoResults
         } else {
             phase
         }
 
-    fun withQuery(value: String): SessionCatalogState = copy(query = value)
+    fun withQuery(value: String): SessionCatalogState = if (query == value) {
+        this
+    } else {
+        copy(
+            query = value,
+            queryResults = if (value.isBlank()) null else emptyList(),
+            queryInFlight = value.isNotBlank(),
+        )
+    }
+
+    fun withSearchResults(value: String, results: List<StoredSession>): SessionCatalogState =
+        if (query != value) {
+            this
+        } else {
+            copy(
+                queryResults = results,
+                queryInFlight = false,
+            )
+        }
 }
 
 /**
@@ -126,12 +139,15 @@ internal object SessionCatalogReducer {
         refreshing: Boolean,
     ): SessionCatalogState {
         val keepRows = refreshing && state.scope == request.scope
+        val nextRows = if (keepRows) state.rows else emptyList()
         return state.copy(
             phase = if (refreshing) SessionCatalogStatus.Refreshing else SessionCatalogStatus.Loading,
             scope = request.scope,
-            rows = if (keepRows) state.rows else emptyList(),
+            rows = nextRows,
             errorMessage = null,
             request = request,
+            queryResults = if (state.query.isBlank()) null else if (keepRows) state.filteredRows else emptyList(),
+            queryInFlight = false,
         )
     }
 
@@ -145,6 +161,8 @@ internal object SessionCatalogReducer {
         rows = if (keepRows && state.scope == scope) state.rows else emptyList(),
         errorMessage = null,
         request = null,
+        queryResults = if (state.query.isBlank()) null else if (keepRows && state.scope == scope) state.filteredRows else emptyList(),
+        queryInFlight = false,
     )
 
     fun succeeded(
@@ -159,6 +177,8 @@ internal object SessionCatalogReducer {
             rows = filtered,
             errorMessage = null,
             request = null,
+            queryResults = if (state.query.isBlank()) null else searchLoadedSessions(filtered, state.query),
+            queryInFlight = false,
         )
     }
 
@@ -172,6 +192,7 @@ internal object SessionCatalogReducer {
             phase = if (state.rows.isEmpty()) SessionCatalogStatus.Error else SessionCatalogStatus.Stale,
             errorMessage = message,
             request = null,
+            queryInFlight = false,
         )
     }
 

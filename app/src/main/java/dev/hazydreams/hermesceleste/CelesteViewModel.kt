@@ -33,6 +33,7 @@ import java.io.IOException
 import java.util.concurrent.atomic.AtomicLong
 import kotlin.math.min
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -41,9 +42,12 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
+
+private const val SESSION_SEARCH_DEBOUNCE_MILLIS = 250L
 
 internal enum class TurnState {
     Synchronizing,
@@ -55,6 +59,7 @@ internal enum class TurnState {
 internal enum class ConnectionPhase {
     CheckingSavedConnection,
     ManualSetup,
+    LoadingSessions,
     Restoring,
     RestoreFailed,
     AuthenticationRequired,
@@ -120,6 +125,8 @@ internal class CelesteViewModel(
     private var catalogRequestGeneration = 0L
     private var catalogScope: SessionScope? = null
     private var catalogJob: Job? = null
+    private var sessionSearchJob: Job? = null
+    private var sessionQueryGeneration = 0L
     private val connectionStoreMutex = Mutex()
     private var currentDescriptor: SavedConnectionDescriptor? = null
     private var reconnectAttempts = 0
@@ -155,11 +162,7 @@ internal class CelesteViewModel(
         mutableState.value = mutableState.value.copy(draft = value)
     }
 
-    /**
-     * The current Hermes session.list contract is not verified as profile-filtered.
-     * Keep this selector scoped to the next new conversation and leave the
-     * server-ordered catalog intact rather than inventing a wire parameter.
-     */
+    /** The loaded catalog is bounded to the selected profile; no all-profile mode exists in Phase 1. */
     fun selectProfile(name: String) {
         val selected = mutableState.value.profiles.firstOrNull {
             it.name.equals(name, ignoreCase = true)
@@ -168,10 +171,17 @@ internal class CelesteViewModel(
         if (snapshot.selectedProfile.equals(selected.name, ignoreCase = true)) return
 
         profileGeneration += 1
-        mutableState.value = snapshot.copy(selectedProfile = selected.name)
-        // If a catalog read was in flight, restart it under the new profile
-        // generation so the old completion cannot strand the loading state.
-        if (catalogJob?.isActive == true && credential != null) refreshSessionCatalog()
+        mutableState.value = snapshot.copy(
+            selectedProfile = selected.name,
+            sessions = emptyList(),
+            sessionCatalog = SessionCatalogState(
+                phase = SessionCatalogStatus.Loading,
+                scope = snapshot.probe?.baseUrl?.let { SessionScope.from(it, selected.name) },
+            ),
+            sessionQuery = "",
+        )
+        cancelSessionSearch()
+        if (credential != null && snapshot.probe != null) refreshSessionCatalog()
     }
 
     fun findDashboard() {
@@ -221,11 +231,22 @@ internal class CelesteViewModel(
         val connection = snapshot.probe ?: return
         val attempt = beginConnectionAttempt()
         val selectedProfileGeneration = profileGeneration
+        val initialScope = SessionScope.from(connection.baseUrl, snapshot.selectedProfile)
         dashboard.clearAuthentication()
         mutableState.value = snapshot.copy(
-            connectionPhase = ConnectionPhase.ManualSetup,
-            sessions = null,
-            sessionCatalog = SessionCatalogState(),
+            connectionPhase = ConnectionPhase.LoadingSessions,
+            sessions = emptyList(),
+            sessionCatalog = if (initialScope == null) {
+                SessionCatalogState(
+                    phase = SessionCatalogStatus.Error,
+                    errorMessage = "Hermes returned no catalog scope.",
+                )
+            } else {
+                SessionCatalogState(
+                    phase = SessionCatalogStatus.Loading,
+                    scope = initialScope,
+                )
+            },
             sessionQuery = "",
             loadingMessage = "Loading your conversations…",
             errorMessage = null,
@@ -305,6 +326,14 @@ internal class CelesteViewModel(
                 if (!isCurrentConnectionAttempt(attempt) || profileGeneration != selectedProfileGeneration) return@onFailure
                 dashboard.clearAuthentication()
                 mutableState.value = mutableState.value.copy(
+                    connectionPhase = ConnectionPhase.ManualSetup,
+                    sessions = null,
+                    sessionCatalog = SessionCatalogState(
+                        phase = SessionCatalogStatus.Error,
+                        scope = initialScope,
+                        errorMessage = error.message ?: "Could not load Hermes conversations.",
+                    ),
+                    sessionQuery = "",
                     errorMessage = error.message ?: "Could not load Hermes conversations.",
                     password = "",
                     sessionToken = "",
@@ -562,6 +591,12 @@ internal class CelesteViewModel(
         descriptor: SavedConnectionDescriptor?,
         probe: DashboardProbeResult? = null,
     ) {
+        sessionQueryGeneration += 1
+        cancelSessionSearch()
+        catalogRequestGeneration += 1
+        catalogJob?.cancel()
+        catalogJob = null
+        catalogScope = null
         credential = null
         currentDescriptor = null
         dashboard.clearAuthentication()
@@ -583,8 +618,9 @@ internal class CelesteViewModel(
         errorMessage: String? = null,
     ) {
         val selectedProfile = loaded.selectedProfile
-        val scope = SessionScope.allProfiles(
+        val scope = SessionScope.from(
             origin = mutableState.value.probe?.baseUrl.orEmpty(),
+            profile = selectedProfile,
         )
         catalogScope = scope
         val catalog = if (scope == null) {
@@ -621,7 +657,7 @@ internal class CelesteViewModel(
         errorMessage: String? = null,
     ): CelesteUiState = CelesteUiState(
         connectionPhase = phase,
-        dashboardUrl = descriptor?.baseUrl.orEmpty(),
+        dashboardUrl = descriptor?.baseUrl ?: probe?.baseUrl.orEmpty(),
         probe = probe,
         savedAuthMode = descriptor?.authMode,
         username = descriptor?.username.orEmpty(),
@@ -633,6 +669,8 @@ internal class CelesteViewModel(
         originGeneration += 1
         profileGeneration += 1
         catalogRequestGeneration += 1
+        sessionQueryGeneration += 1
+        cancelSessionSearch()
         catalogJob?.cancel()
         catalogJob = null
         catalogScope = null
@@ -649,15 +687,50 @@ internal class CelesteViewModel(
     private fun isCurrentConnectionAttempt(attempt: Long): Boolean = connectionAttempt == attempt
 
     fun updateSessionQuery(value: String) {
+        val generation = ++sessionQueryGeneration
+        cancelSessionSearch()
         val snapshot = mutableState.value
         val nextCatalog = snapshot.sessionCatalog.withQuery(value)
         mutableState.value = snapshot.copy(
             sessionQuery = value,
             sessionCatalog = nextCatalog,
         )
+        if (value.isBlank()) return
+
+        val rows = nextCatalog.rows
+        val scope = nextCatalog.scope
+        val originAtStart = originGeneration
+        val profileAtStart = profileGeneration
+        val catalogRequestAtStart = catalogRequestGeneration
+        val connectionAttemptAtStart = connectionAttempt
+        sessionSearchJob = viewModelScope.launch {
+            delay(SESSION_SEARCH_DEBOUNCE_MILLIS)
+            val results = withContext(Dispatchers.Default) {
+                searchLoadedSessions(rows, value)
+            }
+            val current = mutableState.value
+            if (
+                generation != sessionQueryGeneration ||
+                originAtStart != originGeneration ||
+                profileAtStart != profileGeneration ||
+                catalogRequestAtStart != catalogRequestGeneration ||
+                connectionAttemptAtStart != connectionAttempt ||
+                current.sessionCatalog.scope != scope ||
+                current.sessionQuery != value
+            ) return@launch
+            mutableState.value = current.copy(
+                sessionCatalog = current.sessionCatalog.withSearchResults(value, results),
+            )
+            if (generation == sessionQueryGeneration) sessionSearchJob = null
+        }
     }
 
     fun clearSessionQuery() = updateSessionQuery("")
+
+    private fun cancelSessionSearch() {
+        sessionSearchJob?.cancel()
+        sessionSearchJob = null
+    }
 
     fun openConversationBrowser() {
         if (mutableState.value.sessions != null) refreshSessionCatalog()
@@ -667,13 +740,15 @@ internal class CelesteViewModel(
         if (mutableState.value.sessions != null) refreshSessionCatalog()
     }
 
-    /** Refreshes one server-authoritative, profile-scoped loaded window. */
+    /** Refreshes the server-authoritative loaded window for one selected profile. */
     fun refreshSessionCatalog() {
         val snapshot = mutableState.value
         val probe = snapshot.probe ?: return
         val activeCredential = credential ?: return
-        val scope = SessionScope.allProfiles(probe.baseUrl) ?: return
+        val scope = SessionScope.from(probe.baseUrl, snapshot.selectedProfile) ?: return
         val refreshing = snapshot.sessionCatalog.scope == scope && snapshot.sessions != null
+        sessionQueryGeneration += 1
+        cancelSessionSearch()
         catalogJob?.cancel()
         val request = SessionCatalogRequest(
             scope = scope,
@@ -689,25 +764,39 @@ internal class CelesteViewModel(
             sessionCatalog = started,
         )
         catalogJob = viewModelScope.launch {
-            runCatching {
-                dashboard.listSessions(
+            try {
+                val rows = dashboard.listSessions(
                     baseUrl = probe.baseUrl,
                     credential = activeCredential,
                 )
-            }.onSuccess { rows ->
-                if (!isCurrentCatalogRequest(request)) return@onSuccess
-                publishCatalog(SessionCatalogReducer.succeeded(mutableState.value.sessionCatalog, request, rows))
-            }.onFailure { error ->
-                if (!isCurrentCatalogRequest(request)) return@onFailure
+                if (!isCurrentCatalogRequest(request)) return@launch
                 publishCatalog(
-                    SessionCatalogReducer.failed(
+                    SessionCatalogReducer.succeeded(
                         mutableState.value.sessionCatalog,
                         request,
-                        error.message ?: "Could not refresh Hermes conversations.",
+                        rows,
                     ),
                 )
+            } catch (error: Throwable) {
+                if (error is CancellationException) throw error
+                if (!isCurrentCatalogRequest(request)) return@launch
+                if (error is AuthenticationRejected) {
+                    invalidateReusableAuthentication(
+                        descriptor = currentDescriptor,
+                        probe = probe,
+                    )
+                } else {
+                    publishCatalog(
+                        SessionCatalogReducer.failed(
+                            mutableState.value.sessionCatalog,
+                            request,
+                            error.message ?: "Could not refresh Hermes conversations.",
+                        ),
+                    )
+                }
+            } finally {
+                if (isCurrentCatalogRequest(request)) catalogJob = null
             }
-            if (isCurrentCatalogRequest(request)) catalogJob = null
         }
     }
 
@@ -718,7 +807,9 @@ internal class CelesteViewModel(
             request.requestGeneration == catalogRequestGeneration &&
             request.connectionAttempt == connectionAttempt &&
             request.scope == catalogScope &&
-            current.probe?.baseUrl?.let { SessionScope.allProfiles(it) } == request.scope &&
+            current.probe?.baseUrl?.let {
+                SessionScope.from(it, current.selectedProfile)
+            } == request.scope &&
             credential != null
     }
 
@@ -729,11 +820,34 @@ internal class CelesteViewModel(
         )
     }
 
+    private fun markCatalogReconnecting() {
+        val snapshot = mutableState.value
+        val scope = snapshot.probe?.baseUrl?.let {
+            SessionScope.from(it, snapshot.selectedProfile)
+        } ?: return
+        val keepRows = snapshot.sessions != null && snapshot.sessionCatalog.scope == scope
+        sessionQueryGeneration += 1
+        cancelSessionSearch()
+        catalogRequestGeneration += 1
+        catalogJob?.cancel()
+        catalogJob = null
+        catalogScope = scope
+        val reconnecting = SessionCatalogReducer.reconnecting(
+            state = snapshot.sessionCatalog,
+            scope = scope,
+            keepRows = keepRows,
+        )
+        mutableState.value = snapshot.copy(
+            sessions = reconnecting.rows,
+            sessionCatalog = reconnecting,
+        )
+    }
+
     fun openSession(summary: StoredSession) {
         val snapshot = mutableState.value
         val connection = snapshot.probe ?: return
         val activeCredential = credential ?: return
-        val scope = catalogScope ?: SessionScope.allProfiles(connection.baseUrl) ?: return
+        val scope = catalogScope ?: SessionScope.from(connection.baseUrl, snapshot.selectedProfile) ?: return
         val key = summary.keyFor(scope.originKey) ?: return
         if (!scope.accepts(key)) return
         if (snapshot.sessionCatalog.rows.none { it.keyFor(scope.originKey) == key }) return
@@ -783,28 +897,33 @@ internal class CelesteViewModel(
         val selectedProfile = snapshot.selectedProfile
         val attempt = connectionAttempt
         val selectedProfileGeneration = profileGeneration
-        closeGateway()
+        val previousGateway = gateway
         mutableState.value = snapshot.copy(
-            activeSummary = null,
-            messages = emptyList(),
-            streamingText = "",
-            draft = "",
+            // Keep the previous projection until Hermes accepts the new session.
+            // This is deliberately not a synthetic catalog row or a persisted draft.
             turnState = TurnState.Synchronizing,
             loadingMessage = "Starting a new $selectedProfile conversation…",
             errorMessage = null,
         )
 
-        val newGateway = dashboard.createGateway(connection.baseUrl, activeCredential)
-        gateway = newGateway
-        observeGateway(newGateway)
+        val newGateway = runCatching {
+            dashboard.createGateway(connection.baseUrl, activeCredential)
+        }.getOrElse { error ->
+            mutableState.value = snapshot.copy(
+                errorMessage = error.message ?: "Could not create a Hermes conversation.",
+            )
+            return
+        }
+        val candidateEvents = mutableListOf<GatewayEvent>()
+        val candidateEventsJob = viewModelScope.launch {
+            newGateway.events.collect { event -> candidateEvents += event }
+        }
+        var committed = false
         viewModelScope.launch {
-            runCatching {
+            try {
                 newGateway.connect()
-                reconciling = true
-                bufferedEvents.clear()
                 val created = newGateway.createSession(selectedProfile)
                 if (
-                    gateway !== newGateway ||
                     connectionAttempt != attempt ||
                     profileGeneration != selectedProfileGeneration ||
                     mutableState.value.selectedProfile != selectedProfile
@@ -814,6 +933,12 @@ internal class CelesteViewModel(
                 val returnedProfile = created.profile?.takeIf(String::isNotBlank)
                 if (returnedProfile != null && !returnedProfile.equals(selectedProfile, ignoreCase = true)) {
                     throw IOException("Hermes created this conversation in $returnedProfile instead of $selectedProfile.")
+                }
+                val events = candidateEvents.toList()
+                if (newGateway !== previousGateway) {
+                    closeGateway()
+                    gateway = newGateway
+                    observeGateway(newGateway)
                 }
                 currentRuntimeSessionId = created.runtimeSessionId
                 currentStoredSessionId = created.storedSessionId
@@ -827,37 +952,32 @@ internal class CelesteViewModel(
                     source = "android",
                     profile = selectedProfile,
                 )
-                val events = bufferedEvents.toList()
-                bufferedEvents.clear()
-                reconciling = false
                 mutableState.value = mutableState.value.copy(
                     activeSummary = summary,
+                    messages = emptyList(),
+                    streamingText = "",
+                    draft = "",
                     turnState = TurnState.Idle,
                     loadingMessage = null,
                     errorMessage = null,
                 )
-                events.forEach(::applyEvent)
-            }.onSuccess {
-                if (
-                    gateway !== newGateway ||
-                    connectionAttempt != attempt ||
-                    profileGeneration != selectedProfileGeneration ||
-                    mutableState.value.selectedProfile != selectedProfile
-                ) return@onSuccess
+                committed = true
                 reconnectAttempts = 0
-            }.onFailure { error ->
+                events.forEach(::applyEvent)
+            } catch (error: Throwable) {
                 if (
-                    gateway !== newGateway ||
-                    connectionAttempt != attempt ||
-                    profileGeneration != selectedProfileGeneration ||
-                    mutableState.value.selectedProfile != selectedProfile
-                ) return@onFailure
-                if (gateway === newGateway) closeGateway()
-                mutableState.value = mutableState.value.copy(
-                    turnState = TurnState.Idle,
-                    loadingMessage = null,
-                    errorMessage = error.message ?: "Could not create a Hermes conversation.",
-                )
+                    error !is CancellationException &&
+                    connectionAttempt == attempt &&
+                    profileGeneration == selectedProfileGeneration &&
+                    mutableState.value.selectedProfile == selectedProfile
+                ) {
+                    mutableState.value = snapshot.copy(
+                        errorMessage = error.message ?: "Could not create a Hermes conversation.",
+                    )
+                }
+            } finally {
+                candidateEventsJob.cancel()
+                if (!committed && newGateway !== previousGateway) newGateway.close()
             }
         }
     }
@@ -975,9 +1095,10 @@ internal class CelesteViewModel(
             }
             return
         }
-        val storedSessionId = currentStoredSessionId ?: return
+        val storedSessionId = currentStoredSessionId
         if (foregroundCheckJob?.isActive == true || reconciling) return
         if (activeGateway.state.value != GatewayConnectionState.Connected) {
+            markCatalogReconnecting()
             reconnectNow()
             return
         }
@@ -988,10 +1109,15 @@ internal class CelesteViewModel(
                     params = buildJsonObject { put("limit", 1) },
                     timeoutMillis = 8_000,
                 )
-                if (currentSessionCanResume) reconcile(activeGateway, storedSessionId)
+                if (currentSessionCanResume && storedSessionId != null) {
+                    reconcile(activeGateway, storedSessionId)
+                }
             }
-            if (health.isFailure && gateway === activeGateway) {
+            if (health.isSuccess && gateway === activeGateway) {
+                refreshSessionCatalog()
+            } else if (health.isFailure && gateway === activeGateway) {
                 val wasRunning = mutableState.value.turnState == TurnState.Running
+                markCatalogReconnecting()
                 activeGateway.close()
                 mutableState.value = mutableState.value.copy(
                     turnState = TurnState.Reconnecting,
@@ -1022,6 +1148,7 @@ internal class CelesteViewModel(
                 if (gateway !== activeGateway) return@collect
                 if (connectionState is GatewayConnectionState.Disconnected) {
                     val wasRunning = mutableState.value.turnState == TurnState.Running
+                    markCatalogReconnecting()
                     mutableState.value = mutableState.value.copy(
                         turnState = TurnState.Reconnecting,
                         errorMessage = connectionState.reason,
@@ -1281,6 +1408,7 @@ internal class CelesteViewModel(
                 if (result.isSuccess) {
                     reconnectAttempts = 0
                     reconnectJob = null
+                    refreshSessionCatalog()
                     return@launch
                 }
                 val failure = result.exceptionOrNull()
@@ -1325,6 +1453,8 @@ internal class CelesteViewModel(
         connectionJob = null
         catalogJob?.cancel()
         catalogJob = null
+        sessionSearchJob?.cancel()
+        sessionSearchJob = null
         closeGateway()
         dashboard.clearAuthentication()
         super.onCleared()
