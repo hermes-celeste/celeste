@@ -167,7 +167,7 @@ internal class CelesteViewModel(
     private val attachmentJobs = mutableMapOf<UUID, Job>()
     private var attachmentTransactionJob: Job? = null
     private var attachmentTransaction: AttachmentTransaction? = null
-    private var unknownSubmit: UnknownSubmit? = null
+    private val unknownSubmits = mutableMapOf<DraftOwner, UnknownSubmit>()
     private var attachmentPickerToken: AttachmentPickerToken? = null
     private var transcriptPreviewJob: Job? = null
     private val attachmentRetryCounts = mutableMapOf<UUID, Int>()
@@ -188,12 +188,14 @@ internal class CelesteViewModel(
     )
 
     private data class AttachmentTransaction(
+        val submissionIdentity: UUID,
         val activeGateway: GatewayConnection,
         val owner: DraftOwner,
         val generation: Long,
         val runtimeSessionId: String,
         val text: String,
         val attachmentIds: List<UUID>,
+        val localFileIds: List<String>,
         val localMessageId: String,
         val previousMessageIds: Set<String>,
         val submitRetryCount: Int = 0,
@@ -203,13 +205,21 @@ internal class CelesteViewModel(
         val stagedReferences: MutableList<String> = mutableListOf(),
     )
 
+    /**
+     * An uncertain submit remains owned by its stored conversation, not by the
+     * currently edited composer. Its identity, staged references, and retry
+     * budget survive editor generations and context switches until the gateway
+     * gives us an authoritative answer.
+     */
     private data class UnknownSubmit(
-        val activeGateway: GatewayConnection,
+        val submissionIdentity: UUID,
         val owner: DraftOwner,
         val generation: Long,
         val runtimeSessionIdAtStart: String,
         val text: String,
         val attachmentIds: List<UUID>,
+        val localFileIds: List<String>,
+        val stagedReferences: List<String>,
         val previousMessageIds: Set<String>,
         val retryCount: Int,
         val reconciled: Boolean = false,
@@ -373,8 +383,8 @@ internal class CelesteViewModel(
         val transaction = attachmentTransaction?.takeIf {
             it.owner == attachment.owner && attachmentId in it.attachmentIds
         }
-        val pendingUnknown = unknownSubmit?.takeIf {
-            it.owner == attachment.owner && attachmentId in it.attachmentIds
+        val pendingUnknown = unknownSubmits[attachment.owner]?.takeIf {
+            attachmentId in it.attachmentIds
         }
         if (
             (transaction != null && transaction.phase != AttachmentTransactionPhase.PreSubmit) ||
@@ -386,24 +396,27 @@ internal class CelesteViewModel(
             return
         }
         val owner = attachment.owner
-        val referencesToDetach = if (transaction != null) {
-            (
+        val referencesToDetach = when {
+            transaction != null -> (
                 transaction.stagedReferences +
                     snapshot.attachments
                         .filter { it.owner == owner }
                         .mapNotNull { it.serverReference?.takeIf(String::isNotBlank) }
             ).distinct()
-        } else {
-            listOfNotNull(attachment.serverReference?.takeIf(String::isNotBlank))
+            pendingUnknown != null -> (
+                pendingUnknown.stagedReferences +
+                    listOfNotNull(attachment.serverReference?.takeIf(String::isNotBlank))
+            ).distinct()
+            else -> listOfNotNull(attachment.serverReference?.takeIf(String::isNotBlank))
         }
         if (transaction != null) {
             transaction.cancelledByUser = true
             attachmentTransactionJob?.cancel()
-            unknownSubmit = null
+            unknownSubmits.remove(owner)
         } else if (pendingUnknown != null) {
             // An absent uncertain submission has been reconciled; this explicit
-            // removal can now detach only the selected staged reference.
-            unknownSubmit = null
+            // removal can now detach its staged references.
+            unknownSubmits.remove(owner)
         }
         attachmentJobs.remove(attachmentId)?.cancel()
         attachmentRetryCounts.remove(attachmentId)
@@ -411,7 +424,7 @@ internal class CelesteViewModel(
             .filterNot { it.id == attachmentId }
             .map { retained ->
                 if (
-                    transaction != null &&
+                    (transaction != null || pendingUnknown != null) &&
                     retained.owner == owner &&
                     retained.serverReference != null &&
                     retained.serverReference in referencesToDetach
@@ -1058,11 +1071,21 @@ internal class CelesteViewModel(
         return true
     }
 
+    private fun unresolvedSubmitReferences(owner: DraftOwner): Set<String> =
+        unknownSubmits[owner]
+            ?.takeUnless(UnknownSubmit::reconciled)
+            ?.stagedReferences
+            ?.toSet()
+            .orEmpty()
+
     private fun rememberOrphanedReferences(owner: DraftOwner, references: List<String>) {
-        if (references.isEmpty()) return
+        val safeReferences = references
+            .filter(String::isNotBlank)
+            .filterNot(unresolvedSubmitReferences(owner)::contains)
+        if (safeReferences.isEmpty()) return
         orphanedAttachmentReferences
             .getOrPut(owner) { mutableSetOf() }
-            .addAll(references.filter(String::isNotBlank))
+            .addAll(safeReferences)
     }
 
     private suspend fun detachReferences(
@@ -1072,12 +1095,15 @@ internal class CelesteViewModel(
         references: List<String>,
     ) {
         references.distinct().forEach { reference ->
+            if (reference in unresolvedSubmitReferences(owner)) return@forEach
             runCatching {
                 activeGateway.detachImage(
                     AttachmentSessionOwner(owner.storedSessionIdOrNewConversationId, runtimeSessionId),
                     reference,
                 )
-            }.onSuccess {
+            }.onSuccess { result ->
+                // A non-throwing detached=false response is not cleanup success.
+                if (!result.detached) return@onSuccess
                 orphanedAttachmentReferences[owner]?.remove(reference)
                 if (orphanedAttachmentReferences[owner].isNullOrEmpty()) {
                     orphanedAttachmentReferences.remove(owner)
@@ -1135,53 +1161,86 @@ internal class CelesteViewModel(
         if (pending.isNotEmpty()) cleanupLocalFiles(owner, pending)
     }
 
+    private fun retainUnknownSubmit(transaction: AttachmentTransaction) {
+        if (transaction.phase == AttachmentTransactionPhase.PreSubmit) return
+        val previous = unknownSubmits[transaction.owner]
+        unknownSubmits[transaction.owner] = UnknownSubmit(
+            submissionIdentity = transaction.submissionIdentity,
+            owner = transaction.owner,
+            generation = transaction.generation,
+            runtimeSessionIdAtStart = transaction.runtimeSessionId,
+            text = transaction.text,
+            attachmentIds = transaction.attachmentIds,
+            localFileIds = (
+                previous?.localFileIds.orEmpty() + transaction.localFileIds
+            ).distinct(),
+            stagedReferences = (
+                previous?.stagedReferences.orEmpty() + transaction.stagedReferences
+            ).filter(String::isNotBlank).distinct(),
+            previousMessageIds = transaction.previousMessageIds,
+            retryCount = maxOf(previous?.retryCount ?: 0, transaction.submitRetryCount),
+            reconciled = false,
+        )
+    }
+
     private fun discardComposerForContextSwitch() {
         attachmentPickerToken = null
-        attachmentTransactionJob?.cancel()
-        attachmentTransactionJob = null
         val current = mutableState.value
         val currentOwner = currentAttachmentOwner(current)
         val transaction = attachmentTransaction
-        transaction?.let {
-            it.cancelledByUser = true
-            if (it.phase == AttachmentTransactionPhase.PreSubmit) {
-                rememberOrphanedReferences(
-                    it.owner,
-                    (
-                        it.stagedReferences +
-                            current.attachments
-                                .filter { attachment -> attachment.owner == it.owner }
-                                .mapNotNull { attachment -> attachment.serverReference?.takeIf(String::isNotBlank) }
-                    ).distinct(),
-                )
-            }
+        transaction?.cancelledByUser = true
+        if (transaction != null && transaction.phase != AttachmentTransactionPhase.PreSubmit) {
+            // Once prompt.submit may have been accepted, cancellation is an
+            // uncertain delivery. Keep its owner-bound tombstone and references.
+            retainUnknownSubmit(transaction)
+        } else if (transaction != null) {
+            rememberOrphanedReferences(
+                transaction.owner,
+                (
+                    transaction.stagedReferences +
+                        current.attachments
+                            .filter { attachment -> attachment.owner == transaction.owner }
+                            .mapNotNull { attachment -> attachment.serverReference?.takeIf(String::isNotBlank) }
+                ).distinct(),
+            )
         }
+        attachmentTransactionJob?.cancel()
+        attachmentTransactionJob = null
+
         val currentReferences = current.attachments
             .filter { it.owner == currentOwner }
             .mapNotNull { it.serverReference?.takeIf(String::isNotBlank) }
-        val protectedReferences = if (transaction != null && transaction.phase != AttachmentTransactionPhase.PreSubmit) {
-            (
-                transaction.stagedReferences +
-                    current.attachments
-                        .filter { it.id in transaction.attachmentIds }
-                        .mapNotNull { it.serverReference?.takeIf(String::isNotBlank) }
-            ).toSet()
+        val transactionReferences = if (
+            transaction != null && transaction.phase != AttachmentTransactionPhase.PreSubmit
+        ) {
+            transaction.stagedReferences + current.attachments
+                .filter { it.id in transaction.attachmentIds }
+                .mapNotNull { it.serverReference?.takeIf(String::isNotBlank) }
         } else {
-            emptySet()
+            emptyList()
         }
+        val protectedReferences = (
+            unresolvedSubmitReferences(currentOwner) + transactionReferences
+        ).toSet()
         rememberOrphanedReferences(
             currentOwner,
             currentReferences.filterNot(protectedReferences::contains),
         )
+
         attachmentTransaction = null
-        unknownSubmit = null
         attachmentJobs.values.forEach { it.cancel() }
         attachmentJobs.clear()
         transcriptPreviewJob?.cancel()
         transcriptPreviewJob = null
         attachmentRetryCounts.clear()
+        val protectedLocalFileIds = unknownSubmits[currentOwner]
+            ?.takeUnless(UnknownSubmit::reconciled)
+            ?.localFileIds
+            .orEmpty()
+            .toSet()
         val localFileIds = current.attachments
             .mapNotNull { it.localFileId.takeIf(String::isNotBlank) }
+            .filterNot(protectedLocalFileIds::contains)
         mutableState.value = current.copy(
             messages = transaction?.localMessageId?.let { localMessageId ->
                 current.messages.filterNot { it.id == localMessageId }
@@ -1349,26 +1408,21 @@ internal class CelesteViewModel(
             return
         }
         val attachmentIds = attachments.map(AttachmentDraft::id)
-        val retryingUnknown = unknownSubmit?.takeIf {
-            it.owner == owner &&
-                it.generation == snapshot.editorGeneration &&
-                it.text == text &&
-                it.attachmentIds == attachmentIds
-        }
-        if (unknownSubmit != null && retryingUnknown == null) unknownSubmit = null
-        if (retryingUnknown != null && !retryingUnknown.reconciled) {
+        val pendingUnknown = unknownSubmits[owner]
+        if (pendingUnknown != null && !pendingUnknown.reconciled) {
             mutableState.value = snapshot.copy(
                 attachmentNotice = "Reconcile the send status before retrying this draft.",
             )
             return
         }
-        if (retryingUnknown != null && retryingUnknown.retryCount >= MAX_SUBMIT_RETRIES) {
+        if (pendingUnknown != null && pendingUnknown.retryCount >= MAX_SUBMIT_RETRIES) {
             mutableState.value = snapshot.copy(
                 attachmentNotice = "Retry limit reached — select the images again before resending.",
             )
             return
         }
-        val submitRetryCount = retryingUnknown?.retryCount?.plus(1) ?: 0
+        val submitRetryCount = pendingUnknown?.retryCount?.plus(1) ?: 0
+        val submissionIdentity = pendingUnknown?.submissionIdentity ?: UUID.randomUUID()
         if (attachments.isNotEmpty() && snapshot.attachmentCapability == AttachmentCapabilityState.Unsupported) {
             mutableState.value = snapshot.copy(
                 attachmentNotice = "This gateway does not support image attachments.",
@@ -1412,14 +1466,15 @@ internal class CelesteViewModel(
             errorMessage = null,
             attachmentNotice = null,
         )
-        unknownSubmit = null
         val transactionState = AttachmentTransaction(
+            submissionIdentity = submissionIdentity,
             activeGateway = activeGateway,
             owner = owner,
             generation = submittedGeneration,
             runtimeSessionId = runtimeId,
             text = text,
             attachmentIds = attachmentIds,
+            localFileIds = attachments.mapNotNull { it.localFileId.takeIf(String::isNotBlank) },
             localMessageId = localId,
             previousMessageIds = snapshot.messages.mapNotNull { it.id }.toSet(),
             submitRetryCount = submitRetryCount,
@@ -1529,6 +1584,13 @@ internal class CelesteViewModel(
                     allowEmptyCaption = text.isBlank(),
                 )
                 reconcile(activeGateway, currentStoredSessionId ?: owner.storedSessionIdOrNewConversationId)
+                if (
+                    gateway === activeGateway &&
+                    currentAttachmentOwner(mutableState.value) == owner &&
+                    unknownSubmits[owner]?.submissionIdentity == submissionIdentity
+                ) {
+                    unknownSubmits.remove(owner)
+                }
                 if (gateway === activeGateway) {
                     mutableState.value = mutableState.value.copy(
                         messages = mutableState.value.messages.map { message ->
@@ -1570,6 +1632,10 @@ internal class CelesteViewModel(
                     failedAttachmentId = transactionState.activeAttachmentId,
                     previousMessageIds = transactionState.previousMessageIds,
                     submitRetryCount = transactionState.submitRetryCount,
+                    submissionIdentity = transactionState.submissionIdentity,
+                    localFileIds = transactionState.localFileIds,
+                    stagedReferences = transactionState.stagedReferences.toList(),
+                    uncertainSubmit = transactionState.phase == AttachmentTransactionPhase.UncertainSubmit,
                     error = error,
                 )
             } finally {
@@ -1648,6 +1714,10 @@ internal class CelesteViewModel(
         failedAttachmentId: UUID?,
         previousMessageIds: Set<String>,
         submitRetryCount: Int,
+        submissionIdentity: UUID,
+        localFileIds: List<String>,
+        stagedReferences: List<String>,
+        uncertainSubmit: Boolean,
         error: Throwable,
     ) {
         val initial = mutableState.value
@@ -1662,6 +1732,58 @@ internal class CelesteViewModel(
                 messages = initial.messages.filterNot { it.id == localMessageId },
             )
         }
+
+        if (uncertainSubmit) {
+            // Do this before inspecting the current editor. The user is allowed to
+            // edit or switch context while reconnecting, but those edits cannot
+            // prove that the old prompt was not accepted.
+            val previous = unknownSubmits[owner]
+            unknownSubmits[owner] = UnknownSubmit(
+                submissionIdentity = submissionIdentity,
+                owner = owner,
+                generation = generation,
+                runtimeSessionIdAtStart = runtimeId,
+                text = text,
+                attachmentIds = attachmentIds,
+                localFileIds = (previous?.localFileIds.orEmpty() + localFileIds).distinct(),
+                stagedReferences = (
+                    previous?.stagedReferences.orEmpty() + stagedReferences
+                ).filter(String::isNotBlank).distinct(),
+                previousMessageIds = previousMessageIds,
+                retryCount = maxOf(previous?.retryCount ?: 0, submitRetryCount),
+            )
+            val current = mutableState.value
+            if (
+                gateway !== activeGateway ||
+                currentStoredSessionId != owner.storedSessionIdOrNewConversationId ||
+                currentAttachmentOwner(current) != owner
+            ) return
+            mutableState.value = current.copy(
+                messages = current.messages.filterNot { it.id == localMessageId },
+                turnState = TurnState.Reconnecting,
+                attachmentNotice = "Send status unknown — reconnect and check history before retrying.",
+                errorMessage = null,
+            )
+            val storedSessionId = currentStoredSessionId ?: return
+            if (activeGateway.state.value != GatewayConnectionState.Connected) {
+                scheduleReconnect(wasRunning = false, immediate = true)
+                return
+            }
+            val reconciled = runCatching { reconcile(activeGateway, storedSessionId) }
+            if (reconciled.isFailure) {
+                if (gateway === activeGateway && currentAttachmentOwner(mutableState.value) == owner) {
+                    mutableState.value = mutableState.value.copy(
+                        turnState = TurnState.Reconnecting,
+                        attachmentNotice = "Send status unknown — reconnect and check history before retrying.",
+                    )
+                    scheduleReconnect(wasRunning = false)
+                }
+                return
+            }
+            reconcileUnknownSubmit(activeGateway)
+            return
+        }
+
         val current = mutableState.value
         if (
             gateway !== activeGateway ||
@@ -1670,121 +1792,99 @@ internal class CelesteViewModel(
             (currentRuntimeSessionId != runtimeId && currentAttachmentOwner(current) != owner) ||
             current.draft.trim() != text ||
             current.attachments.map(AttachmentDraft::id) != attachmentIds
-        ) return
-
-        if (failedAttachmentId != null) {
-            val classification = if (error is AttachmentValidationException) {
-                null
-            } else if (error is StaleAttachmentTransaction) {
-                AttachmentFailureClass.Unknown
-            } else {
-                classifyAttachmentFailure(error)
-            }
-            val userError = when {
-                error is AttachmentValidationException -> error.userError
-                classification == AttachmentFailureClass.Unsupported ->
-                    UserFacingAttachmentError(AttachmentErrorKind.UnsupportedGateway)
-                classification == AttachmentFailureClass.AuthRequired ->
-                    UserFacingAttachmentError(AttachmentErrorKind.AuthenticationRequired)
-                classification == AttachmentFailureClass.Unknown ->
-                    UserFacingAttachmentError(AttachmentErrorKind.UploadStatusUnknown)
-                else -> UserFacingAttachmentError(AttachmentErrorKind.UploadFailed)
-            }
-            val transfer = if (classification == AttachmentFailureClass.Unknown) {
-                AttachmentTransferState.Unknown
-            } else {
-                AttachmentTransferState.Failed
-            }
-            val capability = when (classification) {
-                AttachmentFailureClass.Unsupported -> AttachmentCapabilityState.Unsupported
-                AttachmentFailureClass.AuthRequired -> AttachmentCapabilityState.AuthRequired
-                AttachmentFailureClass.Unknown -> AttachmentCapabilityState.TransientFailure
-                else -> current.attachmentCapability
-            }
-            mutableState.value = current.copy(
-                messages = current.messages.filterNot { it.id == localMessageId },
-                attachments = current.attachments.map { attachment ->
-                    if (attachment.id == failedAttachmentId) {
-                        attachment.copy(transfer = transfer, error = userError)
-                    } else {
-                        attachment
-                    }
-                },
-                turnState = TurnState.Idle,
-                attachmentCapability = capability,
-                attachmentNotice = userError.message,
-                errorMessage = null,
-            )
+        ) {
+            rememberOrphanedReferences(owner, stagedReferences)
             return
         }
 
-        // prompt.submit has no idempotency key. Reconnect and reconcile once, but never resend.
-        unknownSubmit = UnknownSubmit(
-            activeGateway = activeGateway,
-            owner = owner,
-            generation = generation,
-            runtimeSessionIdAtStart = runtimeId,
-            text = text,
-            attachmentIds = attachmentIds,
-            previousMessageIds = previousMessageIds,
-            retryCount = submitRetryCount,
-        )
+        if (failedAttachmentId == null) return
+        val classification = if (error is AttachmentValidationException) {
+            null
+        } else if (error is StaleAttachmentTransaction) {
+            AttachmentFailureClass.Unknown
+        } else {
+            classifyAttachmentFailure(error)
+        }
+        val userError = when {
+            error is AttachmentValidationException -> error.userError
+            classification == AttachmentFailureClass.Unsupported ->
+                UserFacingAttachmentError(AttachmentErrorKind.UnsupportedGateway)
+            classification == AttachmentFailureClass.AuthRequired ->
+                UserFacingAttachmentError(AttachmentErrorKind.AuthenticationRequired)
+            classification == AttachmentFailureClass.Unknown ->
+                UserFacingAttachmentError(AttachmentErrorKind.UploadStatusUnknown)
+            else -> UserFacingAttachmentError(AttachmentErrorKind.UploadFailed)
+        }
+        val transfer = if (classification == AttachmentFailureClass.Unknown) {
+            AttachmentTransferState.Unknown
+        } else {
+            AttachmentTransferState.Failed
+        }
+        val capability = when (classification) {
+            AttachmentFailureClass.Unsupported -> AttachmentCapabilityState.Unsupported
+            AttachmentFailureClass.AuthRequired -> AttachmentCapabilityState.AuthRequired
+            AttachmentFailureClass.Unknown -> AttachmentCapabilityState.TransientFailure
+            else -> current.attachmentCapability
+        }
         mutableState.value = current.copy(
             messages = current.messages.filterNot { it.id == localMessageId },
-            turnState = TurnState.Reconnecting,
-            attachmentNotice = "Send status unknown — reconnect and check history before retrying.",
+            attachments = current.attachments.map { attachment ->
+                if (attachment.id == failedAttachmentId) {
+                    attachment.copy(transfer = transfer, error = userError)
+                } else {
+                    attachment
+                }
+            },
+            turnState = TurnState.Idle,
+            attachmentCapability = capability,
+            attachmentNotice = userError.message,
             errorMessage = null,
         )
-        val storedSessionId = currentStoredSessionId ?: return
-        if (gateway !== activeGateway) return
-        if (activeGateway.state.value != GatewayConnectionState.Connected) {
-            scheduleReconnect(wasRunning = false, immediate = true)
-            return
-        }
-        val reconciled = runCatching { reconcile(activeGateway, storedSessionId) }
-        if (reconciled.isFailure) {
-            mutableState.value = mutableState.value.copy(
-                turnState = TurnState.Reconnecting,
-                attachmentNotice = "Send status unknown — reconnect and check history before retrying.",
-            )
-            scheduleReconnect(wasRunning = false)
-            return
-        }
-        reconcileUnknownSubmit(activeGateway)
     }
 
     private suspend fun reconcileUnknownSubmit(activeGateway: GatewayConnection) {
-        val pending = unknownSubmit ?: return
-        if (pending.activeGateway !== activeGateway || gateway !== activeGateway) return
+        if (gateway !== activeGateway) return
         val current = mutableState.value
-        if (
-            currentStoredSessionId != pending.owner.storedSessionIdOrNewConversationId ||
-            !isCurrentAttachmentContext(current, pending.owner, pending.generation) ||
-            current.draft.trim() != pending.text ||
-            current.attachments.map(AttachmentDraft::id) != pending.attachmentIds
-        ) {
-            unknownSubmit = null
-            return
-        }
+        val owner = currentAttachmentOwner(current)
+        val pending = unknownSubmits[owner] ?: return
+        if (currentStoredSessionId != pending.owner.storedSessionIdOrNewConversationId) return
+
         val accepted = current.messages.any { message ->
-            message.role == "user" &&
-                message.text.trim() == pending.text &&
-                (message.id == null || message.id !in pending.previousMessageIds) &&
-                (pending.attachmentIds.isEmpty() || message.attachments.isNotEmpty())
+            val isNewMessage = message.id == null || message.id !in pending.previousMessageIds
+            val textMatches = message.text.trim() == pending.text
+            val referenceMatches = pending.stagedReferences.any { reference ->
+                message.attachments.any { it.serverReference == reference }
+            }
+            message.role == "user" && isNewMessage && (textMatches || referenceMatches)
         }
         if (accepted) {
-            unknownSubmit = null
-            clearSubmittedDraftIfCurrent(
-                activeGateway = activeGateway,
-                owner = pending.owner,
-                generation = pending.generation,
-                expectedRuntimeSessionId = pending.runtimeSessionIdAtStart,
-                text = pending.text,
-                attachmentIds = pending.attachmentIds,
-                allowRuntimeChangeAfterStoredOwnerCheck = true,
-            )
+            unknownSubmits.remove(pending.owner)
+            val currentStillOwnsSubmission =
+                current.editorGeneration == pending.generation &&
+                    current.draft.trim() == pending.text &&
+                    current.attachments.map(AttachmentDraft::id) == pending.attachmentIds
+            if (currentStillOwnsSubmission) {
+                clearSubmittedDraftIfCurrent(
+                    activeGateway = activeGateway,
+                    owner = pending.owner,
+                    generation = pending.generation,
+                    expectedRuntimeSessionId = pending.runtimeSessionIdAtStart,
+                    text = pending.text,
+                    attachmentIds = pending.attachmentIds,
+                    allowRuntimeChangeAfterStoredOwnerCheck = true,
+                )
+            } else {
+                val retainedLocalFileIds = current.attachments
+                    .filter { it.owner == pending.owner }
+                    .mapNotNull { it.localFileId.takeIf(String::isNotBlank) }
+                    .toSet()
+                cleanupLocalFiles(
+                    pending.owner,
+                    pending.localFileIds.filterNot(retainedLocalFileIds::contains),
+                )
+            }
         } else {
-            unknownSubmit = pending.copy(reconciled = true)
+            unknownSubmits[pending.owner] = pending.copy(reconciled = true)
             mutableState.value = current.copy(
                 turnState = TurnState.Idle,
                 attachmentNotice = "Send not found — review the draft and retry explicitly.",

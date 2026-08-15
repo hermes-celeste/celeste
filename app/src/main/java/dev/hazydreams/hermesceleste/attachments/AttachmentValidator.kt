@@ -7,7 +7,6 @@ import java.util.zip.Inflater
 
 internal data class ValidatedImage(
     val mimeType: String,
-    val extension: String,
     val byteSize: Long,
 )
 
@@ -29,7 +28,6 @@ object AttachmentValidator {
             )
         return ValidatedImage(
             mimeType = detected.mimeType,
-            extension = detected.extension,
             byteSize = bytes.size.toLong(),
         )
     }
@@ -52,12 +50,12 @@ object AttachmentValidator {
     }
 
     private fun detect(bytes: ByteArray): DetectedImage? = when {
-        bytes.startsWith(PNG_SIGNATURE) && isPng(bytes) -> DetectedImage("image/png", ".png")
-        bytes.startsWith(JPEG_SIGNATURE) && isJpeg(bytes) -> DetectedImage("image/jpeg", ".jpg")
-        bytes.startsWith(GIF_SIGNATURE_87) && isGif(bytes) -> DetectedImage("image/gif", ".gif")
-        bytes.startsWith(GIF_SIGNATURE_89) && isGif(bytes) -> DetectedImage("image/gif", ".gif")
-        bytes.startsWith(BMP_SIGNATURE) && isBmp(bytes) -> DetectedImage("image/bmp", ".bmp")
-        isWebp(bytes) -> DetectedImage("image/webp", ".webp")
+        bytes.startsWith(PNG_SIGNATURE) && isPng(bytes) -> DetectedImage("image/png")
+        bytes.startsWith(JPEG_SIGNATURE) && isJpeg(bytes) -> DetectedImage("image/jpeg")
+        bytes.startsWith(GIF_SIGNATURE_87) && isGif(bytes) -> DetectedImage("image/gif")
+        bytes.startsWith(GIF_SIGNATURE_89) && isGif(bytes) -> DetectedImage("image/gif")
+        bytes.startsWith(BMP_SIGNATURE) && isBmp(bytes) -> DetectedImage("image/bmp")
+        isWebp(bytes) -> DetectedImage("image/webp")
         else -> null
     }
 
@@ -426,7 +424,6 @@ object AttachmentValidator {
 
     private data class DetectedImage(
         val mimeType: String,
-        val extension: String,
     )
 
     private companion object {

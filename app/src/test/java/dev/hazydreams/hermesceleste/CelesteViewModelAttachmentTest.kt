@@ -199,6 +199,134 @@ class CelesteViewModelAttachmentTest {
     }
 
     @Test
+    fun editingAndReeditingDoesNotResetTheUncertainSubmitRetryCap() = runTest {
+        val gateway = AttachmentGateway().apply {
+            promptFailure = GatewayRequestTimeout("prompt.submit", IOException("timed out"))
+            resumeMessages = "[]"
+        }
+        val viewModel = openConversation(gateway, FakeAttachmentStore())
+        viewModel.updateDraft("Original caption")
+        viewModel.beginAttachmentPicker()
+        viewModel.onAttachmentPickerResult(listOf(Uri.parse("content://image-1")))
+        advanceUntilIdle()
+
+        viewModel.sendMessage()
+        advanceUntilIdle()
+        repeat(MAX_SUBMIT_RETRIES) { attempt ->
+            viewModel.updateDraft("Re-edit $attempt")
+            viewModel.sendMessage()
+            advanceUntilIdle()
+        }
+
+        val submittedCount = gateway.methods.count { it == "prompt.submit" }
+        viewModel.updateDraft("One more edit")
+        viewModel.sendMessage()
+        advanceUntilIdle()
+
+        assertEquals(1 + MAX_SUBMIT_RETRIES, submittedCount)
+        assertEquals(submittedCount, gateway.methods.count { it == "prompt.submit" })
+        assertTrue(viewModel.state.value.attachmentNotice.orEmpty().contains("Retry limit reached"))
+        assertTrue(viewModel.state.value.attachments.single().serverReference?.isNotBlank() == true)
+    }
+
+    @Test
+    fun successfulExplicitRetryReleasesItsOwnerTombstone() = runTest {
+        val gateway = AttachmentGateway().apply {
+            promptFailure = GatewayRequestTimeout("prompt.submit", IOException("timed out"))
+            resumeMessages = "[]"
+        }
+        val viewModel = openConversation(gateway, FakeAttachmentStore())
+        viewModel.updateDraft("Retry once")
+        viewModel.beginAttachmentPicker()
+        viewModel.onAttachmentPickerResult(listOf(Uri.parse("content://image-1")))
+        advanceUntilIdle()
+
+        viewModel.sendMessage()
+        advanceUntilIdle()
+        gateway.promptFailure = null
+        viewModel.sendMessage()
+        advanceUntilIdle()
+
+        repeat(MAX_SUBMIT_RETRIES + 1) { attempt ->
+            viewModel.updateDraft("New message $attempt")
+            viewModel.sendMessage()
+            advanceUntilIdle()
+        }
+
+        assertEquals(2 + MAX_SUBMIT_RETRIES + 1, gateway.methods.count { it == "prompt.submit" })
+    }
+
+    @Test
+    fun nonThrowingDetachFalseStaysQueuedUntilAuthoritativeCleanup() = runTest {
+        val gateway = AttachmentGateway().apply {
+            blockSecondAttach = true
+            secondAttachStarted = CompletableDeferred()
+            detachAccepted = false
+        }
+        val viewModel = openConversation(
+            gateway,
+            FakeAttachmentStore(),
+            reconnectDelayMillis = { _, _ -> 60_000L },
+        )
+        viewModel.updateDraft("Keep these images")
+        viewModel.beginAttachmentPicker()
+        viewModel.onAttachmentPickerResult(
+            listOf(Uri.parse("content://image-1"), Uri.parse("content://image-2")),
+        )
+        advanceUntilIdle()
+        viewModel.sendMessage()
+        gateway.secondAttachStarted!!.await()
+        gateway.disconnect("upload connection lost")
+        viewModel.removeAttachment(viewModel.state.value.attachments[1].id)
+        advanceUntilIdle()
+        val detachAttemptsBeforeRetry = gateway.methods.count { it == "image.detach" }
+        assertTrue(detachAttemptsBeforeRetry >= 1)
+
+        gateway.detachAccepted = true
+        viewModel.openSession(StoredSession("stored-1", "Test", "", 0.0, 0, "android"))
+        advanceUntilIdle()
+
+        assertTrue(gateway.methods.count { it == "image.detach" } > detachAttemptsBeforeRetry)
+    }
+
+    @Test
+    fun contextSwitchKeepsUncertainSubmitReferencesUntilTheOwningSessionReconciles() = runTest {
+        val gateway = AttachmentGateway().apply {
+            blockPrompt = true
+            promptStarted = CompletableDeferred()
+        }
+        val dashboard = FakeDashboard(gateway)
+        val viewModel = CelesteViewModel(
+            dashboard = dashboard,
+            connectionStore = InMemoryConnectionStore(),
+            attachmentStagingStore = FakeAttachmentStore(),
+            reconnectDelayMillis = { _, _ -> 60_000L },
+        )
+        viewModel.updateDashboardUrl("http://hermes.test:9119")
+        viewModel.findDashboard()
+        viewModel.loadSessions()
+        viewModel.openSession(dashboard.session)
+        advanceUntilIdle()
+
+        viewModel.updateDraft("Keep this uncertain image")
+        viewModel.beginAttachmentPicker()
+        viewModel.onAttachmentPickerResult(listOf(Uri.parse("content://image-1")))
+        advanceUntilIdle()
+        viewModel.sendMessage()
+        gateway.promptStarted!!.await()
+
+        viewModel.leaveConversation()
+        advanceUntilIdle()
+        assertTrue(gateway.detachRequests.isEmpty())
+
+        gateway.releasePrompt.complete(Unit)
+        viewModel.openSession(dashboard.session)
+        advanceUntilIdle()
+
+        assertTrue(gateway.detachRequests.isEmpty())
+    }
+
+    @Test
     fun timeoutDuringSubmitReconcilesTheStoredSessionWithoutResending() = runTest {
         val gateway = AttachmentGateway().apply {
             promptFailure = GatewayRequestTimeout("prompt.submit", IOException("timed out"))
@@ -366,7 +494,6 @@ class CelesteViewModelAttachmentTest {
         override suspend fun stage(
             input: InputStream,
             displayName: String?,
-            declaredMimeType: String?,
             owner: DraftOwner,
             generation: Long,
         ): StagedAttachment = error("not used")
@@ -401,6 +528,7 @@ class CelesteViewModelAttachmentTest {
         var promptStarted: CompletableDeferred<Unit>? = null
         val releasePrompt = CompletableDeferred<Unit>()
         val detachRequests = mutableListOf<JsonObject>()
+        var detachAccepted = true
         var disconnectOnPromptFailure = false
         var attachFailure: Throwable? = null
         var promptFailure: Throwable? = null
@@ -443,7 +571,7 @@ class CelesteViewModelAttachmentTest {
             }
             return when (method) {
                 "image.attach_bytes" -> buildJsonObject { put("path", "/hermes/images/upload.png"); put("bytes", 16) }
-                "image.detach" -> buildJsonObject { put("detached", true) }
+                "image.detach" -> buildJsonObject { put("detached", detachAccepted) }
                 "prompt.submit" -> buildJsonObject { put("status", "streaming") }
                 else -> buildJsonObject {}
             }

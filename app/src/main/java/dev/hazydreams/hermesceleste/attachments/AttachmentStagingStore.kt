@@ -27,7 +27,6 @@ interface AttachmentStagingStore {
     suspend fun stage(
         input: InputStream,
         displayName: String?,
-        declaredMimeType: String?,
         owner: DraftOwner,
         generation: Long,
     ): StagedAttachment
@@ -79,7 +78,6 @@ class FileAttachmentStagingStore(
             }
         }.getOrNull()
         val displayName = sanitizeDisplayName(metadata?.first) ?: "Image"
-        val declaredMimeType = contentResolver.getType(uri)
         val input = try {
             contentResolver.openInputStream(uri)
                 ?: throw AttachmentValidationException(
@@ -97,14 +95,13 @@ class FileAttachmentStagingStore(
             )
         }
         input.use {
-            stage(it, displayName, declaredMimeType, owner, generation)
+            stage(it, displayName, owner, generation)
         }
     }
 
     override suspend fun stage(
         input: InputStream,
         displayName: String?,
-        declaredMimeType: String?,
         owner: DraftOwner,
         generation: Long,
     ): StagedAttachment = withContext(Dispatchers.IO) {
@@ -244,7 +241,6 @@ class UnavailableAttachmentStagingStore : AttachmentStagingStore {
     override suspend fun stage(
         input: InputStream,
         displayName: String?,
-        declaredMimeType: String?,
         owner: DraftOwner,
         generation: Long,
     ): StagedAttachment = throw AttachmentValidationException(

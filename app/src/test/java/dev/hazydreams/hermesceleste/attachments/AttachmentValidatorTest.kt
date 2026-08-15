@@ -17,7 +17,6 @@ class AttachmentValidatorTest {
         val validated = AttachmentValidator.validate(pngBytes)
 
         assertEquals("image/png", validated.mimeType)
-        assertEquals(".png", validated.extension)
         assertEquals(pngBytes.size.toLong(), validated.byteSize)
     }
 
@@ -65,14 +64,12 @@ class AttachmentValidatorTest {
         val first = store.stage(
             input = ByteArrayInputStream(pngBytes),
             displayName = "first.png",
-            declaredMimeType = "image/png",
             owner = owner,
             generation = 4,
         )
         val second = store.stage(
             input = ByteArrayInputStream(pngBytes),
             displayName = "second.png",
-            declaredMimeType = "image/png",
             owner = owner,
             generation = 4,
         )
