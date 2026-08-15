@@ -256,6 +256,104 @@ fun CustomAssistantConversationPreviewScreenshot() {
 }
 
 @PreviewTest
+@Preview(name = "17 · Saved assistant name", widthDp = 390, heightDp = 844, showBackground = true)
+@Composable
+fun SavedAssistantNameSettingsPreviewScreenshot() {
+    HermesCelesteTheme {
+        SettingsScreen(
+            dashboardUrl = "https://hermes.example.net/hermes",
+            connectionPhase = ConnectionPhase.Connected,
+            assistantDisplayName = "Juno",
+            assistantNameScope = AssistantNameKey("https://hermes.example.net/hermes", "default"),
+            onBack = {},
+            onGateway = {},
+        )
+    }
+}
+
+@PreviewTest
+@Preview(name = "18 · Assistant name write error", widthDp = 390, heightDp = 844, showBackground = true)
+@Composable
+fun AssistantNameWriteErrorPreviewScreenshot() {
+    HermesCelesteTheme {
+        SettingsScreen(
+            dashboardUrl = "https://hermes.example.net/hermes",
+            connectionPhase = ConnectionPhase.Connected,
+            assistantDisplayName = "Juno",
+            assistantNameScope = AssistantNameKey("https://hermes.example.net/hermes", "default"),
+            assistantNameEditor = AssistantNameEditState(
+                isOpen = true,
+                draft = "Nova",
+                errorMessage = "Couldn’t save assistant name on this device. Try again.",
+                isRetryableError = true,
+            ),
+            onBack = {},
+            onGateway = {},
+            onOpenAssistantName = {},
+            onAssistantNameDraftChange = {},
+            onSaveAssistantName = {},
+            onCancelAssistantName = {},
+        )
+    }
+}
+
+@PreviewTest
+@Preview(name = "19 · Custom assistant responding", widthDp = 390, heightDp = 844, showBackground = true)
+@Composable
+fun CustomAssistantRunningPreviewScreenshot() {
+    HermesCelesteTheme {
+        PreviewConversation(
+            assistantDisplayName = "Juno",
+            messages = emptyList(),
+            turnState = TurnState.Running,
+        )
+    }
+}
+
+@PreviewTest
+@Preview(name = "20 · Assistant name large text", widthDp = 320, heightDp = 844, fontScale = 2f, showBackground = true)
+@Composable
+fun AssistantNameLargeTextNarrowPreviewScreenshot() {
+    HermesCelesteTheme {
+        SettingsScreen(
+            dashboardUrl = "https://hermes.example.net/hermes",
+            connectionPhase = ConnectionPhase.Connected,
+            assistantDisplayName = "Juno",
+            assistantNameScope = AssistantNameKey("https://hermes.example.net/hermes", "work"),
+            assistantNameEditor = AssistantNameEditState(
+                isOpen = true,
+                draft = "🌙".repeat(40),
+            ),
+            onBack = {},
+            onGateway = {},
+            onOpenAssistantName = {},
+            onAssistantNameDraftChange = {},
+            onSaveAssistantName = {},
+            onCancelAssistantName = {},
+        )
+    }
+}
+
+@PreviewTest
+@Preview(name = "21 · Hermes fallback", widthDp = 390, heightDp = 844, showBackground = true)
+@Composable
+fun AssistantNameFallbackPreviewScreenshot() {
+    HermesCelesteTheme {
+        PreviewConversation(
+            assistantDisplayName = "",
+            messages = listOf(
+                ConversationMessage(
+                    role = "assistant",
+                    text = "A missing local alias stays safe and readable as Hermes.",
+                    id = "preview-assistant-fallback",
+                ),
+            ),
+            turnState = TurnState.Idle,
+        )
+    }
+}
+
+@PreviewTest
 @Preview(name = "09 · Settings", widthDp = 390, heightDp = 844, showBackground = true)
 @Composable
 fun SettingsPreviewScreenshot() {

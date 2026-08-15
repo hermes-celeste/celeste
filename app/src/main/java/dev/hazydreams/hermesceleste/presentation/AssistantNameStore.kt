@@ -1,6 +1,7 @@
 package dev.hazydreams.hermesceleste.presentation
 
 import android.content.Context
+import android.util.Log
 import dev.hazydreams.hermesceleste.network.DashboardUrlPolicy
 import java.io.IOException
 import kotlinx.coroutines.Dispatchers
@@ -17,6 +18,30 @@ const val DEFAULT_ASSISTANT_NAME = "Hermes"
 
 internal const val ASSISTANT_NAME_MAX_CODE_POINTS = 40
 internal const val ASSISTANT_NAME_STORE_VERSION = 1
+
+internal enum class AssistantNameDiagnostic(val code: String) {
+    ReadFailure("read_failure"),
+    MalformedPayload("malformed_payload"),
+    MalformedRecord("malformed_record"),
+    UnsupportedVersion("unsupported_version"),
+    InvalidRecord("invalid_record"),
+}
+
+internal fun interface AssistantNameDiagnostics {
+    fun record(diagnostic: AssistantNameDiagnostic)
+}
+
+internal object NoOpAssistantNameDiagnostics : AssistantNameDiagnostics {
+    override fun record(diagnostic: AssistantNameDiagnostic) = Unit
+}
+
+internal object LogcatAssistantNameDiagnostics : AssistantNameDiagnostics {
+    private const val TAG = "CelesteAssistantName"
+
+    override fun record(diagnostic: AssistantNameDiagnostic) {
+        Log.w(TAG, "Local assistant-name record discarded: ${diagnostic.code}")
+    }
+}
 
 internal data class AssistantNameValidation(
     val normalized: String?,
@@ -115,6 +140,75 @@ internal interface AssistantNameStore {
     suspend fun clearOrigin(origin: String)
 }
 
+@Serializable
+internal data class AssistantNameRecord(
+    val version: Int,
+    val origin: String,
+    val profile: String,
+    val name: String,
+)
+
+internal fun interface AssistantNameRecordCommitter {
+    fun commit(encoded: String?): Boolean
+}
+
+internal fun commitAssistantNameRecords(
+    records: List<AssistantNameRecord>,
+    json: Json,
+    committer: AssistantNameRecordCommitter,
+) {
+    val encoded = records
+        .takeIf { it.isNotEmpty() }
+        ?.let { json.encodeToString(it) }
+    if (!committer.commit(encoded)) {
+        throw IOException("Could not save assistant name on this device.")
+    }
+}
+
+internal fun decodeAssistantNameRecords(
+    encoded: String,
+    json: Json,
+    diagnostics: AssistantNameDiagnostics,
+): List<AssistantNameRecord> {
+    val root = runCatching { json.parseToJsonElement(encoded) }.getOrElse {
+        diagnostics.record(AssistantNameDiagnostic.MalformedPayload)
+        return emptyList()
+    }
+    val records = root as? JsonArray ?: run {
+        diagnostics.record(AssistantNameDiagnostic.MalformedPayload)
+        return emptyList()
+    }
+
+    return records.mapNotNull { element ->
+        val record = runCatching {
+            json.decodeFromJsonElement<AssistantNameRecord>(element)
+        }.getOrElse {
+            diagnostics.record(AssistantNameDiagnostic.MalformedRecord)
+            return@mapNotNull null
+        }
+        if (record.version != ASSISTANT_NAME_STORE_VERSION) {
+            diagnostics.record(AssistantNameDiagnostic.UnsupportedVersion)
+            return@mapNotNull null
+        }
+        val key = AssistantNameKey.from(record.origin, record.profile)
+            ?: run {
+                diagnostics.record(AssistantNameDiagnostic.InvalidRecord)
+                return@mapNotNull null
+            }
+        val validatedName = AssistantNamePolicy.validate(record.name)
+        if (validatedName.errorMessage != null || validatedName.normalized == null) {
+            diagnostics.record(AssistantNameDiagnostic.InvalidRecord)
+            return@mapNotNull null
+        }
+        AssistantNameRecord(
+            version = ASSISTANT_NAME_STORE_VERSION,
+            origin = key.origin,
+            profile = key.profile,
+            name = validatedName.normalized,
+        )
+    }
+}
+
 internal class InMemoryAssistantNameStore(
     private val entries: MutableMap<AssistantNameKey, String> = linkedMapOf(),
 ) : AssistantNameStore {
@@ -147,6 +241,7 @@ internal class InMemoryAssistantNameStore(
 internal class AndroidAssistantNameStore(
     context: Context,
     private val json: Json = Json { ignoreUnknownKeys = false },
+    private val diagnostics: AssistantNameDiagnostics = LogcatAssistantNameDiagnostics,
 ) : AssistantNameStore {
     private val applicationContext = context.applicationContext
     private val preferences = applicationContext.getSharedPreferences(
@@ -195,48 +290,20 @@ internal class AndroidAssistantNameStore(
 
     private fun readRecords(): List<AssistantNameRecord> {
         val encoded = preferences.getString(KEY_RECORDS, null) ?: return emptyList()
-        val root = runCatching { json.parseToJsonElement(encoded) }.getOrNull()
-            as? JsonArray ?: return emptyList()
-
-        return root.mapNotNull { element ->
-            val record = runCatching {
-                json.decodeFromJsonElement<AssistantNameRecord>(element)
-            }.getOrNull() ?: return@mapNotNull null
-            if (record.version != ASSISTANT_NAME_STORE_VERSION) return@mapNotNull null
-            val key = AssistantNameKey.from(record.origin, record.profile)
-                ?: return@mapNotNull null
-            val validatedName = AssistantNamePolicy.validate(record.name)
-            if (validatedName.errorMessage != null || validatedName.normalized == null) {
-                return@mapNotNull null
-            }
-            AssistantNameRecord(
-                version = ASSISTANT_NAME_STORE_VERSION,
-                origin = key.origin,
-                profile = key.profile,
-                name = validatedName.normalized,
-            )
-        }
+        return decodeAssistantNameRecords(encoded, json, diagnostics)
     }
 
     private fun commitRecords(records: List<AssistantNameRecord>) {
-        val editor = preferences.edit()
-        if (records.isEmpty()) {
-            editor.remove(KEY_RECORDS)
-        } else {
-            editor.putString(KEY_RECORDS, json.encodeToString(records))
-        }
-        if (!editor.commit()) {
-            throw IOException("Could not save assistant name on this device.")
+        commitAssistantNameRecords(records, json) { encoded ->
+            val editor = preferences.edit()
+            if (encoded == null) {
+                editor.remove(KEY_RECORDS)
+            } else {
+                editor.putString(KEY_RECORDS, encoded)
+            }
+            editor.commit()
         }
     }
-
-    @Serializable
-    private data class AssistantNameRecord(
-        val version: Int,
-        val origin: String,
-        val profile: String,
-        val name: String,
-    )
 
     private companion object {
         const val PREFERENCES_NAME = "assistant_presentation_v1"

@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
@@ -46,7 +47,12 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.error
+import androidx.compose.ui.semantics.liveRegion
+import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -56,8 +62,8 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import dev.hazydreams.hermesceleste.ConnectionPhase
 import dev.hazydreams.hermesceleste.AssistantNameEditState
+import dev.hazydreams.hermesceleste.ConnectionPhase
 import dev.hazydreams.hermesceleste.connection.SavedAuthMode
 import dev.hazydreams.hermesceleste.network.DashboardProbeResult
 import dev.hazydreams.hermesceleste.presentation.AssistantNameKey
@@ -193,6 +199,8 @@ internal fun SettingsScreen(
         Column(
             modifier = Modifier
                 .fillMaxSize()
+                .verticalScroll(rememberScrollState())
+                .imePadding()
                 .padding(horizontal = 28.dp, vertical = 38.dp),
         ) {
             EditorialHeader(
@@ -255,8 +263,9 @@ internal fun SettingsScreen(
                             onClick = onOpenAssistantName,
                         )
                         .semantics {
+                            role = Role.Button
                             contentDescription = if (canEditAssistantName) {
-                                "Assistant name, $effectiveAssistantName"
+                                "Assistant name, $effectiveAssistantName, ${assistantNameScope?.scopeLabel().orEmpty()}"
                             } else {
                                 "Assistant name unavailable until a connection and profile are selected"
                             }
@@ -276,8 +285,6 @@ internal fun SettingsScreen(
                                 effectiveAssistantName,
                                 color = CelesteInk,
                                 style = MaterialTheme.typography.bodyMedium,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
                             )
                             Text(
                                 assistantNameScope?.scopeLabel().orEmpty(),
@@ -328,7 +335,9 @@ private fun AssistantNameEditor(
         onValueChange = onDraftChange,
         modifier = Modifier
             .fillMaxWidth()
-            .semantics { contentDescription = "Assistant name" },
+            .semantics {
+                state.errorMessage?.let { error(it) }
+            },
         label = { Text("Assistant name") },
         singleLine = true,
         isError = state.errorMessage != null,
@@ -344,7 +353,15 @@ private fun AssistantNameEditor(
             cursorColor = CelesteBlue,
         ),
         supportingText = {
-            state.errorMessage?.let { error -> Text(error, color = CelesteError) }
+            state.errorMessage?.let { errorMessage ->
+                Text(
+                    text = errorMessage,
+                    color = CelesteError,
+                    modifier = Modifier.semantics {
+                        liveRegion = LiveRegionMode.Assertive
+                    },
+                )
+            }
         },
     )
     Spacer(Modifier.height(18.dp))

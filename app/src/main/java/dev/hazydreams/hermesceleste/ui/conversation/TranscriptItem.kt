@@ -143,13 +143,17 @@ private fun ToolMessage(message: ConversationMessage) {
 
 @Composable
 private fun MessageLabel(label: String, color: Color, pending: Boolean) {
-    Row(verticalAlignment = Alignment.CenterVertically) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
         Text(
             text = label.uppercase(),
             color = color,
             fontSize = 10.sp,
             fontWeight = FontWeight.Bold,
             letterSpacing = 1.sp,
+            modifier = Modifier.weight(1f, fill = false),
         )
         if (pending) {
             Spacer(Modifier.size(7.dp))

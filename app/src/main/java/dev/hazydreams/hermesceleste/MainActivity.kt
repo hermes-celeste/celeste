@@ -18,6 +18,7 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import dev.hazydreams.hermesceleste.connection.AndroidConnectionStore
 import dev.hazydreams.hermesceleste.presentation.AndroidAssistantNameStore
+import dev.hazydreams.hermesceleste.presentation.LogcatAssistantNameDiagnostics
 import dev.hazydreams.hermesceleste.ui.CelesteRoutes
 import dev.hazydreams.hermesceleste.ui.HermesCelesteTheme
 
@@ -46,9 +47,14 @@ private class CelesteViewModelFactory(
     @Suppress("UNCHECKED_CAST")
     override fun <T : ViewModel> create(modelClass: Class<T>): T {
         require(modelClass.isAssignableFrom(CelesteViewModel::class.java))
+        val diagnostics = LogcatAssistantNameDiagnostics
         return CelesteViewModel(
             connectionStore = AndroidConnectionStore(context),
-            assistantNameStore = AndroidAssistantNameStore(context),
+            assistantNameStore = AndroidAssistantNameStore(
+                context = context,
+                diagnostics = diagnostics,
+            ),
+            assistantNameDiagnostics = diagnostics,
         ) as T
     }
 }
