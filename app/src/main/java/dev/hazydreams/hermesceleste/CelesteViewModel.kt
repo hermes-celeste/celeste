@@ -280,6 +280,7 @@ internal class CelesteViewModel(
     private var currentSessionCanResume = true
     private var authoritativeAdmissionEvidence: AdmissionEvidence? = null
     private val acceptedGuidanceProjections = mutableListOf<AcceptedGuidanceProjection>()
+    private var pendingAcceptedReconciliation: PendingOperation? = null
     private val bufferedEvents = mutableListOf<GatewayEvent>()
 
     init {
@@ -1044,6 +1045,7 @@ internal class CelesteViewModel(
         val text = draftSnapshot.trim()
         if (text.isBlank() && snapshot.attachments.isEmpty()) return
         if (pendingOperation != null) return
+        if (kind != ActiveTurnOperationKind.Submit && isAcceptedReconciliationPending(activeGateway)) return
         if (snapshot.attachments.any { it.readiness != AttachmentReadiness.Ready }) {
             mutableState.value = snapshot.copy(
                 deliveryStatus = DeliveryStatus.Rejected,
@@ -1161,11 +1163,18 @@ internal class CelesteViewModel(
                             errorMessage = null,
                         )
                         if (operation.kind != ActiveTurnOperationKind.Submit && gateway === activeGateway) {
-                            val reconciliation = runCatching {
-                                // An accepted correction is only a gateway admission. Reconcile
-                                // immediately so the local acknowledgement can be replaced by
-                                // the authoritative projection before a turn-complete event.
-                                reconcile(activeGateway, operation.storedSessionId, operation.profile)
+                            val reconciliation = try {
+                                pendingAcceptedReconciliation = operation
+                                runCatching {
+                                    // An accepted correction is only a gateway admission. Reconcile
+                                    // immediately so the local acknowledgement can be replaced by
+                                    // the authoritative projection before a turn-complete event.
+                                    reconcile(activeGateway, operation.storedSessionId, operation.profile)
+                                }
+                            } finally {
+                                if (pendingAcceptedReconciliation?.sequence == operation.sequence) {
+                                    pendingAcceptedReconciliation = null
+                                }
                             }
                             if (reconciliation.isFailure && gateway === activeGateway) {
                                 mutableState.value = mutableState.value.copy(
@@ -1273,6 +1282,11 @@ internal class CelesteViewModel(
             },
         )
     }
+
+    private fun isAcceptedReconciliationPending(activeGateway: GatewayConnection): Boolean =
+        pendingAcceptedReconciliation?.let { operation ->
+            operation.gateway === activeGateway && operation.generation == gatewayGeneration
+        } == true
 
     private fun isCurrentOperation(operation: PendingOperation): Boolean =
         pendingOperation?.sequence == operation.sequence &&
@@ -2218,6 +2232,7 @@ internal class CelesteViewModel(
         gatewayStateJob = null
         invalidateReconciliation()
         acceptedGuidanceProjections.clear()
+        pendingAcceptedReconciliation = null
         currentRuntimeSessionId = null
         currentStoredSessionId = null
         currentSessionCanResume = true

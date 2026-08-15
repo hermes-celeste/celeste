@@ -511,6 +511,59 @@ class CelesteViewModelTest {
     }
 
     @Test
+    fun acceptedCorrectionGatesAnIdenticalFollowUpUntilItsResumeRefreshesTheBaseline() = runTest {
+        val gateway = FakeGateway()
+        gateway.resumePayload = resumePayload(messages = emptyList(), running = true)
+        val viewModel = openConversation(gateway)
+        val resumeGate = CompletableDeferred<Unit>()
+        val resumeEntered = CompletableDeferred<Unit>()
+        gateway.resumePayloads += resumePayload(
+            messages = emptyList(),
+            running = true,
+            inflightAssistantText = "working",
+            inflightCorrections = listOf("same guidance"),
+            inflightStreaming = true,
+        )
+        gateway.resumePayloads += resumePayload(
+            messages = emptyList(),
+            running = true,
+            inflightAssistantText = "working",
+            inflightCorrections = listOf("same guidance", "same guidance"),
+            inflightStreaming = true,
+        )
+        gateway.resumeGates += resumeGate
+        gateway.resumeEnteredSignals += resumeEntered
+
+        viewModel.updateDraft("same guidance")
+        viewModel.steerMessage()
+        runCurrent()
+        resumeEntered.await()
+
+        viewModel.updateDraft("same guidance")
+        viewModel.steerMessage()
+        runCurrent()
+
+        assertEquals(1, gateway.methods.count { it == "session.steer" })
+        assertEquals("same guidance", viewModel.state.value.draft)
+        assertTrue(viewModel.state.value.messages.any { it.text == "same guidance" && it.pending })
+
+        resumeGate.complete(Unit)
+        advanceUntilIdle()
+
+        assertEquals(1, gateway.methods.count { it == "session.steer" })
+        assertEquals("same guidance", viewModel.state.value.draft)
+        assertEquals(1, viewModel.state.value.messages.count { it.text == "same guidance" })
+
+        viewModel.steerMessage()
+        advanceUntilIdle()
+
+        assertEquals(2, gateway.methods.count { it == "session.steer" })
+        assertEquals("", viewModel.state.value.draft)
+        assertEquals(2, viewModel.state.value.messages.count { it.text == "same guidance" })
+        viewModel.leaveConversation()
+    }
+
+    @Test
     fun concurrentReconciliationsAreSerializedAndStaleBufferedEventsCannotReplay() = runTest {
         val gateway = FakeGateway()
         gateway.resumePayload = resumePayload(messages = emptyList(), running = true)
