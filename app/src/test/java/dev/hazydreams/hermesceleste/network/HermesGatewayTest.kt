@@ -22,6 +22,7 @@ import okhttp3.WebSocket
 import okhttp3.WebSocketListener
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -69,7 +70,56 @@ class HermesGatewayTest {
         withTimeout(5_000) { connecting.await() }
 
         assertEquals(GatewayConnectionState.Connected, gateway.state.value)
+        assertFalse(gateway.supportsSessionChangeEvents)
         gateway.close()
+    }
+
+    @Test
+    fun readsTheOptionalSessionChangeEventCapabilityFromGatewayReady() = runBlocking {
+        server.enqueue(
+            MockResponse.Builder()
+                .webSocketUpgrade(
+                    object : WebSocketListener() {
+                        override fun onOpen(webSocket: WebSocket, response: Response) {
+                            webSocket.send(gatewayReadyWithChangeEventsFrame)
+                        }
+
+                        override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
+                            webSocket.close(code, reason)
+                        }
+                    },
+                )
+                .build(),
+        )
+
+        val gateway = gateway()
+        gateway.connect()
+
+        assertTrue(gateway.supportsSessionChangeEvents)
+        gateway.close()
+    }
+
+    @Test
+    fun closingTheGatewayInvalidatesThePreviousSessionChangeCapability() = runBlocking {
+        server.enqueue(
+            MockResponse.Builder()
+                .webSocketUpgrade(
+                    object : WebSocketListener() {
+                        override fun onOpen(webSocket: WebSocket, response: Response) {
+                            webSocket.send(gatewayReadyWithChangeEventsFrame)
+                        }
+                    },
+                )
+                .build(),
+        )
+
+        val gateway = gateway()
+        gateway.connect()
+        assertTrue(gateway.supportsSessionChangeEvents)
+
+        gateway.close()
+
+        assertFalse(gateway.supportsSessionChangeEvents)
     }
 
     @Test
@@ -295,5 +345,7 @@ class HermesGatewayTest {
     private companion object {
         const val gatewayReadyFrame =
             """{"jsonrpc":"2.0","method":"event","params":{"type":"gateway.ready","payload":{}}}"""
+        const val gatewayReadyWithChangeEventsFrame =
+            """{"jsonrpc":"2.0","method":"event","params":{"type":"gateway.ready","payload":{"change_events":true}}}"""
     }
 }

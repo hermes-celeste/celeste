@@ -1,5 +1,6 @@
 package dev.hazydreams.hermesceleste.ui.sessions
 
+import java.util.Locale
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -12,6 +13,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.animateItem
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
@@ -30,6 +32,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.mergeDescendants
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.font.FontWeight
@@ -38,6 +41,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import dev.hazydreams.hermesceleste.network.DashboardProfile
 import dev.hazydreams.hermesceleste.network.StoredSession
+import dev.hazydreams.hermesceleste.network.normalizedSessionProfile
+import dev.hazydreams.hermesceleste.network.relativeActivityLabel
 import dev.hazydreams.hermesceleste.ui.CelesteBackdrop
 import dev.hazydreams.hermesceleste.ui.CelesteBlue
 
@@ -49,6 +54,30 @@ import dev.hazydreams.hermesceleste.ui.CelestePanel
 
 import dev.hazydreams.hermesceleste.ui.EditorialDivider
 import dev.hazydreams.hermesceleste.ui.StatusMessage
+
+internal fun sessionRowKey(session: StoredSession): String =
+    normalizedSessionProfile(session.profile).let { profile ->
+        "${profile.length}:$profile:${session.id.length}:${session.id}"
+    }
+
+internal fun sessionAccessibilityLabel(
+    session: StoredSession,
+    profiles: List<DashboardProfile>,
+    nowSeconds: Double,
+): String {
+    val activityLabel = relativeActivityLabel(session, nowSeconds)
+    val profileLabel = if (profiles.size > 1) {
+        "${normalizedSessionProfile(session.profile).uppercase(Locale.ROOT)} profile"
+    } else {
+        null
+    }
+    return listOfNotNull(
+        session.title.ifBlank { "Untitled conversation" },
+        activityLabel,
+        profileLabel,
+        "${session.messageCount} messages",
+    ).joinToString(separator = ". ")
+}
 
 @Composable
 internal fun SessionListScreen(
@@ -160,12 +189,23 @@ internal fun SessionListScreen(
             ) {
                 itemsIndexed(
                     items = sessions,
-                    key = { _, session -> session.id },
+                    key = { _, session -> sessionRowKey(session) },
                 ) { _, session ->
+                    val nowSeconds = System.currentTimeMillis() / 1000.0
+                    val activityLabel = relativeActivityLabel(
+                        session = session,
+                        nowSeconds = nowSeconds,
+                    )
+                    val accessibleLabel = sessionAccessibilityLabel(session, profiles, nowSeconds)
                     Column(
                         modifier = Modifier
+                            .animateItem()
                             .fillMaxWidth()
                             .clickable(enabled = loadingMessage == null) { onSessionSelected(session) }
+                            .semantics(mergeDescendants = true) {
+                                contentDescription = accessibleLabel
+                                stateDescription = activityLabel ?: "Activity time unavailable"
+                            }
                             .padding(vertical = 21.dp),
                     ) {
                         Text(
@@ -184,9 +224,17 @@ internal fun SessionListScreen(
                                 overflow = TextOverflow.Ellipsis,
                             )
                         }
+                        activityLabel?.let { label ->
+                            Spacer(Modifier.height(8.dp))
+                            Text(
+                                label,
+                                color = CelesteMuted,
+                                style = MaterialTheme.typography.labelMedium,
+                            )
+                        }
                         Spacer(Modifier.height(13.dp))
                         val metadata = if (profiles.size > 1) {
-                            "${session.profile.uppercase()}  ·  ${session.messageCount} MESSAGES"
+                            "${session.profile.uppercase(Locale.ROOT)}  ·  ${session.messageCount} MESSAGES"
                         } else {
                             "${session.messageCount} MESSAGES"
                         }

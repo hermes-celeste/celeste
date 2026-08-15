@@ -3,6 +3,7 @@ package dev.hazydreams.hermesceleste.network
 import java.io.IOException
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.ConcurrentHashMap
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 import kotlinx.coroutines.Dispatchers
@@ -65,6 +66,8 @@ data class StoredSession(
     val messageCount: Int,
     val source: String,
     val profile: String = "default",
+    /** Hermes `last_active`, in Unix epoch seconds, when valid. */
+    val lastActive: Double? = null,
 )
 
 data class DashboardProfile(
@@ -127,6 +130,27 @@ interface DashboardService {
         limit: Int = 200,
     ): List<StoredSession>
 
+    /**
+     * Read one bounded, profile-scoped dashboard page. Implementations that
+     * only expose the legacy gateway list retain its server arrival order.
+     */
+    suspend fun listSessionPage(
+        baseUrl: String,
+        credential: GatewayCredential,
+        profile: String = "all",
+        limit: Int = 200,
+        offset: Int = 0,
+    ): SessionListPage {
+        val sessions = listSessions(baseUrl, credential, limit)
+        return SessionListPage(
+            sessions = sessions,
+            total = sessions.size,
+            offset = offset,
+            limit = limit,
+            ordering = SessionOrdering.SERVER_ORDER,
+        )
+    }
+
     suspend fun listProfiles(
         baseUrl: String,
         credential: GatewayCredential,
@@ -159,6 +183,11 @@ class TransportUnavailable(
 ) : DashboardFailure(message, cause)
 
 class InvalidDashboardResponse(message: String, cause: Throwable? = null) : DashboardFailure(message, cause)
+
+class DashboardRpcException(
+    val code: Int?,
+    message: String,
+) : DashboardFailure(message)
 
 private class DashboardCookieJar : CookieJar {
     private val cookies = mutableListOf<Cookie>()
@@ -279,6 +308,10 @@ class DashboardClient(
         .followRedirects(false)
         .build(),
 ) : DashboardService {
+    // Compatibility is deliberately process-memory only. A future server or
+    // origin gets a fresh attempt; no protocol capability is persisted.
+    private val restSessionListUnsupportedOrigins = ConcurrentHashMap.newKeySet<String>()
+
     override suspend fun probe(rawBaseUrl: String): DashboardProbeResult = withContext(Dispatchers.IO) {
         val baseUrl = DashboardUrlPolicy.normalize(rawBaseUrl)
         val status = executeJson(
@@ -336,6 +369,58 @@ class DashboardClient(
         val authParameter = resolveWebSocketCredential(baseUrl, credential)
         val wsUrl = buildWebSocketUrl(baseUrl, authParameter?.first, authParameter?.second)
         return withTimeout(15_000) { requestSessionList(wsUrl, limit.coerceIn(1, 500)) }
+    }
+
+    override suspend fun listSessionPage(
+        baseUrl: String,
+        credential: GatewayCredential,
+        profile: String,
+        limit: Int,
+        offset: Int,
+    ): SessionListPage {
+        val normalizedBaseUrl = DashboardUrlPolicy.normalize(baseUrl)
+        val boundedLimit = limit.coerceIn(1, 200)
+        val boundedOffset = offset.coerceAtLeast(0)
+        if (normalizedBaseUrl !in restSessionListUnsupportedOrigins) {
+            try {
+                return withContext(Dispatchers.IO) {
+                    requestRestSessionPage(
+                        baseUrl = normalizedBaseUrl,
+                        credential = credential,
+                        profile = profile,
+                        limit = boundedLimit,
+                        offset = boundedOffset,
+                    )
+                }
+            } catch (error: TransportUnavailable) {
+                if (error.statusCode != 404 && error.statusCode != 405) throw error
+                restSessionListUnsupportedOrigins += normalizedBaseUrl
+            }
+        }
+
+        return try {
+            val authParameter = resolveWebSocketCredential(normalizedBaseUrl, credential)
+            val wsUrl = buildWebSocketUrl(
+                normalizedBaseUrl,
+                authParameter?.first,
+                authParameter?.second,
+            )
+            withTimeout(15_000) {
+                requestSessionListPage(
+                    wsUrl = wsUrl,
+                    limit = boundedLimit,
+                    profile = profile,
+                )
+            }
+        } catch (error: DashboardRpcException) {
+            if (error.code == -32601) {
+                throw InvalidDashboardResponse(
+                    "Hermes does not provide a compatible conversation list.",
+                    error,
+                )
+            }
+            throw error
+        }
     }
 
     override suspend fun listProfiles(
@@ -404,6 +489,7 @@ class DashboardClient(
 
     override fun clearAuthentication() {
         (cookieJar as? DashboardCookieJar)?.clear()
+        restSessionListUnsupportedOrigins.clear()
     }
 
     private fun authenticationScopeUrl(baseUrl: String): HttpUrl? = runCatching {
@@ -495,12 +581,93 @@ class DashboardClient(
         else -> TransportUnavailable("$operation returned HTTP $code.", statusCode = code)
     }
 
+    private fun requestRestSessionPage(
+        baseUrl: String,
+        credential: GatewayCredential,
+        profile: String,
+        limit: Int,
+        offset: Int,
+    ): SessionListPage {
+        val url = "$baseUrl/api/profiles/sessions".toHttpUrl().newBuilder()
+            .addQueryParameter("profile", profile.trim().ifEmpty { "all" })
+            .addQueryParameter("order", "recent")
+            .addQueryParameter("archived", "exclude")
+            .addQueryParameter("limit", limit.toString())
+            .addQueryParameter("offset", offset.toString())
+            .build()
+        val root = executeJson(
+            Request.Builder()
+                .url(url)
+                .header("Accept", "application/json")
+                .apply {
+                    if (credential is GatewayCredential.StaticToken) {
+                        header("X-Hermes-Session-Token", credential.value.trim())
+                    }
+                }
+                .get()
+                .build(),
+            "Hermes conversations",
+        ) as? JsonObject ?: throw InvalidDashboardResponse("Hermes returned no conversation list.")
+        val rows = root["sessions"] as? JsonArray
+            ?: throw InvalidDashboardResponse("Hermes returned no conversation list.")
+        val sessions = rows.mapNotNull { element ->
+            decodeSession(
+                element = element,
+                fallbackProfile = profile.takeUnless {
+                    it.isBlank() || it.equals("all", ignoreCase = true)
+                },
+            )
+        }
+        val errors = (root["errors"] as? JsonArray).orEmpty().mapNotNull { element ->
+            val row = element as? JsonObject ?: return@mapNotNull null
+            val failedProfile = (row["profile"] as? JsonPrimitive)?.contentOrNull
+                ?.takeIf(String::isNotBlank)
+                ?: return@mapNotNull null
+            val message = (row["error"] as? JsonPrimitive)?.contentOrNull
+                ?.takeIf(String::isNotBlank)
+                ?: return@mapNotNull null
+            SessionListError(failedProfile, message)
+        }
+        val total = (root["total"] as? JsonPrimitive)?.intOrNull ?: sessions.size
+        val responseOffset = (root["offset"] as? JsonPrimitive)?.intOrNull ?: offset
+        val responseLimit = (root["limit"] as? JsonPrimitive)?.intOrNull ?: limit
+        val usableNumericValue = sessions.any { effectiveRemoteActivity(it) != null }
+        return SessionListPage(
+            sessions = sessions,
+            total = total,
+            offset = responseOffset,
+            limit = responseLimit,
+            errors = errors,
+            ordering = if (usableNumericValue) {
+                SessionOrdering.AUTHORITATIVE_RECENCY
+            } else {
+                SessionOrdering.SERVER_ORDER
+            },
+        )
+    }
+
     private suspend fun requestSessionList(wsUrl: String, limit: Int): List<StoredSession> {
+        return requestSessionListPage(wsUrl, limit, profile = "all").sessions
+    }
+
+    private suspend fun requestSessionListPage(
+        wsUrl: String,
+        limit: Int,
+        profile: String,
+    ): SessionListPage {
         val frame = buildJsonObject {
             put("jsonrpc", "2.0")
             put("id", SESSION_LIST_REQUEST_ID)
             put("method", "session.list")
-            put("params", buildJsonObject { put("limit", limit) })
+            put(
+                "params",
+                buildJsonObject {
+                    put("limit", limit)
+                    if (profile.isNotBlank() && !profile.equals("all", ignoreCase = true)) {
+                        put("profile", profile)
+                    }
+                },
+            )
         }
         return requestSingleWebSocketResponse(
             request = Request.Builder().url(wsUrl).build(),
@@ -510,7 +677,21 @@ class DashboardClient(
         ) { result ->
             val rows = (result as? JsonObject)?.get("sessions") as? JsonArray
                 ?: throw InvalidDashboardResponse("Hermes returned no session list.")
-            rows.mapNotNull(::decodeSession)
+            val sessions = rows.mapNotNull { element ->
+                decodeSession(
+                    element = element,
+                    fallbackProfile = profile.takeUnless { it.isBlank() || it.equals("all", ignoreCase = true) },
+                )
+            }
+            SessionListPage(
+                sessions = sessions,
+                total = sessions.size,
+                ordering = if (sessions.isNotEmpty() && sessions.all { validEpochSeconds(it.lastActive) != null }) {
+                    SessionOrdering.AUTHORITATIVE_RECENCY
+                } else {
+                    SessionOrdering.SERVER_ORDER
+                },
+            )
         }
     }
 
@@ -593,7 +774,13 @@ class DashboardClient(
                     }
                 if ((root["id"] as? JsonPrimitive)?.contentOrNull != expectedId) return
                 (root["error"] as? JsonObject)?.let { error ->
-                    fail(IOException((error["message"] as? JsonPrimitive)?.contentOrNull ?: "$operation failed."))
+                    fail(
+                        DashboardRpcException(
+                            code = (error["code"] as? JsonPrimitive)?.intOrNull,
+                            message = (error["message"] as? JsonPrimitive)?.contentOrNull
+                                ?: "$operation failed.",
+                        ),
+                    )
                     return
                 }
                 val result = root["result"]
@@ -635,19 +822,24 @@ class DashboardClient(
         }
     }
 
-    private fun decodeSession(element: JsonElement): StoredSession? {
+    private fun decodeSession(
+        element: JsonElement,
+        fallbackProfile: String? = null,
+    ): StoredSession? {
         val row = element as? JsonObject ?: return null
-        val id = row["id"]?.jsonPrimitive?.contentOrNull?.takeIf(String::isNotBlank) ?: return null
+        val id = (row["id"] as? JsonPrimitive)?.contentOrNull?.takeIf(String::isNotBlank)
+            ?: return null
+        val suppliedProfile = (row["profile"] as? JsonPrimitive)?.contentOrNull
+            ?: (row["profile_name"] as? JsonPrimitive)?.contentOrNull
         return StoredSession(
             id = id,
-            title = row["title"]?.jsonPrimitive?.contentOrNull.orEmpty(),
-            preview = row["preview"]?.jsonPrimitive?.contentOrNull.orEmpty(),
-            startedAt = row["started_at"]?.jsonPrimitive?.doubleOrNull ?: 0.0,
-            messageCount = row["message_count"]?.jsonPrimitive?.intOrNull ?: 0,
-            source = row["source"]?.jsonPrimitive?.contentOrNull.orEmpty(),
-            profile = row["profile"]?.jsonPrimitive?.contentOrNull
-                ?: row["profile_name"]?.jsonPrimitive?.contentOrNull
-                ?: "default",
+            title = (row["title"] as? JsonPrimitive)?.contentOrNull.orEmpty(),
+            preview = (row["preview"] as? JsonPrimitive)?.contentOrNull.orEmpty(),
+            startedAt = validEpochSeconds((row["started_at"] as? JsonPrimitive)?.doubleOrNull) ?: 0.0,
+            messageCount = (row["message_count"] as? JsonPrimitive)?.intOrNull ?: 0,
+            source = (row["source"] as? JsonPrimitive)?.contentOrNull.orEmpty(),
+            profile = suppliedProfile ?: fallbackProfile ?: "default",
+            lastActive = validEpochSeconds((row["last_active"] as? JsonPrimitive)?.doubleOrNull),
         )
     }
 

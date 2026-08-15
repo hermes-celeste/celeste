@@ -19,6 +19,7 @@ import okhttp3.WebSocketListener
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Before
@@ -107,6 +108,203 @@ class DashboardClientTest {
         val upgrade = server.takeRequest()
         assertEquals("/api/ws", upgrade.url.encodedPath)
         assertEquals("private-token", upgrade.url.queryParameter("token"))
+    }
+
+    @Test
+    fun listsAuthoritativeRestPageWithActivityAndMetadata() = runTest {
+        server.enqueue(
+            MockResponse.Builder()
+                .code(200)
+                .body(
+                    """{"sessions":[{"id":"new","title":"New","preview":"","started_at":100,"last_active":200,"message_count":2,"source":"desktop"},{"id":"old","title":"Old","preview":"","started_at":90,"last_active":190,"message_count":1,"source":"cli","profile":"work"}],"total":7,"offset":0,"limit":200,"errors":[{"profile":"locked","error":"unavailable"}]}""",
+                )
+                .build(),
+        )
+
+        val baseUrl = server.url("/").toString().trimEnd('/')
+        val page = DashboardClient().listSessionPage(
+            baseUrl = baseUrl,
+            credential = GatewayCredential.StaticToken("private-token"),
+            profile = "work",
+            limit = 200,
+            offset = 0,
+        )
+
+        assertEquals(SessionOrdering.AUTHORITATIVE_RECENCY, page.ordering)
+        assertEquals(7, page.total)
+        assertEquals(200, page.limit)
+        assertEquals(200.0, page.sessions.first().lastActive!!, 0.0)
+        assertEquals("work", page.sessions.first().profile)
+        assertEquals(listOf("locked"), page.errors.map(SessionListError::profile))
+        val request = server.takeRequest()
+        assertEquals("/api/profiles/sessions", request.url.encodedPath)
+        assertEquals("work", request.url.queryParameter("profile"))
+        assertEquals("recent", request.url.queryParameter("order"))
+        assertEquals("exclude", request.url.queryParameter("archived"))
+        assertEquals("200", request.url.queryParameter("limit"))
+        assertEquals("0", request.url.queryParameter("offset"))
+        assertEquals("private-token", request.headers["X-Hermes-Session-Token"])
+    }
+
+    @Test
+    fun rejectsInvalidActivityNumbersWithoutUsingTheDeviceClock() = runTest {
+        server.enqueue(
+            MockResponse.Builder()
+                .code(200)
+                .body(
+                    """{"sessions":[{"id":"zero","title":"Zero","started_at":40,"last_active":0},{"id":"negative","title":"Negative","started_at":30,"last_active":-1},{"id":"nan","title":"NaN","started_at":0,"last_active":"NaN"}]}""",
+                )
+                .build(),
+        )
+
+        val page = DashboardClient().listSessionPage(
+            baseUrl = server.url("/").toString().trimEnd('/'),
+            credential = GatewayCredential.None,
+        )
+
+        assertNull(page.sessions[0].lastActive)
+        assertEquals(40.0, page.sessions[0].startedAt, 0.0)
+        assertNull(page.sessions[1].lastActive)
+        assertEquals(30.0, page.sessions[1].startedAt, 0.0)
+        assertNull(page.sessions[2].lastActive)
+        assertEquals(0.0, page.sessions[2].startedAt, 0.0)
+        assertEquals(SessionOrdering.AUTHORITATIVE_RECENCY, page.ordering)
+    }
+
+    @Test
+    fun malformedEpochShapesBecomeUnknownInsteadOfCrashingTheListDecoder() = runTest {
+        server.enqueue(
+            MockResponse.Builder()
+                .code(200)
+                .body("""{"sessions":[{"id":"object-value","started_at":{},"last_active":[]}]}""")
+                .build(),
+        )
+
+        val page = DashboardClient().listSessionPage(
+            baseUrl = server.url("/").toString().trimEnd('/'),
+            credential = GatewayCredential.None,
+        )
+
+        assertEquals(0.0, page.sessions.single().startedAt, 0.0)
+        assertNull(page.sessions.single().lastActive)
+        assertEquals(SessionOrdering.SERVER_ORDER, page.ordering)
+    }
+
+    @Test
+    fun fallsBackToServerOrderedRpcWhenTheRestListIsUnavailable() = runBlocking {
+        server.enqueue(MockResponse.Builder().code(404).build())
+        server.enqueue(sessionListWebSocket())
+
+        val page = DashboardClient().listSessionPage(
+            baseUrl = server.url("/").toString().trimEnd('/'),
+            credential = GatewayCredential.None,
+        )
+
+        assertEquals(SessionOrdering.SERVER_ORDER, page.ordering)
+        assertEquals(listOf("s1", "s2"), page.sessions.map(StoredSession::id))
+        assertEquals("/api/profiles/sessions", server.takeRequest().url.encodedPath)
+        assertEquals("/api/ws", server.takeRequest().url.encodedPath)
+    }
+
+    @Test
+    fun boundsRestPaginationAndPreservesTheServerPageMetadata() = runTest {
+        server.enqueue(
+            MockResponse.Builder()
+                .code(200)
+                .body("""{"sessions":[],"total":201,"offset":0,"limit":200}""")
+                .build(),
+        )
+
+        val page = DashboardClient().listSessionPage(
+            baseUrl = server.url("/").toString().trimEnd('/'),
+            credential = GatewayCredential.None,
+            profile = "all",
+            limit = 999,
+            offset = -5,
+        )
+
+        assertEquals(201, page.total)
+        assertEquals(0, page.offset)
+        assertEquals(200, page.limit)
+        val request = server.takeRequest()
+        assertEquals("200", request.url.queryParameter("limit"))
+        assertEquals("0", request.url.queryParameter("offset"))
+    }
+
+    @Test
+    fun legacyRpcCarriesProfileAndPreservesExactNumericActivityWhenAvailable() = runBlocking {
+        val requestReceived = CompletableDeferred<JsonObject>()
+        server.enqueue(MockResponse.Builder().code(404).build())
+        server.enqueue(
+            MockResponse.Builder()
+                .webSocketUpgrade(
+                    object : WebSocketListener() {
+                        override fun onMessage(webSocket: WebSocket, text: String) {
+                            requestReceived.complete(Json.parseToJsonElement(text).jsonObject)
+                            webSocket.send(
+                                """{"jsonrpc":"2.0","id":"session-list","result":{"sessions":[{"id":"work-row","profile":"work","started_at":100,"last_active":200}]}}""",
+                            )
+                        }
+
+                        override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
+                            webSocket.close(code, reason)
+                        }
+                    },
+                )
+                .build(),
+        )
+
+        val page = DashboardClient().listSessionPage(
+            baseUrl = server.url("/").toString().trimEnd('/'),
+            credential = GatewayCredential.None,
+            profile = "work",
+            limit = 20,
+            offset = 40,
+        )
+
+        val request = withTimeout(5_000) { requestReceived.await() }
+        assertEquals("work", request["params"]?.jsonObject?.get("profile")?.jsonPrimitive?.content)
+        assertEquals("20", request["params"]?.jsonObject?.get("limit")?.jsonPrimitive?.content)
+        assertEquals(SessionOrdering.AUTHORITATIVE_RECENCY, page.ordering)
+        assertEquals(200.0, page.sessions.single().lastActive!!, 0.0)
+    }
+
+    @Test
+    fun restCapabilityIsInvalidatedWhenAuthenticationIsCleared() = runBlocking {
+        val client = DashboardClient()
+        val baseUrl = server.url("/").toString().trimEnd('/')
+        server.enqueue(MockResponse.Builder().code(404).build())
+        server.enqueue(sessionListWebSocket())
+        client.listSessionPage(baseUrl, GatewayCredential.None)
+
+        server.enqueue(
+            MockResponse.Builder()
+                .code(200)
+                .body("""{"sessions":[{"id":"rest-row","started_at":10,"last_active":20}]}""")
+                .build(),
+        )
+        client.clearAuthentication()
+        val page = client.listSessionPage(baseUrl, GatewayCredential.None)
+
+        assertEquals(listOf("rest-row"), page.sessions.map(StoredSession::id))
+        assertEquals("/api/profiles/sessions", server.takeRequest().url.encodedPath)
+        assertEquals("/api/ws", server.takeRequest().url.encodedPath)
+        assertEquals("/api/profiles/sessions", server.takeRequest().url.encodedPath)
+    }
+
+    @Test
+    fun restAuthenticationFailureDoesNotFallBackToLegacyRpc() = runBlocking {
+        server.enqueue(MockResponse.Builder().code(401).build())
+
+        val failure = runCatching {
+            DashboardClient().listSessionPage(
+                baseUrl = server.url("/").toString().trimEnd('/'),
+                credential = GatewayCredential.None,
+            )
+        }.exceptionOrNull()
+
+        assertTrue(failure is AuthenticationRejected)
+        assertEquals(1, server.requestCount)
     }
 
     @Test

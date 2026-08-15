@@ -16,6 +16,7 @@ import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonObject
@@ -49,6 +50,10 @@ class GatewayRpcException(
 interface GatewayConnection {
     val state: StateFlow<GatewayConnectionState>
     val events: SharedFlow<GatewayEvent>
+
+    /** True only when gateway.ready advertised the optional invalidation event. */
+    val supportsSessionChangeEvents: Boolean
+        get() = false
 
     suspend fun connect()
 
@@ -88,13 +93,19 @@ class HermesGateway(
     @Volatile
     private var intentionalClose = false
 
+    @Volatile
+    private var sessionChangeEventsSupported = false
+
     override val state: StateFlow<GatewayConnectionState> = mutableState
     override val events: SharedFlow<GatewayEvent> = mutableEvents
+    override val supportsSessionChangeEvents: Boolean
+        get() = sessionChangeEventsSupported
 
     override suspend fun connect(): Unit = connectMutex.withLock {
         if (mutableState.value == GatewayConnectionState.Connected && socket != null) return
 
         intentionalClose = false
+        sessionChangeEventsSupported = false
         socket?.cancel()
         socket = null
         failPending(IOException("Hermes connection was replaced."))
@@ -131,6 +142,13 @@ class HermesGateway(
                     ?.contentOrNull
                 if (root["method"]?.jsonPrimitive?.contentOrNull == "event" && eventType == "gateway.ready") {
                     socket = webSocket
+                    sessionChangeEventsSupported = root["params"]
+                        ?.let { it as? JsonObject }
+                        ?.get("payload")
+                        ?.let { it as? JsonObject }
+                        ?.get("change_events")
+                        ?.let { it as? JsonPrimitive }
+                        ?.booleanOrNull == true
                     mutableState.value = GatewayConnectionState.Connected
                     opened.complete(Unit)
                     return
@@ -216,6 +234,7 @@ class HermesGateway(
 
     override fun close() {
         intentionalClose = true
+        sessionChangeEventsSupported = false
         socketGeneration.incrementAndGet()
         val active = socket
         socket = null
@@ -262,6 +281,7 @@ class HermesGateway(
         error: Throwable = IOException(reason),
     ) {
         socket = null
+        sessionChangeEventsSupported = false
         if (!intentionalClose) mutableState.value = GatewayConnectionState.Disconnected(reason)
         if (!opened.isCompleted) opened.completeExceptionally(error)
         failPending(error)

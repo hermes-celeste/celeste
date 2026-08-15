@@ -14,7 +14,10 @@ import dev.hazydreams.hermesceleste.network.GatewayConnection
 import dev.hazydreams.hermesceleste.network.GatewayConnectionState
 import dev.hazydreams.hermesceleste.network.GatewayCredential
 import dev.hazydreams.hermesceleste.network.GatewayEvent
+import dev.hazydreams.hermesceleste.network.SessionListPage
+import dev.hazydreams.hermesceleste.network.SessionOrdering
 import dev.hazydreams.hermesceleste.network.StoredSession
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -22,8 +25,10 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
+import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.resetMain
+import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
 import kotlinx.serialization.json.Json
@@ -193,6 +198,242 @@ class CelesteViewModelTest {
     }
 
     @Test
+    fun refreshPublishesTheNewestProfileScopedActivityPage() = runTest {
+        val gateway = FakeGateway()
+        val dashboard = FakeDashboard(gateway).apply {
+            sessionPage = SessionListPage(
+                sessions = listOf(
+                    session.copy(id = "older", title = "Older", lastActive = 100.0),
+                    session.copy(id = "newer", title = "Newer", lastActive = 200.0),
+                ),
+                total = 2,
+                ordering = SessionOrdering.AUTHORITATIVE_RECENCY,
+            )
+        }
+        val viewModel = CelesteViewModel(dashboard = dashboard)
+        viewModel.updateDashboardUrl("http://hermes.test:9119")
+        viewModel.findDashboard()
+        viewModel.loadSessions()
+        advanceUntilIdle()
+
+        assertEquals(listOf("newer", "older"), viewModel.state.value.sessions?.map(StoredSession::id))
+
+        dashboard.sessionPage = dashboard.sessionPage?.copy(
+            sessions = listOf(
+                dashboard.session.copy(id = "older", title = "Older", lastActive = 300.0),
+                dashboard.session.copy(id = "newer", title = "Newer", lastActive = 200.0),
+            ),
+        )
+        viewModel.onForeground()
+        runCurrent()
+        viewModel.onBackground()
+
+        assertEquals(listOf("older", "newer"), viewModel.state.value.sessions?.map(StoredSession::id))
+        assertTrue(dashboard.listPageCalls >= 2)
+    }
+
+    @Test
+    fun staleProfilePageCannotOverwriteANewerProfileContext() = runTest {
+        val gateway = FakeGateway()
+        val dashboard = FakeDashboard(gateway)
+        val viewModel = CelesteViewModel(
+            dashboard = dashboard,
+            reconnectDelayMillis = { _, _ -> 0L },
+        )
+        viewModel.updateDashboardUrl("http://hermes.test:9119")
+        viewModel.findDashboard()
+        viewModel.loadSessions()
+        advanceUntilIdle()
+
+        val pageGate = CompletableDeferred<SessionListPage>()
+        dashboard.listPageGate = pageGate
+        viewModel.onForeground()
+        runCurrent()
+        viewModel.selectProfile("work")
+        pageGate.complete(
+            SessionListPage(
+                sessions = listOf(dashboard.session.copy(profile = "work")),
+                ordering = SessionOrdering.AUTHORITATIVE_RECENCY,
+            ),
+        )
+        viewModel.onBackground()
+        advanceUntilIdle()
+
+        assertEquals("work", viewModel.state.value.selectedProfile)
+        assertEquals(listOf("work"), viewModel.state.value.sessions?.map(StoredSession::profile))
+    }
+
+    @Test
+    fun localSubmitMovesTheConversationImmediatelyAndServerCatchUpClearsTheOverlay() = runTest {
+        val gateway = FakeGateway()
+        val dashboard = FakeDashboard(gateway).apply {
+            sessionPage = SessionListPage(
+                sessions = listOf(
+                    session.copy(id = "other", lastActive = 200.0),
+                    session.copy(lastActive = 100.0),
+                ),
+                ordering = SessionOrdering.AUTHORITATIVE_RECENCY,
+            )
+        }
+        val viewModel = openConversation(gateway, dashboard, clockSeconds = { 300.0 })
+
+        viewModel.updateDraft("Move this conversation")
+        viewModel.sendMessage()
+
+        assertEquals(listOf("stored-42", "other"), viewModel.state.value.sessions?.map(StoredSession::id))
+        advanceUntilIdle()
+        assertEquals(1, gateway.methods.count { it == "prompt.submit" })
+        assertEquals(listOf("stored-42", "other"), viewModel.state.value.sessions?.map(StoredSession::id))
+
+        dashboard.sessionPage = dashboard.sessionPage?.copy(
+            sessions = listOf(
+                session.copy(id = "other", lastActive = 200.0),
+                session.copy(lastActive = 300.0),
+            ),
+        )
+        viewModel.leaveConversation()
+        runCurrent()
+        viewModel.onBackground()
+        advanceUntilIdle()
+
+        assertEquals(listOf("stored-42", "other"), viewModel.state.value.sessions?.map(StoredSession::id))
+    }
+
+    @Test
+    fun uncertainSubmitReconcilesByStoredIdWithoutResending() = runTest {
+        val gateway = FakeGateway().apply {
+            submitFailure = IOException("socket lost")
+            resumePayload = resumePayload(
+                messages = listOf(ConversationMessage(role = "user", text = "Once", id = "server-user")),
+                running = true,
+            )
+        }
+        val viewModel = openConversation(gateway)
+
+        viewModel.updateDraft("Once")
+        viewModel.sendMessage()
+        advanceUntilIdle()
+
+        assertEquals(1, gateway.methods.count { it == "prompt.submit" })
+        assertEquals(1, gateway.methods.count { it == "session.resume" })
+        assertEquals(listOf("Once"), viewModel.state.value.messages.map(ConversationMessage::text))
+        assertEquals(TurnState.Running, viewModel.state.value.turnState)
+    }
+
+    @Test
+    fun definitivePromptRejectionRollsBackTheOptimisticMessageAndActivity() = runTest {
+        val gateway = FakeGateway().apply {
+            submitResponse = buildJsonObject {
+                put("status", "rejected")
+                put("error", "synthetic rejection")
+            }
+        }
+        val viewModel = openConversation(gateway)
+
+        viewModel.updateDraft("Reject this")
+        viewModel.sendMessage()
+        advanceUntilIdle()
+
+        assertEquals(TurnState.Idle, viewModel.state.value.turnState)
+        assertTrue(viewModel.state.value.messages.none { it.text == "Reject this" })
+        assertEquals("synthetic rejection", viewModel.state.value.errorMessage)
+    }
+
+    @Test
+    fun stalePromptResultCannotMutateTheConversationListContext() = runTest {
+        val gate = CompletableDeferred<JsonObject>()
+        val gateway = FakeGateway().apply { submitGate = gate }
+        val dashboard = FakeDashboard(gateway)
+        val viewModel = openConversation(gateway, dashboard)
+
+        viewModel.updateDraft("Do not apply after leaving")
+        viewModel.sendMessage()
+        runCurrent()
+        viewModel.leaveConversation()
+        viewModel.openSession(dashboard.session)
+        runCurrent()
+        gate.complete(buildJsonObject { put("status", "streaming") })
+        advanceUntilIdle()
+
+        assertEquals("stored-42", viewModel.state.value.activeSummary?.id)
+        assertTrue(viewModel.state.value.messages.isEmpty())
+        assertEquals(1, gateway.methods.count { it == "prompt.submit" })
+    }
+
+    @Test
+    fun repeatedSessionInvalidationsCoalesceIntoOneRefresh() = runTest {
+        val gateway = FakeGateway()
+        val dashboard = FakeDashboard(gateway)
+        val viewModel = openConversation(gateway, dashboard)
+        val callsBefore = dashboard.listPageCalls
+
+        gateway.emit("sessions.changed")
+        gateway.emit("sessions.changed")
+        runCurrent()
+        assertEquals(callsBefore, dashboard.listPageCalls)
+        advanceTimeBy(499)
+        runCurrent()
+        assertEquals(callsBefore, dashboard.listPageCalls)
+        advanceTimeBy(1)
+        advanceUntilIdle()
+
+        assertEquals(callsBefore + 1, dashboard.listPageCalls)
+    }
+
+    @Test
+    fun visibleConversationListPollsAndBackgroundStopsThePoll() = runTest {
+        val gateway = FakeGateway()
+        val dashboard = FakeDashboard(gateway)
+        val viewModel = CelesteViewModel(
+            dashboard = dashboard,
+            reconnectDelayMillis = { _, _ -> 0L },
+        )
+        viewModel.updateDashboardUrl("http://hermes.test:9119")
+        viewModel.findDashboard()
+        viewModel.loadSessions()
+        advanceUntilIdle()
+
+        viewModel.onForeground()
+        runCurrent()
+        val callsBeforePoll = dashboard.listPageCalls
+        advanceTimeBy(30_000)
+        runCurrent()
+        assertTrue(dashboard.listPageCalls > callsBeforePoll)
+
+        viewModel.onBackground()
+        val callsAfterBackground = dashboard.listPageCalls
+        advanceTimeBy(30_000)
+        runCurrent()
+        assertEquals(callsAfterBackground, dashboard.listPageCalls)
+    }
+
+    @Test
+    fun syntheticConversationSurvivesAnOmittedPageOnlyWhileItIsOpen() = runTest {
+        val gateway = FakeGateway()
+        val dashboard = FakeDashboard(gateway).apply {
+            sessionPage = SessionListPage(sessions = emptyList(), ordering = SessionOrdering.SERVER_ORDER)
+        }
+        val viewModel = CelesteViewModel(
+            dashboard = dashboard,
+            reconnectDelayMillis = { _, _ -> 0L },
+        )
+        viewModel.updateDashboardUrl("http://hermes.test:9119")
+        viewModel.findDashboard()
+        viewModel.loadSessions()
+        advanceUntilIdle()
+
+        viewModel.createNewConversation()
+        advanceUntilIdle()
+        assertEquals(listOf("stored-new-1"), viewModel.state.value.sessions?.map(StoredSession::id))
+
+        viewModel.leaveConversation()
+        runCurrent()
+        viewModel.onBackground()
+        advanceUntilIdle()
+        assertTrue(viewModel.state.value.sessions.orEmpty().none { it.id == "stored-new-1" })
+    }
+
+    @Test
     fun foregroundHealthCheckReplacesAStaleSocketAndResumes() = runTest {
         val gateway = FakeGateway()
         val viewModel = openConversation(gateway)
@@ -267,11 +508,15 @@ class CelesteViewModelTest {
         assertEquals("and still arriving", suffix)
     }
 
-    private suspend fun openConversation(gateway: FakeGateway): CelesteViewModel {
-        val dashboard = FakeDashboard(gateway)
+    private suspend fun openConversation(
+        gateway: FakeGateway,
+        dashboard: FakeDashboard = FakeDashboard(gateway),
+        clockSeconds: () -> Double = { 1_000.0 },
+    ): CelesteViewModel {
         val viewModel = CelesteViewModel(
             dashboard = dashboard,
             reconnectDelayMillis = { _, _ -> 0L },
+            clockSeconds = clockSeconds,
         )
         viewModel.updateDashboardUrl("http://hermes.test:9119")
         viewModel.findDashboard()
@@ -285,6 +530,9 @@ class CelesteViewModelTest {
         private val authRequired: Boolean = false,
     ) : DashboardService {
         var profileFailure: Throwable? = null
+        var sessionPage: SessionListPage? = null
+        var listPageGate: CompletableDeferred<SessionListPage>? = null
+        var listPageCalls = 0
 
         val session = StoredSession(
             id = "stored-42",
@@ -320,6 +568,22 @@ class CelesteViewModelTest {
             limit: Int,
         ): List<StoredSession> = listOf(session)
 
+        override suspend fun listSessionPage(
+            baseUrl: String,
+            credential: GatewayCredential,
+            profile: String,
+            limit: Int,
+            offset: Int,
+        ): SessionListPage {
+            listPageCalls += 1
+            val gate = listPageGate
+            if (gate != null) return gate.await()
+            return sessionPage ?: SessionListPage(
+                sessions = listOf(session),
+                ordering = SessionOrdering.SERVER_ORDER,
+            )
+        }
+
         override suspend fun listProfiles(
             baseUrl: String,
             credential: GatewayCredential,
@@ -345,6 +609,8 @@ class CelesteViewModelTest {
         private val mutableEvents = MutableSharedFlow<GatewayEvent>(extraBufferCapacity = 32)
         override val state: StateFlow<GatewayConnectionState> = mutableState
         override val events: SharedFlow<GatewayEvent> = mutableEvents
+        override val supportsSessionChangeEvents: Boolean
+            get() = sessionChangeEventsSupported
 
         val methods = mutableListOf<String>()
         val requests = mutableListOf<Pair<String, JsonObject>>()
@@ -352,6 +618,10 @@ class CelesteViewModelTest {
         var createCount = 0
         var failHealthCheck = false
         var connectFailure: Throwable? = null
+        var submitFailure: Throwable? = null
+        var submitGate: CompletableDeferred<JsonObject>? = null
+        var submitResponse: JsonObject = buildJsonObject { put("status", "streaming") }
+        var sessionChangeEventsSupported = false
         var resumePayload: JsonObject = resumePayload(messages = emptyList(), running = false)
 
         override suspend fun connect() {
@@ -384,7 +654,10 @@ class CelesteViewModelTest {
                     }
                     buildJsonObject { put("sessions", "healthy") }
                 }
-                "prompt.submit" -> buildJsonObject { put("status", "streaming") }
+                "prompt.submit" -> {
+                    submitFailure?.let { throw it }
+                    submitGate?.await() ?: submitResponse
+                }
                 "session.interrupt" -> buildJsonObject { put("status", "interrupting") }
                 else -> buildJsonObject {}
             }
