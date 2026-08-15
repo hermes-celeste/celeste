@@ -439,6 +439,122 @@ class CelesteViewModelTest {
     }
 
     @Test
+    fun acceptedSteerKeepsAcknowledgedGuidanceVisibleThroughTurnCompletion() = runTest {
+        val gateway = FakeGateway()
+        gateway.resumePayload = resumePayload(messages = emptyList(), running = true)
+        val viewModel = openConversation(gateway)
+
+        viewModel.updateDraft("accepted guidance")
+        viewModel.steerMessage()
+        advanceUntilIdle()
+
+        assertEquals(1, gateway.methods.count { it == "session.steer" })
+        assertEquals(2, gateway.methods.count { it == "session.resume" })
+        assertEquals("", viewModel.state.value.draft)
+        assertEquals(DeliveryStatus.Accepted, viewModel.state.value.deliveryStatus)
+        assertTrue(viewModel.state.value.messages.any { it.text == "accepted guidance" && it.pending })
+
+        gateway.emit("message.complete", """{"status":"complete"}""")
+        advanceUntilIdle()
+
+        assertEquals(TurnState.Idle, viewModel.state.value.turnState)
+        assertTrue(viewModel.state.value.messages.any { it.text == "accepted guidance" })
+        viewModel.leaveConversation()
+    }
+
+    @Test
+    fun acceptedRedirectKeepsAcknowledgedGuidanceVisibleWithoutFallingBackToStop() = runTest {
+        val gateway = FakeGateway()
+        gateway.resumePayload = resumePayload(
+            messages = emptyList(),
+            running = true,
+            supportsRedirect = true,
+        )
+        val viewModel = openConversation(gateway)
+
+        viewModel.updateDraft("accepted redirect")
+        viewModel.redirectMessage()
+        advanceUntilIdle()
+
+        assertEquals(1, gateway.methods.count { it == "session.redirect" })
+        assertEquals(0, gateway.methods.count { it == "session.steer" })
+        assertEquals(0, gateway.methods.count { it == "session.interrupt" })
+        assertEquals(2, gateway.methods.count { it == "session.resume" })
+        assertEquals("", viewModel.state.value.draft)
+        assertEquals(DeliveryStatus.Accepted, viewModel.state.value.deliveryStatus)
+        assertTrue(viewModel.state.value.messages.any { it.text == "accepted redirect" && it.pending })
+        viewModel.leaveConversation()
+    }
+
+    @Test
+    fun acceptedQueueKeepsAcknowledgedGuidanceVisibleWhenTurnFinishesBeforeResumeProjection() = runTest {
+        val gateway = FakeGateway()
+        gateway.resumePayload = resumePayload(messages = emptyList(), running = true)
+        val viewModel = openConversation(gateway)
+
+        viewModel.updateDraft("accepted queue")
+        viewModel.queueMessage()
+        advanceUntilIdle()
+
+        assertEquals(1, gateway.methods.count { it == "prompt.submit" })
+        assertEquals(2, gateway.methods.count { it == "session.resume" })
+        assertEquals("", viewModel.state.value.draft)
+        assertEquals(DeliveryStatus.Accepted, viewModel.state.value.deliveryStatus)
+        assertTrue(viewModel.state.value.messages.any { it.text == "accepted queue" && it.pending })
+
+        gateway.emit("message.complete", """{"status":"complete"}""")
+        advanceUntilIdle()
+
+        assertEquals(TurnState.Idle, viewModel.state.value.turnState)
+        assertTrue(viewModel.state.value.messages.any { it.text == "accepted queue" })
+        viewModel.leaveConversation()
+    }
+
+    @Test
+    fun concurrentReconciliationsAreSerializedAndStaleBufferedEventsCannotReplay() = runTest {
+        val gateway = FakeGateway()
+        gateway.resumePayload = resumePayload(messages = emptyList(), running = true)
+        val viewModel = openConversation(gateway)
+        val firstResumeGate = CompletableDeferred<Unit>()
+        val secondResumeGate = CompletableDeferred<Unit>()
+        val firstResumeEntered = CompletableDeferred<Unit>()
+        val secondResumeEntered = CompletableDeferred<Unit>()
+        gateway.resumePayloads += resumePayload(
+            messages = listOf(ConversationMessage(role = "user", text = "stale snapshot")),
+            running = false,
+        )
+        gateway.resumePayloads += resumePayload(
+            messages = listOf(ConversationMessage(role = "user", text = "fresh snapshot")),
+            running = false,
+        )
+        gateway.resumeGates += firstResumeGate
+        gateway.resumeGates += secondResumeGate
+        gateway.resumeEnteredSignals += firstResumeEntered
+        gateway.resumeEnteredSignals += secondResumeEntered
+        gateway.failNext("session.steer", IOException("steer response became uncertain"))
+
+        viewModel.updateDraft("serialized guidance")
+        viewModel.steerMessage()
+        runCurrent()
+        firstResumeEntered.await()
+        gateway.emit("message.delta", """{"text":"stale event"}""")
+        gateway.disconnect("reconnect during reconciliation")
+        runCurrent()
+
+        assertFalse(secondResumeEntered.isCompleted)
+        firstResumeGate.complete(Unit)
+        secondResumeEntered.await()
+        assertEquals(1, gateway.maxConcurrentResumes)
+        secondResumeGate.complete(Unit)
+        advanceUntilIdle()
+
+        assertEquals("fresh snapshot", viewModel.state.value.messages.single().text)
+        assertFalse(viewModel.state.value.messages.any { it.text == "stale event" })
+        assertEquals(1, gateway.methods.count { it == "session.steer" })
+        viewModel.leaveConversation()
+    }
+
+    @Test
     fun uncertainRedirectResolvesFromAuthoritativeCorrectionsWithoutFallingBackToStop() = runTest {
         val gateway = FakeGateway()
         gateway.resumePayload = resumePayload(
@@ -791,6 +907,10 @@ class CelesteViewModelTest {
         var connectFailure: Throwable? = null
         var resumePayload: JsonObject = CelesteViewModelTest.resumePayload(messages = emptyList(), running = false)
         val resumePayloads = mutableListOf<JsonObject>()
+        val resumeGates = mutableListOf<CompletableDeferred<Unit>>()
+        val resumeEnteredSignals = mutableListOf<CompletableDeferred<Unit>>()
+        var activeResumes = 0
+        var maxConcurrentResumes = 0
         var steerGate: CompletableDeferred<Unit>? = null
         var redirectGate: CompletableDeferred<Unit>? = null
         var promptGate: CompletableDeferred<Unit>? = null
@@ -814,13 +934,25 @@ class CelesteViewModelTest {
             }
             return when (method) {
                 "session.resume" -> {
+                    resumeEnteredSignals.firstOrNull()?.let { entered ->
+                        entered.complete(Unit)
+                        resumeEnteredSignals.removeAt(0)
+                    }
                     val payload = if (resumePayloads.isEmpty()) {
                         resumePayload
                     } else {
                         resumePayloads.removeAt(0)
                     }
                     eventSessionId = payload["session_id"]?.jsonPrimitive?.content ?: eventSessionId
-                    payload
+                    val gate = resumeGates.firstOrNull()?.also { resumeGates.removeAt(0) }
+                    activeResumes += 1
+                    maxConcurrentResumes = maxOf(maxConcurrentResumes, activeResumes)
+                    try {
+                        gate?.await()
+                        payload
+                    } finally {
+                        activeResumes -= 1
+                    }
                 }
                 "session.create" -> {
                     createCount += 1

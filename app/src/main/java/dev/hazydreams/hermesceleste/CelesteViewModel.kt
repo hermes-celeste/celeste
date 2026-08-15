@@ -169,6 +169,10 @@ private data class PendingOperation(
     val cancelledByStop: Boolean = false,
 )
 
+private data class AcceptedGuidanceProjection(
+    val operation: PendingOperation,
+)
+
 private data class PendingStop(
     val sequence: Long,
     val gateway: GatewayConnection,
@@ -264,12 +268,18 @@ internal class CelesteViewModel(
     private var connectionJob: Job? = null
     private var connectionAttempt = 0L
     private val connectionStoreMutex = Mutex()
+    private val reconciliationMutex = Mutex()
     private var currentDescriptor: SavedConnectionDescriptor? = null
     private var preservedDraft: PreservedDraft? = null
     private var reconnectAttempts = 0
     private var reconciling = false
+    private var reconciliationEpoch = 0L
+    private var activeReconciliationEpoch: Long? = null
+    private var activeReconciliationGateway: GatewayConnection? = null
+    private var activeReconciliationGeneration: Long? = null
     private var currentSessionCanResume = true
     private var authoritativeAdmissionEvidence: AdmissionEvidence? = null
+    private val acceptedGuidanceProjections = mutableListOf<AcceptedGuidanceProjection>()
     private val bufferedEvents = mutableListOf<GatewayEvent>()
 
     init {
@@ -875,53 +885,56 @@ internal class CelesteViewModel(
         observeGateway(newGateway)
         viewModelScope.launch {
             runCatching {
-                newGateway.connect()
-                reconciling = true
-                bufferedEvents.clear()
-                val created = newGateway.createSession(selectedProfile)
-                if (gateway !== newGateway) throw IOException("The Hermes connection changed while creating the conversation.")
-                val returnedProfile = created.profile?.takeIf(String::isNotBlank)
-                if (returnedProfile != null && !returnedProfile.equals(selectedProfile, ignoreCase = true)) {
-                    throw IOException("Hermes created this conversation in $returnedProfile instead of $selectedProfile.")
+                reconciliationMutex.withLock {
+                    val generation = gatewayGeneration
+                    val epoch = beginReconciliation(newGateway, generation)
+                    try {
+                        newGateway.connect()
+                        val created = newGateway.createSession(selectedProfile)
+                        if (!isCurrentReconciliation(newGateway, generation, epoch)) {
+                            throw IOException("The Hermes connection changed while creating the conversation.")
+                        }
+                        val returnedProfile = created.profile?.takeIf(String::isNotBlank)
+                        if (returnedProfile != null && !returnedProfile.equals(selectedProfile, ignoreCase = true)) {
+                            throw IOException("Hermes created this conversation in $returnedProfile instead of $selectedProfile.")
+                        }
+                        currentRuntimeSessionId = created.runtimeSessionId
+                        currentStoredSessionId = created.storedSessionId
+                        authoritativeAdmissionEvidence = AdmissionEvidence(
+                            scopeKey = sessionScopeKey(created.storedSessionId, selectedProfile),
+                            durableMessages = emptyList(),
+                            inflightUserText = "",
+                            inflightCorrections = emptyList(),
+                            queuedUserTexts = emptyList(),
+                        )
+                        currentSessionCanResume = false
+                        val summary = StoredSession(
+                            id = created.storedSessionId,
+                            title = "New conversation",
+                            preview = "",
+                            startedAt = 0.0,
+                            messageCount = 0,
+                            source = "android",
+                            profile = selectedProfile,
+                        )
+                        mutableState.value = mutableState.value.copy(
+                            sessions = listOf(summary) + mutableState.value.sessions.orEmpty()
+                                .filterNot { it.id == summary.id },
+                            activeSummary = summary,
+                            turnState = TurnState.Idle,
+                            loadingMessage = null,
+                            errorMessage = null,
+                        )
+                        replayBufferedEvents(newGateway, generation, epoch)
+                    } finally {
+                        finishReconciliation(epoch)
+                    }
                 }
-                currentRuntimeSessionId = created.runtimeSessionId
-                currentStoredSessionId = created.storedSessionId
-                authoritativeAdmissionEvidence = AdmissionEvidence(
-                    scopeKey = sessionScopeKey(created.storedSessionId, selectedProfile),
-                    durableMessages = emptyList(),
-                    inflightUserText = "",
-                    inflightCorrections = emptyList(),
-                    queuedUserTexts = emptyList(),
-                )
-                currentSessionCanResume = false
-                val summary = StoredSession(
-                    id = created.storedSessionId,
-                    title = "New conversation",
-                    preview = "",
-                    startedAt = 0.0,
-                    messageCount = 0,
-                    source = "android",
-                    profile = selectedProfile,
-                )
-                val events = bufferedEvents.toList()
-                bufferedEvents.clear()
-                reconciling = false
-                mutableState.value = mutableState.value.copy(
-                    sessions = listOf(summary) + mutableState.value.sessions.orEmpty()
-                        .filterNot { it.id == summary.id },
-                    activeSummary = summary,
-                    turnState = TurnState.Idle,
-                    loadingMessage = null,
-                    errorMessage = null,
-                )
-                events.forEach(::applyEvent)
             }.onSuccess {
                 if (gateway !== newGateway) return@onSuccess
                 reconnectAttempts = 0
             }.onFailure { error ->
                 if (gateway !== newGateway) return@onFailure
-                reconciling = false
-                bufferedEvents.clear()
                 closeGateway()
                 mutableState.value = mutableState.value.copy(
                     turnState = TurnState.Idle,
@@ -982,6 +995,46 @@ internal class CelesteViewModel(
         }
     }
 
+    private fun guidanceProjectionId(operation: PendingOperation): String =
+        "active-guidance-${operation.sequence}-${operation.storedSessionId}"
+
+    private fun guidanceProjectionMessage(operation: PendingOperation): ConversationMessage =
+        ConversationMessage(
+            role = "user",
+            text = operation.text.ifBlank { "Attachment queued for the next turn." },
+            id = guidanceProjectionId(operation),
+            pending = true,
+        )
+
+    private fun retainAcceptedGuidance(operation: PendingOperation) {
+        if (operation.kind == ActiveTurnOperationKind.Submit) return
+        acceptedGuidanceProjections.removeAll { it.operation.sequence == operation.sequence }
+        acceptedGuidanceProjections += AcceptedGuidanceProjection(operation)
+    }
+
+    private fun removeAcceptedGuidance(operation: PendingOperation) {
+        acceptedGuidanceProjections.removeAll { it.operation.sequence == operation.sequence }
+    }
+
+    private fun guidanceOperationsForScope(scopeKey: String): List<PendingOperation> {
+        val pending = pendingOperation
+            ?.takeIf { operation ->
+                operation.kind != ActiveTurnOperationKind.Submit && operation.scopeKey == scopeKey
+            }
+        val accepted = acceptedGuidanceProjections
+            .asSequence()
+            .map(AcceptedGuidanceProjection::operation)
+            .filter { operation -> operation.scopeKey == scopeKey }
+        return (listOfNotNull(pending) + accepted.toList()).distinctBy(PendingOperation::sequence)
+    }
+
+    private fun removeGuidanceProjectionFromState(operation: PendingOperation) {
+        val projectionId = guidanceProjectionId(operation)
+        mutableState.value = mutableState.value.copy(
+            messages = mutableState.value.messages.filterNot { it.id == projectionId },
+        )
+    }
+
     private fun dispatchActiveTurn(kind: ActiveTurnOperationKind) {
         val activeGateway = gateway ?: return
         val snapshot = mutableState.value
@@ -1033,15 +1086,15 @@ internal class CelesteViewModel(
         )
         pendingOperation = operation
         mutableState.value = snapshot.copy(
-            messages = if (localMessageId == null) {
-                snapshot.messages
-            } else {
-                snapshot.messages + ConversationMessage(
+            messages = when {
+                localMessageId != null -> snapshot.messages + ConversationMessage(
                     role = "user",
                     text = text,
                     id = localMessageId,
                     pending = true,
                 )
+                kind != ActiveTurnOperationKind.Submit -> snapshot.messages + guidanceProjectionMessage(operation)
+                else -> snapshot.messages
             },
             streamingText = if (kind == ActiveTurnOperationKind.Submit) "" else snapshot.streamingText,
             turnState = if (kind == ActiveTurnOperationKind.Submit) TurnState.Running else snapshot.turnState,
@@ -1100,12 +1153,28 @@ internal class CelesteViewModel(
                 pendingOperation = null
                 when (result) {
                     OperationResult.Accepted -> {
+                        retainAcceptedGuidance(operation)
                         clearAcceptedDraft(operation)
                         mutableState.value = mutableState.value.copy(
                             deliveryStatus = DeliveryStatus.Accepted,
                             lastAction = operation.kind.composerAction(),
                             errorMessage = null,
                         )
+                        if (operation.kind != ActiveTurnOperationKind.Submit && gateway === activeGateway) {
+                            val reconciliation = runCatching {
+                                // An accepted correction is only a gateway admission. Reconcile
+                                // immediately so the local acknowledgement can be replaced by
+                                // the authoritative projection before a turn-complete event.
+                                reconcile(activeGateway, operation.storedSessionId, operation.profile)
+                            }
+                            if (reconciliation.isFailure && gateway === activeGateway) {
+                                mutableState.value = mutableState.value.copy(
+                                    deliveryStatus = DeliveryStatus.Accepted,
+                                    lastAction = operation.kind.composerAction(),
+                                    errorMessage = "Guidance accepted; confirming its placement with Hermes…",
+                                )
+                            }
+                        }
                     }
 
                     OperationResult.Rejected, OperationResult.Unsupported -> {
@@ -1195,9 +1264,13 @@ internal class CelesteViewModel(
         }
 
     private fun discardOptimisticSubmission(operation: PendingOperation) {
-        val localId = operation.localMessageId ?: return
+        removeAcceptedGuidance(operation)
+        val projectionId = guidanceProjectionId(operation)
+        val localId = operation.localMessageId
         mutableState.value = mutableState.value.copy(
-            messages = mutableState.value.messages.filterNot { it.id == localId },
+            messages = mutableState.value.messages.filterNot { message ->
+                message.id == projectionId || (localId != null && message.id == localId)
+            },
         )
     }
 
@@ -1386,13 +1459,73 @@ internal class CelesteViewModel(
     private fun sessionScopeKey(storedId: String, profile: String): String =
         "${profilePreferenceKey(profile)}|$storedId"
 
+    private fun beginReconciliation(
+        activeGateway: GatewayConnection,
+        generation: Long,
+    ): Long {
+        val epoch = ++reconciliationEpoch
+        activeReconciliationEpoch = epoch
+        activeReconciliationGateway = activeGateway
+        activeReconciliationGeneration = generation
+        reconciling = true
+        bufferedEvents.clear()
+        return epoch
+    }
+
+    private fun finishReconciliation(epoch: Long) {
+        if (activeReconciliationEpoch != epoch) return
+        activeReconciliationEpoch = null
+        activeReconciliationGateway = null
+        activeReconciliationGeneration = null
+        reconciling = false
+        bufferedEvents.clear()
+    }
+
+    private fun invalidateReconciliation() {
+        reconciliationEpoch += 1
+        activeReconciliationEpoch = null
+        activeReconciliationGateway = null
+        activeReconciliationGeneration = null
+        reconciling = false
+        bufferedEvents.clear()
+    }
+
+    private fun isCurrentReconciliation(
+        activeGateway: GatewayConnection,
+        generation: Long,
+        epoch: Long,
+    ): Boolean = activeReconciliationEpoch == epoch &&
+        activeReconciliationGateway === activeGateway &&
+        activeReconciliationGeneration == generation &&
+        isCurrentGateway(activeGateway, generation)
+
+    private fun replayBufferedEvents(
+        activeGateway: GatewayConnection,
+        generation: Long,
+        epoch: Long,
+    ) {
+        while (isCurrentReconciliation(activeGateway, generation, epoch)) {
+            if (bufferedEvents.isEmpty()) return
+            val events = bufferedEvents.toList()
+            bufferedEvents.clear()
+            events.forEach { event ->
+                if (isCurrentReconciliation(activeGateway, generation, epoch)) {
+                    applyEvent(event)
+                }
+            }
+        }
+    }
+
     private fun observeGateway(activeGateway: GatewayConnection) {
         gatewayEventsJob = viewModelScope.launch {
             activeGateway.events.collect { event ->
                 if (gateway !== activeGateway) return@collect
-                if (reconciling) {
+                if (reconciling &&
+                    activeReconciliationGateway === activeGateway &&
+                    activeReconciliationGeneration == gatewayGeneration
+                ) {
                     bufferedEvents += event
-                } else {
+                } else if (!reconciling) {
                     applyEvent(event)
                 }
             }
@@ -1425,6 +1558,14 @@ internal class CelesteViewModel(
         activeGateway: GatewayConnection,
         storedSessionId: String,
         expectedProfile: String? = null,
+    ) = reconciliationMutex.withLock {
+        reconcileLocked(activeGateway, storedSessionId, expectedProfile)
+    }
+
+    private suspend fun reconcileLocked(
+        activeGateway: GatewayConnection,
+        storedSessionId: String,
+        expectedProfile: String?,
     ) {
         val generation = gatewayGeneration
         if (!isCurrentGateway(activeGateway, generation)) return
@@ -1434,12 +1575,10 @@ internal class CelesteViewModel(
             .trim()
             .ifBlank { "default" }
         val expectedOrigin = normalizedEndpoint()
-        reconciling = true
-        bufferedEvents.clear()
-        var events = emptyList<GatewayEvent>()
+        val epoch = beginReconciliation(activeGateway, generation)
         try {
             val resumed = activeGateway.resumeStoredSession(storedSessionId, profile)
-            if (!isCurrentGateway(activeGateway, generation)) return
+            if (!isCurrentReconciliation(activeGateway, generation, epoch)) return
             if (resumed.storedSessionId != storedSessionId) {
                 throw IOException("Hermes resumed a different conversation.")
             }
@@ -1451,15 +1590,13 @@ internal class CelesteViewModel(
                 throw IOException("Hermes resumed this conversation from a different gateway origin.")
             }
             applyResumedSession(resumed, activeGateway, generation)
-            events = bufferedEvents.toList()
-            bufferedEvents.clear()
-        } catch (error: Throwable) {
-            if (isCurrentGateway(activeGateway, generation)) bufferedEvents.clear()
-            throw error
+            replayBufferedEvents(activeGateway, generation, epoch)
         } finally {
-            if (isCurrentGateway(activeGateway, generation)) reconciling = false
+            // The mutex makes resume/apply/replay one transaction. Epoch and
+            // generation guards keep a stale socket from clearing a newer
+            // reconciliation's event buffer or publishing its snapshot.
+            finishReconciliation(epoch)
         }
-        if (isCurrentGateway(activeGateway, generation)) events.forEach(::applyEvent)
     }
 
     private fun isCurrentGateway(activeGateway: GatewayConnection, generation: Long): Boolean =
@@ -1490,10 +1627,15 @@ internal class CelesteViewModel(
         currentSessionCanResume = true
         val profile = mutableState.value.activeSummary?.profile ?: mutableState.value.selectedProfile
         val scopeKey = sessionScopeKey(resumed.storedSessionId, profile)
+        rebindPendingOperations(resumed, activeGateway, generation)
+        val operationResolution = resolvePendingOperation(resumed)
+        reconcileAcceptedGuidance(resumed, scopeKey)
         val projection = projectResumedTurn(resumed)
+        val localGuidance = guidanceOperationsForScope(scopeKey)
+            .map(::guidanceProjectionMessage)
         val current = mutableState.value
         mutableState.value = current.copy(
-            messages = projection.messages,
+            messages = projection.messages + localGuidance,
             streamingText = projection.streamingText,
             turnState = resumedTurnState(resumed),
             redirectSupported = resumed.supportsActiveTurnRedirect,
@@ -1503,10 +1645,29 @@ internal class CelesteViewModel(
                 null
             },
         )
-        rebindPendingOperations(resumed, activeGateway, generation)
-        val operationResolution = resolvePendingOperation(resumed)
         resolvePendingStopAfterResume(resumed, operationResolution)
         authoritativeAdmissionEvidence = admissionEvidence(resumed, scopeKey)
+    }
+
+    private fun reconcileAcceptedGuidance(
+        resumed: ResumedSession,
+        scopeKey: String,
+    ) {
+        val currentEvidence = admissionEvidence(resumed, scopeKey)
+        acceptedGuidanceProjections.removeAll { projection ->
+            val operation = projection.operation
+            if (operation.scopeKey != scopeKey || operation.storedSessionId != resumed.storedSessionId) {
+                false
+            } else {
+                when (operation.kind) {
+                    ActiveTurnOperationKind.Steer,
+                    ActiveTurnOperationKind.Redirect -> hasNewInflightCorrection(operation, currentEvidence)
+                    ActiveTurnOperationKind.Queue -> hasNewDurableUser(operation, currentEvidence) ||
+                        hasNewQueuedInput(operation, currentEvidence)
+                    ActiveTurnOperationKind.Submit -> false
+                }
+            }
+        }
     }
 
     private fun rebindPendingOperations(
@@ -1685,6 +1846,8 @@ internal class CelesteViewModel(
         }
         if (admitted) {
             pendingOperation = null
+            removeAcceptedGuidance(operation)
+            removeGuidanceProjectionFromState(operation)
             clearAcceptedDraft(operation)
             mutableState.value = mutableState.value.copy(
                 deliveryStatus = DeliveryStatus.Accepted,
@@ -1956,16 +2119,14 @@ internal class CelesteViewModel(
     private suspend fun recreateBlankSession(
         activeGateway: GatewayConnection,
         profile: String,
-    ) {
+    ) = reconciliationMutex.withLock {
         val generation = gatewayGeneration
-        if (!isCurrentGateway(activeGateway, generation)) return
+        if (!isCurrentGateway(activeGateway, generation)) return@withLock
         val previousStoredId = currentStoredSessionId
-        reconciling = true
-        bufferedEvents.clear()
-        var events = emptyList<GatewayEvent>()
+        val epoch = beginReconciliation(activeGateway, generation)
         try {
             val created = activeGateway.createSession(profile)
-            if (!isCurrentGateway(activeGateway, generation)) return
+            if (!isCurrentReconciliation(activeGateway, generation, epoch)) return@withLock
             currentRuntimeSessionId = created.runtimeSessionId
             currentStoredSessionId = created.storedSessionId
             val previousSummary = mutableState.value.activeSummary
@@ -1986,15 +2147,10 @@ internal class CelesteViewModel(
                 turnState = TurnState.Idle,
                 errorMessage = null,
             )
-            events = bufferedEvents.toList()
-            bufferedEvents.clear()
-        } catch (error: Throwable) {
-            if (isCurrentGateway(activeGateway, generation)) bufferedEvents.clear()
-            throw error
+            replayBufferedEvents(activeGateway, generation, epoch)
         } finally {
-            if (isCurrentGateway(activeGateway, generation)) reconciling = false
+            finishReconciliation(epoch)
         }
-        if (isCurrentGateway(activeGateway, generation)) events.forEach(::applyEvent)
     }
 
     private fun scheduleReconnect(wasRunning: Boolean, immediate: Boolean = false) {
@@ -2060,8 +2216,8 @@ internal class CelesteViewModel(
         gatewayEventsJob = null
         gatewayStateJob?.cancel()
         gatewayStateJob = null
-        reconciling = false
-        bufferedEvents.clear()
+        invalidateReconciliation()
+        acceptedGuidanceProjections.clear()
         currentRuntimeSessionId = null
         currentStoredSessionId = null
         currentSessionCanResume = true
