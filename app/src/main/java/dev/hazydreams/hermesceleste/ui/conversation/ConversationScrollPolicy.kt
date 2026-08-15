@@ -83,20 +83,20 @@ internal class ConversationScrollPolicy(
             )
         }
 
-        if (input.initialProjectionReady) {
-            return ScrollPolicyDecision(
-                followsLatest = true,
-                command = ScrollCommand.FollowLatest,
-                transitionGeneration = input.transitionGeneration,
-            )
-        }
-
         if (input.restorationPending) {
             if (!input.transitionSettled) return input.hold()
             return ScrollPolicyDecision(
                 followsLatest = input.followsLatest,
                 command = ScrollCommand.RestoreAnchor,
                 fallbackToLatest = !input.anchorAvailable,
+                transitionGeneration = input.transitionGeneration,
+            )
+        }
+
+        if (input.initialProjectionReady) {
+            return ScrollPolicyDecision(
+                followsLatest = true,
+                command = ScrollCommand.FollowLatest,
                 transitionGeneration = input.transitionGeneration,
             )
         }

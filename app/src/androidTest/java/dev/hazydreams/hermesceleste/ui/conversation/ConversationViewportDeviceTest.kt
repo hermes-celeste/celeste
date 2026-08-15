@@ -125,6 +125,25 @@ class ConversationViewportDeviceTest {
     }
 
     @Test
+    fun rotationRestoresHistoryModeAndAnchorForTheSameSession() {
+        composeRule.onNodeWithContentDescription("Conversation transcript")
+            .performScrollToIndex(6)
+        composeRule.waitForIdle()
+        composeRule.onNodeWithText(syntheticRowText(6)).assertIsDisplayed()
+        composeRule.onNodeWithContentDescription("Jump to latest").assertIsDisplayed()
+
+        try {
+            device.setOrientationLeft()
+            composeRule.waitForIdle()
+            composeRule.onNodeWithText(syntheticRowText(6)).assertIsDisplayed()
+            composeRule.onNodeWithContentDescription("Jump to latest").assertIsDisplayed()
+        } finally {
+            device.unfreezeRotation()
+            device.setOrientationNatural()
+        }
+    }
+
+    @Test
     fun cutoutDeviceKeepsSafeDrawingHeaderClearance() {
         assumeTrue("This gate requires a display cutout device.", Build.VERSION.SDK_INT >= 28)
         var hasCutout = false
@@ -170,6 +189,42 @@ class ConversationViewportDeviceTest {
 
         composeRule.onNodeWithContentDescription("Message composer").assertIsDisplayed()
         assertTerminalClearsDock()
+    }
+
+    @Test
+    fun earlyAccessibilityScrollAwayInvalidatesInitialLatestSettling() {
+        val settled = mutableStateOf(false)
+        composeRule.setContent {
+            HermesCelesteTheme {
+                val draft = remember { mutableStateOf("synthetic draft") }
+                ConversationScreen(
+                    summary = syntheticSummary,
+                    messages = syntheticMessages,
+                    streamingText = "",
+                    draft = draft.value,
+                    turnState = TurnState.Idle,
+                    loadingMessage = null,
+                    errorMessage = null,
+                    onDraftChange = { draft.value = it },
+                    onSend = {},
+                    onInterrupt = {},
+                    onReconnect = {},
+                    onBack = {},
+                    bottomOcclusion = WindowInsets(0, 0, 0, 48),
+                    safeDrawingInsets = WindowInsets(16, 0, 16, 0),
+                    bottomOcclusionSettled = settled.value,
+                )
+            }
+        }
+
+        composeRule.onNodeWithContentDescription("Conversation transcript")
+            .performScrollToIndex(6)
+        composeRule.waitForIdle()
+        composeRule.runOnUiThread { settled.value = true }
+        composeRule.waitForIdle()
+
+        composeRule.onNodeWithText(syntheticRowText(6)).assertIsDisplayed()
+        composeRule.onNodeWithContentDescription("Jump to latest").assertIsDisplayed()
     }
 
     @Test

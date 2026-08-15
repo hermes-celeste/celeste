@@ -148,10 +148,11 @@ class ConversationScrollPolicyTest {
     }
 
     @Test
-    fun newerTransitionGenerationCancelsStaleScrollWork() {
+    fun earlyHistoryScrollGenerationCancelsInitialLatestSettle() {
         val decision = policy.decide(
             ScrollPolicyInput(
                 followsLatest = true,
+                initialProjectionReady = true,
                 pendingGeneration = 3L,
                 transitionGeneration = 4L,
             ),
@@ -159,6 +160,22 @@ class ConversationScrollPolicyTest {
 
         assertEquals(ScrollCommand.CancelPendingFollow, decision.command)
         assertEquals(4L, decision.transitionGeneration)
+    }
+
+    @Test
+    fun savedHistoryModeTakesPrecedenceOverInitialLatestSettling() {
+        val decision = policy.decide(
+            ScrollPolicyInput(
+                followsLatest = false,
+                restorationPending = true,
+                anchorAvailable = true,
+                initialProjectionReady = true,
+                transitionSettled = true,
+            ),
+        )
+
+        assertEquals(ScrollCommand.RestoreAnchor, decision.command)
+        assertFalse(decision.followsLatest)
     }
 
     @Test

@@ -53,6 +53,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.onDispose
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.withFrameNanos
@@ -299,7 +300,7 @@ private fun ConversationViewport(
 ) {
     val density = LocalDensity.current
     val scope = rememberCoroutineScope()
-    val listState = remember(summaryId) { LazyListState() }
+    val listState = rememberSaveable(summaryId, saver = LazyListState.Saver) { LazyListState() }
     val transcriptKeys = remember(messages) { transcriptItemKeys(messages) }
     val hasStreamingRow = streamingText.isNotBlank()
     val itemCount = messages.size + if (hasStreamingRow) 1 else 0
@@ -307,12 +308,22 @@ private fun ConversationViewport(
         if (hasStreamingRow) transcriptKeys + STREAMING_TRANSCRIPT_KEY else transcriptKeys
     }
     val policy = remember(summaryId) { ConversationScrollPolicy() }
-    var followsLatest by remember(summaryId) { mutableStateOf(true) }
+    var followsLatest by rememberSaveable(summaryId) { mutableStateOf(true) }
     var transitionGeneration by remember(summaryId) { mutableLongStateOf(0L) }
     var transitionActive by remember(summaryId) { mutableStateOf(false) }
     var initialProjectionHandled by remember(summaryId) { mutableStateOf(false) }
-    var pendingAnchor by remember(summaryId) { mutableStateOf<TranscriptAnchor?>(null) }
-    var lastHistoryAnchor by remember(summaryId) { mutableStateOf<TranscriptAnchor?>(null) }
+    var savedAnchorKey by rememberSaveable(summaryId) { mutableStateOf<String?>(null) }
+    var savedAnchorIndex by rememberSaveable(summaryId) { mutableIntStateOf(-1) }
+    var savedAnchorOffsetPx by rememberSaveable(summaryId) { mutableIntStateOf(0) }
+    val restoredHistoryAnchor = savedAnchorKey?.let { key ->
+        TranscriptAnchor(
+            key = key,
+            index = savedAnchorIndex,
+            relativeOffsetPx = savedAnchorOffsetPx,
+        )
+    }
+    var pendingAnchor by remember(summaryId) { mutableStateOf(restoredHistoryAnchor) }
+    var lastHistoryAnchor by remember(summaryId) { mutableStateOf(restoredHistoryAnchor) }
     var recoveryNeeded by remember(summaryId) { mutableStateOf(false) }
     var programmaticScrollGeneration by remember(summaryId) { mutableStateOf<Long?>(null) }
     var activeScrollJob by remember(summaryId) { mutableStateOf<Job?>(null) }
@@ -320,6 +331,12 @@ private fun ConversationViewport(
     var previousItemKeys by remember(summaryId) { mutableStateOf<List<String>?>(null) }
     var previousProjectionGeneration by remember(summaryId) { mutableStateOf<Long?>(null) }
     var geometryRetryTick by remember(summaryId) { mutableLongStateOf(0L) }
+
+    fun persistHistoryAnchor(anchor: TranscriptAnchor?) {
+        savedAnchorKey = anchor?.key
+        savedAnchorIndex = anchor?.index ?: -1
+        savedAnchorOffsetPx = anchor?.relativeOffsetPx ?: 0
+    }
 
     // rememberCoroutineScope() survives a summary-key change. Dispose the
     // previous summary's explicit jump/restore job before its list state is
@@ -355,6 +372,10 @@ private fun ConversationViewport(
     fun markHistoryReading() {
         activeScrollJob?.cancel()
         activeScrollJob = null
+        // Deliberate drag/accessibility scroll owns the viewport immediately.
+        // Mark the initial settle handled before it can resume after geometry
+        // becomes usable, then advance the generation to invalidate its work.
+        initialProjectionHandled = true
         val decision = policy.decide(
             ScrollPolicyInput(
                 followsLatest = followsLatest,
@@ -369,6 +390,7 @@ private fun ConversationViewport(
             if (anchor != null) {
                 lastHistoryAnchor = anchor
                 pendingAnchor = anchor
+                persistHistoryAnchor(anchor)
             }
         }
         followsLatest = decision.followsLatest
@@ -402,6 +424,7 @@ private fun ConversationViewport(
         followsLatest = decision.followsLatest
         recoveryNeeded = false
         pendingAnchor = null
+        persistHistoryAnchor(null)
         transitionActive = false
         transitionGeneration = decision.transitionGeneration + 1
         val generation = transitionGeneration
@@ -419,7 +442,10 @@ private fun ConversationViewport(
             .filterNotNull()
             .distinctUntilChanged()
             .collect { anchor ->
-                if (!followsLatest) lastHistoryAnchor = anchor
+                if (!followsLatest) {
+                    lastHistoryAnchor = anchor
+                    persistHistoryAnchor(anchor)
+                }
             }
     }
 
@@ -442,8 +468,11 @@ private fun ConversationViewport(
             val movedTowardHistory = previousPosition?.let {
                 position.isEarlierThan(it)
             } == true
+            val deliberateScrollBeforeInitialSettle = !initialProjectionHandled &&
+                previousPosition != null &&
+                position != previousPosition
             if (position.isScrollInProgress &&
-                movedTowardHistory &&
+                (movedTowardHistory || deliberateScrollBeforeInitialSettle) &&
                 programmaticScrollGeneration == null
             ) {
                 markHistoryReading()
@@ -471,8 +500,16 @@ private fun ConversationViewport(
         }
     }
 
-    LaunchedEffect(itemCount, summaryId, geometry, projectionGeneration, geometryRetryTick) {
+    LaunchedEffect(
+        itemCount,
+        summaryId,
+        geometry,
+        projectionGeneration,
+        geometryRetryTick,
+        transitionGeneration,
+    ) {
         if (initialProjectionHandled || itemCount == 0) return@LaunchedEffect
+        val settlingGeneration = transitionGeneration
         snapshotFlow {
             listState.layoutInfo.totalItemsCount == itemCount &&
                 hasUsableViewportGeometry(
@@ -486,22 +523,54 @@ private fun ConversationViewport(
             geometryRetryTick += 1
             return@LaunchedEffect
         }
-        if (initialProjectionHandled) return@LaunchedEffect
+        // A deliberate drag/accessibility scroll can happen while the first
+        // usable geometry is settling. Its generation owns the viewport now;
+        // never let this older initial-latest attempt relatch after that input.
+        if (initialProjectionHandled || settlingGeneration != transitionGeneration) {
+            return@LaunchedEffect
+        }
+        val restoringHistory = !followsLatest
+        val anchor = pendingAnchor ?: lastHistoryAnchor
+        val anchorCanBeRestored = anchor != null && (
+            itemKeys.contains(anchor.key) || anchor.index in itemKeys.indices
+        )
         val decision = policy.decide(
             ScrollPolicyInput(
                 followsLatest = followsLatest,
-                initialProjectionReady = true,
-                transitionGeneration = transitionGeneration,
+                restorationPending = restoringHistory,
+                anchorAvailable = anchorCanBeRestored,
+                initialProjectionReady = !restoringHistory,
+                transitionGeneration = settlingGeneration,
+                pendingGeneration = settlingGeneration,
                 hasItems = true,
             ),
         )
+        if (decision.command == ScrollCommand.CancelPendingFollow) return@LaunchedEffect
         initialProjectionHandled = true
         followsLatest = decision.followsLatest
-        if (decision.command == ScrollCommand.FollowLatest) {
-            val generation = decision.transitionGeneration
-            scrollForGeneration(generation) {
-                settleTerminalRow(listState, itemCount)
+        when (decision.command) {
+            ScrollCommand.FollowLatest -> {
+                scrollForGeneration(decision.transitionGeneration) {
+                    settleTerminalRow(listState, itemCount)
+                }
             }
+
+            ScrollCommand.RestoreAnchor -> {
+                scrollForGeneration(decision.transitionGeneration) {
+                    val restored = restoreTranscriptAnchor(
+                        listState = listState,
+                        itemKeys = itemKeys,
+                        anchor = anchor,
+                    )
+                    if (decision.fallbackToLatest || !restored) {
+                        settleTerminalRow(listState, itemCount)
+                        recoveryNeeded = true
+                    }
+                }
+                pendingAnchor = null
+            }
+
+            else -> Unit
         }
     }
 
@@ -512,11 +581,14 @@ private fun ConversationViewport(
         summaryId,
         itemCount,
         followsLatest,
+        initialProjectionHandled,
         transitionGeneration,
         transitionActive,
         projectionGeneration,
     ) {
-        if (!followsLatest || itemCount == 0) return@LaunchedEffect
+        if (!followsLatest || !initialProjectionHandled || itemCount == 0) {
+            return@LaunchedEffect
+        }
         snapshotFlow {
             terminalLayoutSignature(listState.layoutInfo, itemCount)
         }.distinctUntilChanged().collectLatest {
