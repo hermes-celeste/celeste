@@ -366,9 +366,7 @@ internal fun GatewaySettingsScreen(
                 EditorialDivider()
             }
 
-            val visibleError = errorMessage.takeUnless {
-                connectionPhase == ConnectionPhase.AuthenticationRequired
-            }
+            val visibleError = errorMessage
             AnimatedVisibility(visibleError != null || loadingMessage != null) {
                 Column(modifier = Modifier.padding(vertical = 22.dp)) {
                     loadingMessage?.let { StatusMessage(it, CelesteBlue, showSpinner = true) }

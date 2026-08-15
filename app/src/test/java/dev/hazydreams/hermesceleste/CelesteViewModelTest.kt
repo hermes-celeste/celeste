@@ -221,7 +221,7 @@ class CelesteViewModelTest {
 
         assertTrue(dashboard.sessionListCalls > callsBeforeDisconnect)
         assertEquals(SessionCatalogStatus.Ready, viewModel.state.value.sessionCatalog.phase)
-        assertEquals(listOf("stored-42"), viewModel.state.value.sessions?.map(StoredSession::id))
+        assertEquals(listOf("stored-42", "stored-work"), viewModel.state.value.sessions?.map(StoredSession::id))
         viewModel.leaveConversation()
     }
 
@@ -298,29 +298,46 @@ class CelesteViewModelTest {
     }
 
     @Test
-    fun profileSelectionClearsTheOldScopeAndLoadsOnlyTheSelectedProfile() = runTest {
+    fun profileSelectionChangesOnlyTheNextNewConversationProfile() = runTest {
         val dashboard = FakeDashboard(FakeGateway())
         val viewModel = connectedViewModel(dashboard)
 
         viewModel.selectProfile("work")
-        advanceUntilIdle()
 
         assertEquals("work", viewModel.state.value.selectedProfile)
         assertEquals(
-            listOf("stored-work"),
+            listOf("stored-42", "stored-work"),
             viewModel.state.value.sessions?.map(StoredSession::id),
         )
         assertEquals(
-            listOf("stored-work"),
+            listOf("stored-42", "stored-work"),
             viewModel.state.value.sessionCatalog.rows.map(StoredSession::id),
         )
-        assertTrue(viewModel.state.value.sessions.orEmpty().all { it.profile == "work" })
+        assertTrue(viewModel.state.value.sessions.orEmpty().any { it.profile == "default" })
+        assertTrue(viewModel.state.value.sessions.orEmpty().any { it.profile == "work" })
+        assertTrue(viewModel.state.value.sessions.orEmpty().none { it.id == "ambiguous-profile" })
     }
 
     @Test
-    fun catalogAuthenticationFailureClearsReusableAuthenticationInsteadOfShowingStaleRows() = runTest {
-        val dashboard = FakeDashboard(FakeGateway())
-        val viewModel = connectedViewModel(dashboard)
+    fun catalogAuthenticationFailureClosesGatewayAndClearsTheCatalog() = runTest {
+        val gateway = FakeGateway()
+        val dashboard = FakeDashboard(gateway, authRequired = true)
+        val store = InMemoryConnectionStore()
+        val viewModel = CelesteViewModel(
+            dashboard = dashboard,
+            connectionStore = store,
+            reconnectDelayMillis = { _, _ -> 0L },
+        )
+        viewModel.updateDashboardUrl("http://hermes.test:9119")
+        viewModel.findDashboard()
+        advanceUntilIdle()
+        viewModel.updateUsername("celeste")
+        viewModel.updatePassword("synthetic-password")
+        viewModel.loadSessions()
+        advanceUntilIdle()
+        viewModel.openSession(dashboard.session)
+        advanceUntilIdle()
+        assertTrue(store.load()?.secret != null)
         dashboard.sessionFailure = AuthenticationRejected("Hermes needs sign-in.")
 
         viewModel.refreshSessionCatalog()
@@ -328,7 +345,12 @@ class CelesteViewModelTest {
 
         assertEquals(ConnectionPhase.AuthenticationRequired, viewModel.state.value.connectionPhase)
         assertNull(viewModel.state.value.sessions)
+        assertNull(viewModel.state.value.activeSummary)
         assertEquals("Hermes needs sign-in.", viewModel.state.value.errorMessage)
+        assertNull(store.load()?.secret)
+        assertFalse(store.load()?.descriptor?.autoLoginEnabled ?: true)
+        assertEquals(1, gateway.closeCount)
+        assertEquals(GatewayConnectionState.Closed, gateway.state.value)
     }
 
     @Test
@@ -341,7 +363,7 @@ class CelesteViewModelTest {
         advanceUntilIdle()
 
         assertEquals(SessionCatalogStatus.Stale, viewModel.state.value.sessionCatalog.phase)
-        assertEquals(listOf("stored-42"), viewModel.state.value.sessions?.map(StoredSession::id))
+        assertEquals(listOf("stored-42", "stored-work"), viewModel.state.value.sessions?.map(StoredSession::id))
         assertEquals("offline", viewModel.state.value.sessionCatalog.errorMessage)
     }
 
@@ -359,7 +381,7 @@ class CelesteViewModelTest {
         advanceUntilIdle()
 
         assertEquals(SessionCatalogStatus.Stale, viewModel.state.value.sessionCatalog.status)
-        assertEquals(listOf("stored-42"), viewModel.state.value.sessions?.map(StoredSession::id))
+        assertEquals(listOf("stored-42", "stored-work"), viewModel.state.value.sessions?.map(StoredSession::id))
     }
 
     @Test
@@ -373,6 +395,29 @@ class CelesteViewModelTest {
 
         assertEquals("shared", viewModel.state.value.sessionQuery)
         assertEquals(listOf("stored-42"), viewModel.state.value.sessionCatalog.filteredRows.map(StoredSession::id))
+    }
+
+    @Test
+    fun newConversationFromTheListPublishesActionProgressAndThenAStaleError() = runTest {
+        val gateway = FakeGateway().apply {
+            createGate = CompletableDeferred()
+            createFailure = IOException("new conversation unavailable")
+        }
+        val dashboard = FakeDashboard(gateway)
+        val viewModel = connectedViewModel(dashboard)
+        val loadedRows = viewModel.state.value.sessionCatalog.rows
+
+        viewModel.createNewConversation()
+
+        assertEquals(SessionCatalogStatus.ActionInFlight, viewModel.state.value.sessionCatalog.phase)
+        assertEquals(loadedRows, viewModel.state.value.sessionCatalog.rows)
+
+        gateway.createGate?.complete(Unit)
+        advanceUntilIdle()
+
+        assertEquals(SessionCatalogStatus.Stale, viewModel.state.value.sessionCatalog.phase)
+        assertEquals(loadedRows, viewModel.state.value.sessionCatalog.rows)
+        assertEquals("new conversation unavailable", viewModel.state.value.sessionCatalog.errorMessage)
     }
 
     @Test
@@ -469,6 +514,16 @@ class CelesteViewModelTest {
             profile = "work",
         )
 
+        private val ambiguousProfileSession = StoredSession(
+            id = "ambiguous-profile",
+            title = "Ambiguous profile",
+            preview = "",
+            startedAt = 3.0,
+            messageCount = 0,
+            source = "desktop",
+            profile = "",
+        )
+
         override suspend fun probe(rawBaseUrl: String): DashboardProbeResult =
             DashboardProbeResult(
                 baseUrl = rawBaseUrl,
@@ -496,7 +551,7 @@ class CelesteViewModelTest {
             sessionListCalls += 1
             sessionListGate?.await()
             sessionFailure?.let { throw it }
-            return listOf(session, workSession)
+            return listOf(session, workSession, ambiguousProfileSession)
         }
 
         override suspend fun listProfiles(
@@ -530,8 +585,10 @@ class CelesteViewModelTest {
         var connectCount = 0
         var createCount = 0
         var createFailure: Throwable? = null
+        var createGate: CompletableDeferred<Unit>? = null
         var failHealthCheck = false
         var connectFailure: Throwable? = null
+        var closeCount = 0
         var resumePayload: JsonObject = resumePayload(messages = emptyList(), running = false)
 
         override suspend fun connect() {
@@ -551,6 +608,7 @@ class CelesteViewModelTest {
                 "session.resume" -> resumePayload
                 "session.create" -> {
                     createCount += 1
+                    createGate?.await()
                     createFailure?.let { throw it }
                     buildJsonObject {
                         put("session_id", "runtime-new-$createCount")
@@ -572,6 +630,7 @@ class CelesteViewModelTest {
         }
 
         override fun close() {
+            closeCount += 1
             mutableState.value = GatewayConnectionState.Closed
         }
 

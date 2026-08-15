@@ -104,6 +104,7 @@ class DashboardClientTest {
         assertEquals("This conversation", sessions.first().title)
         assertEquals("desktop", sessions.first().source)
         assertEquals("work", sessions.first().profile)
+        assertEquals("", sessions[1].profile)
         val upgrade = server.takeRequest()
         assertEquals("/api/ws", upgrade.url.encodedPath)
         assertEquals("private-token", upgrade.url.queryParameter("token"))

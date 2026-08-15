@@ -196,6 +196,28 @@ internal object SessionCatalogReducer {
         )
     }
 
+    fun actionStarted(state: SessionCatalogState): SessionCatalogState = state.copy(
+        phase = SessionCatalogStatus.ActionInFlight,
+        errorMessage = null,
+        request = null,
+        queryInFlight = false,
+    )
+
+    fun actionFailed(
+        state: SessionCatalogState,
+        message: String,
+    ): SessionCatalogState = state.copy(
+        phase = if (state.rows.isEmpty()) SessionCatalogStatus.Error else SessionCatalogStatus.Stale,
+        errorMessage = message,
+        request = null,
+        queryInFlight = false,
+    )
+
+    /**
+     * Phase 1 has no verified profile filter on session.list. Keep every row
+     * with a verified profile in the server response order; omit ambiguous
+     * rows instead of assigning them to the selected creation profile.
+     */
     internal fun filterAuthoritativeRows(
         scope: SessionScope,
         rows: List<StoredSession>,
@@ -203,7 +225,7 @@ internal object SessionCatalogReducer {
         val seen = linkedSetOf<SessionKey>()
         return rows.filter { row ->
             val key = row.keyFor(scope.originKey) ?: return@filter false
-            scope.accepts(key) && seen.add(key)
+            seen.add(key)
         }
     }
 }

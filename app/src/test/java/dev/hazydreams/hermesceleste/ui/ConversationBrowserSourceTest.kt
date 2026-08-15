@@ -5,9 +5,9 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * Focused source checks for the browser's accessibility and navigation contract.
- * The JVM test source set has no Compose semantics runtime, so these assertions
- * keep the high-risk labels and roles from disappearing during UI refactors.
+ * Focused source guards for the browser's accessibility and navigation contract.
+ * SessionListSemanticsTest covers the executable row/state projection; these
+ * assertions keep the Compose wiring and high-risk labels from disappearing.
  */
 class ConversationBrowserSourceTest {
     @Test
@@ -27,12 +27,14 @@ class ConversationBrowserSourceTest {
         val source = mainSource("ui/sessions/SessionListScreen.kt")
 
         assertContains(source, "New conversation profile:")
-        assertContains(source, "This also scopes the loaded conversation window")
-        assertContains(source, "Profile scope:")
+        assertContains(source, "This does not filter the loaded conversation list.")
+        assertContains(source, "all loaded profiles")
         assertContains(source, "Search loaded conversations")
         assertContains(source, "Search is limited to loaded conversations.")
         assertContains(source, "Refresh conversations")
         assertContains(source, "Retry conversation connection")
+        assertContains(source, "SessionCatalogStatus.ActionInFlight")
+        assertContains(source, "loadingMessage != null")
     }
 
     @Test
@@ -57,7 +59,8 @@ class ConversationBrowserSourceTest {
         assertContains(source, "activeSessionRunning: Boolean = false")
         assertContains(source, "selected = selectedKey != null")
         assertContains(source, "running = activeSessionRunning")
-        assertContains(source, "selected = selected")
+        assertContains(source, "sessionRowSemantics(")
+        assertContains(source, "selected = semantics.selected")
         assertContains(source, "Open and selected")
         assertContains(source, "Open and running")
     }

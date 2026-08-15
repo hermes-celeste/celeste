@@ -100,7 +100,9 @@ internal fun SessionListScreen(
     val visibleStatus = catalog.status
     val controlsBusy = catalog.phase == SessionCatalogStatus.Loading ||
         catalog.phase == SessionCatalogStatus.Refreshing ||
-        catalog.phase == SessionCatalogStatus.Reconnecting
+        catalog.phase == SessionCatalogStatus.Reconnecting ||
+        catalog.phase == SessionCatalogStatus.ActionInFlight ||
+        loadingMessage != null
     val selectedKey = activeSession?.keyFor(catalog.scope?.originKey.orEmpty())
 
     CelesteBackdrop(showOrnament = false) {
@@ -127,7 +129,7 @@ internal fun SessionListScreen(
                     Text("Conversations", style = MaterialTheme.typography.headlineLarge)
                     Spacer(Modifier.height(4.dp))
                     Text(
-                        "Profile scope: ${selectedProfile.trim().ifBlank { "default" }} · server order",
+                        "New chats use ${selectedProfile.trim().ifBlank { "default" }} · all loaded profiles · server order",
                         color = CelesteMuted,
                         style = MaterialTheme.typography.bodyMedium,
                     )
@@ -156,7 +158,7 @@ internal fun SessionListScreen(
                             .height(50.dp)
                             .semantics {
                                 contentDescription =
-                                    "New conversation profile: ${selectedProfile.replaceFirstChar(Char::uppercase)}. This also scopes the loaded conversation window; All Profiles is not available in Phase 1."
+                                    "New conversation profile: ${selectedProfile.replaceFirstChar(Char::uppercase)}. This does not filter the loaded conversation list."
                                 stateDescription = if (profileMenuExpanded) "Expanded" else "Collapsed"
                             },
                         shape = RoundedCornerShape(25.dp),
@@ -285,6 +287,16 @@ internal fun SessionListScreen(
                     }
                 }
 
+                SessionCatalogStatus.ActionInFlight -> {
+                    Column(Modifier.padding(horizontal = 28.dp, vertical = 8.dp)) {
+                        StatusMessage(
+                            loadingMessage ?: "Starting a new conversation…",
+                            CelesteBlue,
+                            showSpinner = true,
+                        )
+                    }
+                }
+
                 SessionCatalogStatus.Error -> CatalogMessage(
                     message = catalog.errorMessage ?: "Could not load conversations.",
                     actionLabel = "Retry",
@@ -306,7 +318,6 @@ internal fun SessionListScreen(
 
                 SessionCatalogStatus.Ready,
                 SessionCatalogStatus.Opening,
-                SessionCatalogStatus.ActionInFlight,
                 SessionCatalogStatus.NotReady,
                 -> Unit
             }
@@ -346,32 +357,26 @@ private fun SessionRow(
     running: Boolean,
     onClick: () -> Unit,
 ) {
-    val title = session.title.ifBlank { "Untitled conversation" }
-    val metadata = buildList {
-        if (showProfile && session.profile.isNotBlank()) add(session.profile)
-        if (session.messageCount > 0) add("${session.messageCount} messages")
-        if (session.source.isNotBlank()) add(session.source)
-        if (selected) add("open")
-        if (running) add("running")
-    }.joinToString("  ·  ").ifBlank { "No messages yet" }
-    val accessibilityState = when {
-        !enabled -> "Unavailable"
-        running -> "Open and running"
-        selected -> "Open and selected"
-        else -> "Ready"
-    }
+    val semantics = sessionRowSemantics(
+        session = session,
+        showProfile = showProfile,
+        enabled = enabled,
+        selected = selected,
+        running = running,
+    )
     Column(
         modifier = Modifier
             .fillMaxWidth()
             .clickable(enabled = enabled, role = Role.Button, onClick = onClick)
             .semantics(mergeDescendants = true) {
                 role = Role.Button
-                selected = selected
-                contentDescription = "$title. $metadata. Open conversation."
-                stateDescription = accessibilityState
+                selected = semantics.selected
+                contentDescription = semantics.contentDescription
+                stateDescription = semantics.stateDescription
             }
             .padding(vertical = 19.dp),
     ) {
+        val title = session.title.ifBlank { "Untitled conversation" }
         Text(
             title,
             style = MaterialTheme.typography.headlineMedium,
@@ -390,7 +395,7 @@ private fun SessionRow(
         }
         Spacer(Modifier.height(13.dp))
         Text(
-            metadata.uppercase(),
+            semantics.metadata.uppercase(),
             color = CelesteMuted,
             fontSize = 10.sp,
             fontWeight = FontWeight.SemiBold,
@@ -398,6 +403,42 @@ private fun SessionRow(
         )
     }
     EditorialDivider()
+}
+
+internal data class SessionRowSemantics(
+    val selected: Boolean,
+    val contentDescription: String,
+    val stateDescription: String,
+    val metadata: String,
+)
+
+internal fun sessionRowSemantics(
+    session: StoredSession,
+    showProfile: Boolean,
+    enabled: Boolean,
+    selected: Boolean,
+    running: Boolean,
+): SessionRowSemantics {
+    val title = session.title.ifBlank { "Untitled conversation" }
+    val metadata = buildList {
+        if (showProfile && session.profile.isNotBlank()) add(session.profile)
+        if (session.messageCount > 0) add("${session.messageCount} messages")
+        if (session.source.isNotBlank()) add(session.source)
+        if (selected) add("open")
+        if (running) add("running")
+    }.joinToString("  ·  ").ifBlank { "No messages yet" }
+    val stateDescription = when {
+        !enabled -> "Unavailable"
+        running -> "Open and running"
+        selected -> "Open and selected"
+        else -> "Ready"
+    }
+    return SessionRowSemantics(
+        selected = selected,
+        contentDescription = "$title. $metadata. Open conversation.",
+        stateDescription = stateDescription,
+        metadata = metadata,
+    )
 }
 
 @Composable

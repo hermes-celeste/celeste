@@ -20,17 +20,18 @@ class SessionCatalogTest {
     }
 
     @Test
-    fun profileScopeKeepsServerOrderAndDeduplicatesRows() {
+    fun unscopedCatalogKeepsServerOrderDeduplicatesRowsAndDropsAmbiguousProfiles() {
         val scope = requireNotNull(SessionScope.from(origin, "work"))
         val rows = listOf(
             row("work-first", profile = "work"),
             row("default-row"),
             row("work-first", profile = "work"),
+            row("ambiguous", profile = ""),
         )
 
         val filtered = SessionCatalogReducer.filterAuthoritativeRows(scope, rows)
 
-        assertEquals(listOf("work-first"), filtered.map(StoredSession::id))
+        assertEquals(listOf("work-first", "default-row"), filtered.map(StoredSession::id))
     }
 
     @Test
@@ -42,7 +43,7 @@ class SessionCatalogTest {
     }
 
     @Test
-    fun profileScopeExcludesForeignProfileWithoutReorderingMatches() {
+    fun unscopedCatalogKeepsKnownProfilesWithoutReorderingMatches() {
         val scope = requireNotNull(SessionScope.from(origin, "work"))
         val rows = listOf(
             row("work-first", profile = "work"),
@@ -51,7 +52,7 @@ class SessionCatalogTest {
         )
 
         assertEquals(
-            listOf("work-first", "work-second"),
+            listOf("work-first", "default-row", "work-second"),
             SessionCatalogReducer.filterAuthoritativeRows(scope, rows).map(StoredSession::id),
         )
     }
@@ -91,6 +92,26 @@ class SessionCatalogTest {
 
         assertEquals(SessionCatalogStatus.Stale, stale.phase)
         assertEquals(listOf("known"), stale.rows.map(StoredSession::id))
+    }
+
+    @Test
+    fun newConversationActionShowsProgressAndFailurePreservesTheLoadedWindow() {
+        val scope = requireNotNull(SessionScope.from(origin, "default"))
+        val request = request(scope, requestGeneration = 1)
+        val ready = SessionCatalogReducer.succeeded(
+            SessionCatalogReducer.begin(SessionCatalogState(), request, refreshing = false),
+            request,
+            listOf(row("known")),
+        )
+
+        val inFlight = SessionCatalogReducer.actionStarted(ready)
+        assertEquals(SessionCatalogStatus.ActionInFlight, inFlight.status)
+        assertEquals(listOf("known"), inFlight.rows.map(StoredSession::id))
+
+        val failed = SessionCatalogReducer.actionFailed(inFlight, "new conversation unavailable")
+        assertEquals(SessionCatalogStatus.Stale, failed.status)
+        assertEquals(listOf("known"), failed.rows.map(StoredSession::id))
+        assertEquals("new conversation unavailable", failed.errorMessage)
     }
 
     @Test

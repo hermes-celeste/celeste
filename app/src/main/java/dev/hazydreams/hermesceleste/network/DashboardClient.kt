@@ -638,6 +638,11 @@ class DashboardClient(
     private fun decodeSession(element: JsonElement): StoredSession? {
         val row = element as? JsonObject ?: return null
         val id = row["id"]?.jsonPrimitive?.contentOrNull?.takeIf(String::isNotBlank) ?: return null
+        val profile = sequenceOf("profile", "profile_name")
+            .mapNotNull { key ->
+                (row[key] as? JsonPrimitive)?.contentOrNull?.takeIf(String::isNotBlank)
+            }
+            .firstOrNull()
         return StoredSession(
             id = id,
             title = row["title"]?.jsonPrimitive?.contentOrNull.orEmpty(),
@@ -645,9 +650,7 @@ class DashboardClient(
             startedAt = row["started_at"]?.jsonPrimitive?.doubleOrNull ?: 0.0,
             messageCount = row["message_count"]?.jsonPrimitive?.intOrNull ?: 0,
             source = row["source"]?.jsonPrimitive?.contentOrNull.orEmpty(),
-            profile = row["profile"]?.jsonPrimitive?.contentOrNull
-                ?: row["profile_name"]?.jsonPrimitive?.contentOrNull
-                ?: "default",
+            profile = profile.orEmpty(),
         )
     }
 
