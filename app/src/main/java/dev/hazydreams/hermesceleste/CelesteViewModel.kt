@@ -150,6 +150,9 @@ internal class CelesteViewModel(
     private var assistantNameReadJob: Job? = null
     private var assistantNameSaveJob: Job? = null
     private var currentDescriptor: SavedConnectionDescriptor? = null
+    // The descriptor currently committed to ConnectionStore can differ from the
+    // active descriptor while a new address is being probed or persistence retries.
+    private var committedDescriptor: SavedConnectionDescriptor? = null
     private var pendingAssistantNameContext: AssistantNameContext? = null
     private val pendingAssistantNameCleanupOrigins = linkedSetOf<String>()
     private var pendingConnectionForget = false
@@ -403,11 +406,11 @@ internal class CelesteViewModel(
             assistantNameSaveGeneration == saveGeneration
 
     private fun assistantNameOriginFor(state: CelesteUiState): String? =
-        state.assistantNameKey?.origin
-            ?: AssistantNameKey.from(
-                state.probe?.baseUrl ?: currentDescriptor?.baseUrl ?: state.dashboardUrl,
-                state.selectedProfile,
-            )?.origin
+        (committedDescriptor ?: currentDescriptor)
+            ?.let { descriptor ->
+                AssistantNameKey.from(descriptor.baseUrl, state.selectedProfile)?.origin
+            }
+            ?: state.assistantNameKey?.origin
 
     private fun cleanupRetryOrigin(preferredOrigin: String? = null): String? =
         preferredOrigin?.takeIf { it in pendingAssistantNameCleanupOrigins }
@@ -545,6 +548,9 @@ internal class CelesteViewModel(
                 if (!isCurrentConnectionAttempt(attempt)) return@onSuccess
                 credential = remembered.loaded.credential
                 currentDescriptor = remembered.descriptor
+                if (remembered.persistenceError == null) {
+                    committedDescriptor = remembered.descriptor
+                }
                 pendingConnectionForget = false
                 publishConnectedDashboard(
                     loaded = remembered.loaded,
@@ -634,6 +640,7 @@ internal class CelesteViewModel(
             dashboard.clearAuthentication()
             if (!isCurrentConnectionAttempt(attempt)) return@launch
             currentDescriptor = saved?.descriptor
+            committedDescriptor = saved?.descriptor
             mutableState.value = manualState(
                 descriptor = saved?.descriptor,
                 errorMessage = if (error == null) null else {
@@ -681,6 +688,7 @@ internal class CelesteViewModel(
             }
             if (assistantNameError == null && connectionError == null) {
                 pendingConnectionForget = false
+                committedDescriptor = null
             }
             if (activeCredential == GatewayCredential.CookieSession && snapshot.probe != null) {
                 try {
@@ -730,6 +738,7 @@ internal class CelesteViewModel(
             }
             if (assistantNameError == null && connectionError == null && pendingConnectionForget) {
                 pendingConnectionForget = false
+                committedDescriptor = null
             }
             if (!isCurrentConnectionAttempt(attempt)) return@launch
             mutableState.value = mutableState.value.copy(
@@ -765,6 +774,7 @@ internal class CelesteViewModel(
             }
             if (connectionError == null) {
                 pendingConnectionForget = false
+                committedDescriptor = null
             }
             if (!isCurrentConnectionAttempt(attempt)) return@launch
             mutableState.value = mutableState.value.copy(
@@ -803,6 +813,7 @@ internal class CelesteViewModel(
                 )
                 return@launch
             }
+            committedDescriptor = saved?.descriptor
             when (val decision = connectionBootstrapDecision(saved)) {
                 ConnectionBootstrapDecision.ManualSetup -> {
                     pendingAssistantNameContext = null
@@ -883,6 +894,9 @@ internal class CelesteViewModel(
             }
             credential = loaded.credential
             currentDescriptor = descriptor
+            if (persistenceError == null) {
+                committedDescriptor = descriptor
+            }
             pendingConnectionForget = false
             mutableState.value = mutableState.value.copy(
                 dashboardUrl = probe.baseUrl,
@@ -1204,6 +1218,7 @@ internal class CelesteViewModel(
                 if (credential != GatewayCredential.CookieSession || currentDescriptor != descriptor) return@withLock
                 runCatching {
                     connectionStore.replace(descriptor, ReusableSecret(refreshed.value))
+                    committedDescriptor = descriptor
                 }
             }
         }

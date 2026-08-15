@@ -605,6 +605,47 @@ class CelesteViewModelTest {
     }
 
     @Test
+    fun forgetDuringPendingAddressProbeUsesTheCommittedOriginForConnectionAndAliasCleanup() = runTest {
+        val firstOrigin = "http://hermes.test:9119"
+        val secondOrigin = "https://other.example"
+        val gateway = FakeGateway()
+        val dashboard = FakeDashboard(gateway)
+        val connectionStore = InMemoryConnectionStore()
+        val assistantNames = InMemoryAssistantNameStore()
+        assistantNames.write(firstOrigin, "default", "Juno")
+        assistantNames.write(secondOrigin, "default", "Atlas")
+        val viewModel = CelesteViewModel(
+            dashboard = dashboard,
+            connectionStore = connectionStore,
+            assistantNameStore = assistantNames,
+            reconnectDelayMillis = { _, _ -> 0L },
+        )
+
+        advanceUntilIdle()
+        viewModel.updateDashboardUrl(firstOrigin)
+        viewModel.findDashboard()
+        advanceUntilIdle()
+        viewModel.loadSessions()
+        advanceUntilIdle()
+        assertEquals(firstOrigin, connectionStore.load()?.descriptor?.baseUrl)
+
+        dashboard.blockProbe(secondOrigin)
+        viewModel.updateDashboardUrl(secondOrigin)
+        viewModel.findDashboard()
+        runCurrent()
+
+        assertEquals(ConnectionPhase.ManualSetup, viewModel.state.value.connectionPhase)
+        assertEquals(firstOrigin, connectionStore.load()?.descriptor?.baseUrl)
+
+        viewModel.forgetConnection()
+        advanceUntilIdle()
+
+        assertNull(connectionStore.load())
+        assertNull(assistantNames.read(firstOrigin, "default"))
+        assertEquals("Atlas", assistantNames.read(secondOrigin, "default"))
+    }
+
+    @Test
     fun removedProfileFallsBackToItsOwnAliasInsteadOfRetargetingTheRemovedProfile() = runTest {
         val gateway = FakeGateway()
         val dashboard = FakeDashboard(gateway)
@@ -857,6 +898,8 @@ class CelesteViewModelTest {
         private val authRequired: Boolean = false,
     ) : DashboardService {
         var profileFailure: Throwable? = null
+        private var blockedProbeUrl: String? = null
+        private var probeRelease = CompletableDeferred<Unit>()
         var profiles: List<DashboardProfile> = listOf(
             DashboardProfile(name = "default", isDefault = true),
             DashboardProfile(name = "work"),
@@ -871,8 +914,11 @@ class CelesteViewModelTest {
             source = "desktop",
         )
 
-        override suspend fun probe(rawBaseUrl: String): DashboardProbeResult =
-            DashboardProbeResult(
+        override suspend fun probe(rawBaseUrl: String): DashboardProbeResult {
+            if (rawBaseUrl == blockedProbeUrl) {
+                probeRelease.await()
+            }
+            return DashboardProbeResult(
                 baseUrl = rawBaseUrl,
                 authRequired = authRequired,
                 providers = if (authRequired) {
@@ -882,6 +928,12 @@ class CelesteViewModelTest {
                 },
                 version = "test",
             )
+        }
+
+        fun blockProbe(url: String) {
+            blockedProbeUrl = url
+            probeRelease = CompletableDeferred()
+        }
 
         override suspend fun passwordLogin(
             baseUrl: String,

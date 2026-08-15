@@ -345,7 +345,6 @@ fun AssistantNameFallbackPreviewScreenshot() {
     }
 }
 
-@PreviewTest
 @Preview(name = "09 · Settings", widthDp = 390, heightDp = 844, showBackground = true)
 @Composable
 fun SettingsPreviewScreenshot() {
