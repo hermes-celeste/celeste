@@ -132,6 +132,18 @@ private fun ActiveTurnOperationKind.composerAction(): ComposerAction = when (thi
     ActiveTurnOperationKind.Redirect -> ComposerAction.Redirect
 }
 
+private data class AdmissionEvidence(
+    val scopeKey: String,
+    val inflightUserText: String,
+    val inflightCorrections: List<CorrectionEvidence>,
+    val queuedUserTexts: List<String>,
+)
+
+private data class CorrectionEvidence(
+    val text: String,
+    val assistantOffset: Int?,
+)
+
 private data class PendingOperation(
     val sequence: Long,
     val kind: ActiveTurnOperationKind,
@@ -144,6 +156,7 @@ private data class PendingOperation(
     val text: String,
     val draftSnapshot: String,
     val attachments: List<AttachmentReference>,
+    val admissionBaseline: AdmissionEvidence?,
     val localMessageId: String? = null,
     val uncertain: Boolean = false,
     val cancelledByStop: Boolean = false,
@@ -249,6 +262,7 @@ internal class CelesteViewModel(
     private var reconnectAttempts = 0
     private var reconciling = false
     private var currentSessionCanResume = true
+    private var authoritativeAdmissionEvidence: AdmissionEvidence? = null
     private val bufferedEvents = mutableListOf<GatewayEvent>()
 
     init {
@@ -984,6 +998,8 @@ internal class CelesteViewModel(
         } else {
             null
         }
+        val operationProfile = snapshot.activeSummary?.profile ?: snapshot.selectedProfile
+        val operationScopeKey = sessionScopeKey(storedId, operationProfile)
         val operation = PendingOperation(
             sequence = operationSequence.incrementAndGet(),
             kind = kind,
@@ -991,14 +1007,14 @@ internal class CelesteViewModel(
             generation = gatewayGeneration,
             runtimeSessionId = runtimeId,
             storedSessionId = storedId,
-            profile = snapshot.activeSummary?.profile ?: snapshot.selectedProfile,
-            scopeKey = sessionScopeKey(
-                storedId,
-                snapshot.activeSummary?.profile ?: snapshot.selectedProfile,
-            ),
+            profile = operationProfile,
+            scopeKey = operationScopeKey,
             text = text,
             draftSnapshot = draftSnapshot,
             attachments = attachments,
+            admissionBaseline = authoritativeAdmissionEvidence?.takeIf {
+                it.scopeKey == operationScopeKey
+            },
             localMessageId = localMessageId,
         )
         pendingOperation = operation
@@ -1458,6 +1474,8 @@ internal class CelesteViewModel(
         currentRuntimeSessionId = resumed.runtimeSessionId
         currentStoredSessionId = resumed.storedSessionId
         currentSessionCanResume = true
+        val profile = mutableState.value.activeSummary?.profile ?: mutableState.value.selectedProfile
+        val scopeKey = sessionScopeKey(resumed.storedSessionId, profile)
         val projection = projectResumedTurn(resumed)
         val current = mutableState.value
         mutableState.value = current.copy(
@@ -1474,6 +1492,7 @@ internal class CelesteViewModel(
         rebindPendingOperations(resumed, activeGateway, generation)
         val operationResolution = resolvePendingOperation(resumed)
         resolvePendingStopAfterResume(resumed, operationResolution)
+        authoritativeAdmissionEvidence = admissionEvidence(resumed, scopeKey)
     }
 
     private fun rebindPendingOperations(
@@ -1517,27 +1536,93 @@ internal class CelesteViewModel(
         }
     }
 
+    private fun admissionEvidence(
+        resumed: ResumedSession,
+        scopeKey: String,
+    ): AdmissionEvidence = AdmissionEvidence(
+        scopeKey = scopeKey,
+        inflightUserText = resumed.inflightUserText.trim(),
+        inflightCorrections = resumed.inflightCorrections.mapNotNull { correction ->
+            val text = correction.text.trim()
+            text.takeIf(String::isNotBlank)?.let {
+                CorrectionEvidence(text = it, assistantOffset = correction.assistantOffset)
+            }
+        },
+        queuedUserTexts = (
+            resumed.queuedUserTexts.ifEmpty {
+                listOf(resumed.queuedUserText)
+            }
+        ).map(String::trim).filter(String::isNotBlank),
+    )
+
+    private fun hasNewInflightCorrection(
+        operation: PendingOperation,
+        current: AdmissionEvidence,
+    ): Boolean {
+        val baseline = operation.admissionBaseline ?: return false
+        if (baseline.scopeKey != current.scopeKey) return false
+        val target = operation.text.trim()
+        val previous = baseline.inflightCorrections
+        val now = current.inflightCorrections
+        if (previous.isEmpty()) return now.any { it.text == target }
+
+        val previousOffsetsAreAuthoritative = previous.all { it.assistantOffset != null }
+        if (previousOffsetsAreAuthoritative) {
+            val previousOffsets = previous.mapNotNull(CorrectionEvidence::assistantOffset).toSet()
+            if (now.any {
+                    it.text == target &&
+                        it.assistantOffset != null &&
+                        it.assistantOffset !in previousOffsets
+                }
+            ) {
+                return true
+            }
+        }
+
+        if (now.size <= previous.size) return false
+        val preservedPrefix = now.take(previous.size).zip(previous).all { (current, prior) ->
+            current.text == prior.text && current.assistantOffset == prior.assistantOffset
+        }
+        return preservedPrefix && now.drop(previous.size).any { it.text == target }
+    }
+
+    private fun hasNewQueuedInput(
+        operation: PendingOperation,
+        current: AdmissionEvidence,
+    ): Boolean {
+        val baseline = operation.admissionBaseline ?: return false
+        if (baseline.scopeKey != current.scopeKey) return false
+        val target = operation.text.trim()
+        val previous = baseline.queuedUserTexts
+        val now = current.queuedUserTexts
+        if (previous.isEmpty()) return now.any { it == target }
+        if (now.size <= previous.size) return false
+        if (now.take(previous.size) != previous) return false
+        return now.drop(previous.size).any { it == target }
+    }
+
+    private fun hasNewInflightUser(
+        operation: PendingOperation,
+        current: AdmissionEvidence,
+    ): Boolean {
+        val baseline = operation.admissionBaseline ?: return false
+        if (baseline.scopeKey != current.scopeKey) return false
+        return current.inflightUserText == operation.text.trim() &&
+            baseline.inflightUserText != current.inflightUserText
+    }
+
     private fun resolvePendingOperation(
         resumed: ResumedSession,
     ): PendingOperationResolution? {
         val operation = pendingOperation ?: return null
         if (!operation.uncertain) return null
-        val text = operation.text.trim()
-        val latestUserText = resumed.messages.asReversed()
-            .firstOrNull { it.role == "user" }
-            ?.text
-            ?.trim()
+        val currentEvidence = admissionEvidence(resumed, operation.scopeKey)
         val admitted = when (operation.kind) {
             ActiveTurnOperationKind.Steer,
-            ActiveTurnOperationKind.Redirect -> resumed.inflightCorrections.any {
-                it.text.trim() == text
-            } || latestUserText == text
-            ActiveTurnOperationKind.Queue,
-            ActiveTurnOperationKind.Submit -> resumed.queuedUserTexts.any {
-                it.trim() == text
-            } || resumed.queuedUserText.trim() == text ||
-                resumed.inflightUserText.trim() == text ||
-                latestUserText == text
+            ActiveTurnOperationKind.Redirect -> hasNewInflightCorrection(operation, currentEvidence)
+            ActiveTurnOperationKind.Queue -> hasNewQueuedInput(operation, currentEvidence)
+            ActiveTurnOperationKind.Submit -> hasNewQueuedInput(operation, currentEvidence) ||
+                hasNewInflightUser(operation, currentEvidence)
         }
         if (admitted) {
             pendingOperation = null
@@ -1827,6 +1912,12 @@ internal class CelesteViewModel(
             val previousSummary = mutableState.value.activeSummary
                 ?: throw IOException("No draft conversation is open.")
             val updatedSummary = previousSummary.copy(id = created.storedSessionId, profile = profile)
+            authoritativeAdmissionEvidence = AdmissionEvidence(
+                scopeKey = sessionScopeKey(created.storedSessionId, profile),
+                inflightUserText = "",
+                inflightCorrections = emptyList(),
+                queuedUserTexts = emptyList(),
+            )
             mutableState.value = mutableState.value.copy(
                 activeSummary = updatedSummary,
                 sessions = mutableState.value.sessions?.map { session ->
@@ -1914,6 +2005,7 @@ internal class CelesteViewModel(
         currentRuntimeSessionId = null
         currentStoredSessionId = null
         currentSessionCanResume = true
+        authoritativeAdmissionEvidence = null
         activeGateway?.close()
     }
 

@@ -362,6 +362,71 @@ class CelesteViewModelTest {
     }
 
     @Test
+    fun uncertainSteerDoesNotMatchAnOlderIdenticalUserMessage() = runTest {
+        val gateway = FakeGateway()
+        val existing = ConversationMessage(role = "user", text = "same guidance", id = "old-user")
+        gateway.resumePayload = resumePayload(messages = listOf(existing), running = true)
+        val viewModel = openConversation(gateway)
+        gateway.failNext("session.steer", IOException("steer response lost"))
+        gateway.resumePayload = resumePayload(messages = listOf(existing), running = true)
+
+        viewModel.updateDraft("same guidance")
+        viewModel.steerMessage()
+        advanceUntilIdle()
+
+        assertEquals(1, gateway.methods.count { it == "session.steer" })
+        assertEquals("same guidance", viewModel.state.value.draft)
+        assertEquals(DeliveryStatus.Uncertain, viewModel.state.value.deliveryStatus)
+        viewModel.leaveConversation()
+    }
+
+    @Test
+    fun uncertainRedirectDoesNotMatchAnOlderIdenticalUserMessage() = runTest {
+        val gateway = FakeGateway()
+        val existing = ConversationMessage(role = "user", text = "same redirect", id = "old-user")
+        gateway.resumePayload = resumePayload(
+            messages = listOf(existing),
+            running = true,
+            supportsRedirect = true,
+        )
+        val viewModel = openConversation(gateway)
+        gateway.failNext("session.redirect", IOException("redirect response lost"))
+        gateway.resumePayload = resumePayload(
+            messages = listOf(existing),
+            running = true,
+            supportsRedirect = true,
+        )
+
+        viewModel.updateDraft("same redirect")
+        viewModel.redirectMessage()
+        advanceUntilIdle()
+
+        assertEquals(1, gateway.methods.count { it == "session.redirect" })
+        assertEquals("same redirect", viewModel.state.value.draft)
+        assertEquals(DeliveryStatus.Uncertain, viewModel.state.value.deliveryStatus)
+        viewModel.leaveConversation()
+    }
+
+    @Test
+    fun uncertainQueueDoesNotMatchAnOlderIdenticalUserMessage() = runTest {
+        val gateway = FakeGateway()
+        val existing = ConversationMessage(role = "user", text = "same queued text", id = "old-user")
+        gateway.resumePayload = resumePayload(messages = listOf(existing), running = true)
+        val viewModel = openConversation(gateway)
+        gateway.failNext("prompt.submit", IOException("queue response lost"))
+        gateway.resumePayload = resumePayload(messages = listOf(existing), running = true)
+
+        viewModel.updateDraft("same queued text")
+        viewModel.queueMessage()
+        advanceUntilIdle()
+
+        assertEquals(1, gateway.methods.count { it == "prompt.submit" })
+        assertEquals("same queued text", viewModel.state.value.draft)
+        assertEquals(DeliveryStatus.Uncertain, viewModel.state.value.deliveryStatus)
+        viewModel.leaveConversation()
+    }
+
+    @Test
     fun stopWinsCorrectionRaceAndDoesNotResendTheCorrection() = runTest {
         val gateway = FakeGateway()
         gateway.resumePayload = resumePayload(messages = emptyList(), running = true)
