@@ -18,6 +18,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -55,6 +56,16 @@ internal fun CelesteRoutes(ui: CelesteUiState, viewModel: CelesteViewModel) {
     val sessions = ui.sessions
     var destination by rememberSaveable { mutableStateOf(CelesteDestination.Content) }
     var settingsReturnDestination by rememberSaveable { mutableStateOf(CelesteDestination.Content) }
+    var observedConversationNavigationToken by rememberSaveable {
+        mutableStateOf(ui.conversationNavigationToken)
+    }
+
+    LaunchedEffect(ui.conversationNavigationToken) {
+        if (ui.conversationNavigationToken != observedConversationNavigationToken) {
+            observedConversationNavigationToken = ui.conversationNavigationToken
+            destination = CelesteDestination.Content
+        }
+    }
 
     fun openSettings(from: CelesteDestination) {
         settingsReturnDestination = from
@@ -128,13 +139,13 @@ internal fun CelesteRoutes(ui: CelesteUiState, viewModel: CelesteViewModel) {
                     onQueryChange = viewModel::updateSessionQuery,
                     onRefresh = viewModel::refreshSessionCatalog,
                     onRetry = viewModel::refreshSessionCatalog,
+                    onCancelOpening = viewModel::cancelOpening,
                     onProfileSelected = viewModel::selectProfile,
                     onNewConversation = {
                         destination = CelesteDestination.Content
                         viewModel.createNewConversation()
                     },
                     onSessionSelected = { session ->
-                        destination = CelesteDestination.Content
                         viewModel.openSession(session)
                     },
                     onSettings = { openSettings(CelesteDestination.Conversations) },
@@ -176,6 +187,7 @@ internal fun CelesteRoutes(ui: CelesteUiState, viewModel: CelesteViewModel) {
                 onQueryChange = viewModel::updateSessionQuery,
                 onRefresh = viewModel::refreshSessionCatalog,
                 onRetry = viewModel::refreshSessionCatalog,
+                onCancelOpening = viewModel::cancelOpening,
                 onProfileSelected = viewModel::selectProfile,
                 onNewConversation = viewModel::createNewConversation,
                 onSessionSelected = viewModel::openSession,

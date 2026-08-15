@@ -17,9 +17,8 @@ class ConversationBrowserSourceTest {
         assertContains(source, ".clickable(enabled = enabled, role = Role.Button")
         assertContains(source, ".semantics(mergeDescendants = true)")
         assertContains(source, "role = Role.Button")
-        assertContains(source, """contentDescription = "${'$'}title. ${'$'}metadata. Open conversation.""")
-        assertContains(source, "sessionRowKey(session, catalog.scope?.originKey.orEmpty())")
-        assertContains(source, "${'$'}originKey\\u0000${'$'}{session.profile.trim().lowercase(Locale.ROOT)}\\u0000${'$'}{session.id.trim()}")
+        assertContains(source, "Cannot open conversation: profile ownership is unavailable.")
+        assertContains(source, "session.catalogRowKey(originKey)")
     }
 
     @Test
@@ -34,6 +33,9 @@ class ConversationBrowserSourceTest {
         assertContains(source, "Refresh conversations")
         assertContains(source, "Retry conversation connection")
         assertContains(source, "SessionCatalogStatus.ActionInFlight")
+        assertContains(source, "SessionCatalogStatus.Opening")
+        assertContains(source, "onCancelOpening")
+        assertContains(source, "announce = true")
         assertContains(source, "loadingMessage != null")
     }
 

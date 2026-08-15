@@ -221,7 +221,7 @@ class CelesteViewModelTest {
 
         assertTrue(dashboard.sessionListCalls > callsBeforeDisconnect)
         assertEquals(SessionCatalogStatus.Ready, viewModel.state.value.sessionCatalog.phase)
-        assertEquals(listOf("stored-42", "stored-work"), viewModel.state.value.sessions?.map(StoredSession::id))
+        assertEquals(listOf("stored-42", "stored-work", "ambiguous-profile"), viewModel.state.value.sessions?.map(StoredSession::id))
         viewModel.leaveConversation()
     }
 
@@ -272,12 +272,16 @@ class CelesteViewModelTest {
         assertEquals("work", createParams["profile"]?.jsonPrimitive?.content)
         assertEquals("android", createParams["source"]?.jsonPrimitive?.content)
 
+        viewModel.selectProfile("default")
+        assertEquals("default", viewModel.state.value.selectedProfile)
         gateway.disconnect("blank session socket died")
         advanceUntilIdle()
 
         assertEquals(2, gateway.methods.count { it == "session.create" })
         assertEquals(0, gateway.methods.count { it == "session.resume" })
         assertEquals("stored-new-2", viewModel.state.value.activeSummary?.id)
+        val recreatedParams = gateway.requests.filter { it.first == "session.create" }.last().second
+        assertEquals("work", recreatedParams["profile"]?.jsonPrimitive?.content)
 
         viewModel.updateDraft("Persist this conversation")
         viewModel.sendMessage()
@@ -306,16 +310,16 @@ class CelesteViewModelTest {
 
         assertEquals("work", viewModel.state.value.selectedProfile)
         assertEquals(
-            listOf("stored-42", "stored-work"),
+            listOf("stored-42", "stored-work", "ambiguous-profile"),
             viewModel.state.value.sessions?.map(StoredSession::id),
         )
         assertEquals(
-            listOf("stored-42", "stored-work"),
+            listOf("stored-42", "stored-work", "ambiguous-profile"),
             viewModel.state.value.sessionCatalog.rows.map(StoredSession::id),
         )
         assertTrue(viewModel.state.value.sessions.orEmpty().any { it.profile == "default" })
         assertTrue(viewModel.state.value.sessions.orEmpty().any { it.profile == "work" })
-        assertTrue(viewModel.state.value.sessions.orEmpty().none { it.id == "ambiguous-profile" })
+        assertTrue(viewModel.state.value.sessions.orEmpty().single { it.id == "ambiguous-profile" }.profile.isBlank())
     }
 
     @Test
@@ -398,7 +402,7 @@ class CelesteViewModelTest {
         advanceUntilIdle()
 
         assertEquals(SessionCatalogStatus.Stale, viewModel.state.value.sessionCatalog.phase)
-        assertEquals(listOf("stored-42", "stored-work"), viewModel.state.value.sessions?.map(StoredSession::id))
+        assertEquals(listOf("stored-42", "stored-work", "ambiguous-profile"), viewModel.state.value.sessions?.map(StoredSession::id))
         assertEquals("offline", viewModel.state.value.sessionCatalog.errorMessage)
     }
 
@@ -416,7 +420,7 @@ class CelesteViewModelTest {
         advanceUntilIdle()
 
         assertEquals(SessionCatalogStatus.Stale, viewModel.state.value.sessionCatalog.status)
-        assertEquals(listOf("stored-42", "stored-work"), viewModel.state.value.sessions?.map(StoredSession::id))
+        assertEquals(listOf("stored-42", "stored-work", "ambiguous-profile"), viewModel.state.value.sessions?.map(StoredSession::id))
     }
 
     @Test
@@ -555,6 +559,7 @@ class CelesteViewModelTest {
             startedAt = 1.0,
             messageCount = 0,
             source = "desktop",
+            profile = "default",
         )
 
         private val workSession = StoredSession(

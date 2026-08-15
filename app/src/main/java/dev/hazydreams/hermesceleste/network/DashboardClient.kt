@@ -64,7 +64,8 @@ data class StoredSession(
     val startedAt: Double,
     val messageCount: Int,
     val source: String,
-    val profile: String = "default",
+    /** Blank means Hermes did not provide authoritative profile ownership. */
+    val profile: String = "",
 )
 
 data class DashboardProfile(
@@ -424,11 +425,16 @@ class DashboardClient(
         baseUrl: String,
         credential: GatewayCredential,
         storedSessionId: String,
+        profile: String,
     ): ResumedSession {
         require(storedSessionId.isNotBlank()) { "Choose a Hermes session to open." }
+        val owningProfile = profile.trim()
+        require(owningProfile.isNotBlank()) { "Hermes did not identify the conversation profile." }
         val authParameter = resolveWebSocketCredential(baseUrl, credential)
         val wsUrl = buildWebSocketUrl(baseUrl, authParameter?.first, authParameter?.second)
-        return withTimeout(20_000) { requestSessionResume(wsUrl, storedSessionId) }
+        return withTimeout(20_000) {
+            requestSessionResume(wsUrl, storedSessionId, owningProfile)
+        }
     }
 
     private suspend fun resolveWebSocketCredential(
@@ -517,6 +523,7 @@ class DashboardClient(
     private suspend fun requestSessionResume(
         wsUrl: String,
         storedSessionId: String,
+        profile: String,
     ): ResumedSession {
         val frame = buildJsonObject {
             put("jsonrpc", "2.0")
@@ -528,6 +535,7 @@ class DashboardClient(
                     put("session_id", storedSessionId)
                     put("cols", 80)
                     put("source", "android")
+                    put("profile", profile)
                 },
             )
         }

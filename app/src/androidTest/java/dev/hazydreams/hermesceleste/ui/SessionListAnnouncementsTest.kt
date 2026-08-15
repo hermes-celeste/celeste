@@ -15,6 +15,7 @@ import org.junit.runner.RunWith
 import dev.hazydreams.hermesceleste.SessionCatalogState
 import dev.hazydreams.hermesceleste.SessionCatalogStatus
 import dev.hazydreams.hermesceleste.SessionScope
+import dev.hazydreams.hermesceleste.keyFor
 import dev.hazydreams.hermesceleste.network.DashboardProfile
 import dev.hazydreams.hermesceleste.network.StoredSession
 import dev.hazydreams.hermesceleste.ui.sessions.SessionListScreen
@@ -77,10 +78,51 @@ class SessionListAnnouncementsTest {
         composeRule.onNodeWithText("Clear search").assertExists()
     }
 
+    @Test
+    fun reconnectingAnnouncementIsAPoliteLiveRegionAndKeepsRetry() {
+        assertAnnouncement(
+            state = SessionCatalogState(
+                phase = SessionCatalogStatus.Reconnecting,
+                scope = scope,
+                rows = listOf(knownSession),
+            ),
+            message = "Reconnecting conversation scope…",
+        )
+        composeRule.onNodeWithText("Retry").assertExists()
+    }
+
+    @Test
+    fun actionAnnouncementIsAPoliteLiveRegion() {
+        assertAnnouncement(
+            state = SessionCatalogState(
+                phase = SessionCatalogStatus.ActionInFlight,
+                scope = scope,
+                rows = listOf(knownSession),
+            ),
+            message = "Saving conversation…",
+            loadingMessage = "Saving conversation…",
+        )
+    }
+
+    @Test
+    fun openingAnnouncementIsAPoliteLiveRegionAndKeepsCancel() {
+        assertAnnouncement(
+            state = SessionCatalogState(
+                phase = SessionCatalogStatus.Opening,
+                scope = scope,
+                rows = listOf(knownSession),
+                openingKey = requireNotNull(knownSession.keyFor(scope.originKey)),
+            ),
+            message = "Opening conversation…",
+        )
+        composeRule.onNodeWithText("Cancel").assertExists()
+    }
+
     private fun assertAnnouncement(
         state: SessionCatalogState,
         message: String,
         query: String = "",
+        loadingMessage: String? = null,
     ) {
         composeRule.setContent {
             HermesCelesteTheme {
@@ -88,7 +130,7 @@ class SessionListAnnouncementsTest {
                     sessions = state.rows,
                     profiles = listOf(DashboardProfile(name = "default", isDefault = true)),
                     selectedProfile = "default",
-                    loadingMessage = null,
+                    loadingMessage = loadingMessage,
                     errorMessage = null,
                     onProfileSelected = {},
                     onNewConversation = {},

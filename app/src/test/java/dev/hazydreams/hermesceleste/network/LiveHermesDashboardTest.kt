@@ -29,9 +29,16 @@ class LiveHermesDashboardTest {
         val sessions = client.listSessions(probe.baseUrl, credential, limit = 10)
 
         assertTrue("The real Hermes state store returned no sessions", sessions.isNotEmpty())
-        val selected = sessions.first()
-        val resumed = client.resumeSession(probe.baseUrl, credential, selected.id)
-        assertEquals(selected.id, resumed.storedSessionId)
+        val selected = sessions.firstOrNull { it.profile.isNotBlank() }
+        assumeTrue("The real Hermes session list did not identify a profile", selected != null)
+        val verifiedSession = requireNotNull(selected)
+        val resumed = client.resumeSession(
+            probe.baseUrl,
+            credential,
+            verifiedSession.id,
+            verifiedSession.profile,
+        )
+        assertEquals(verifiedSession.id, resumed.storedSessionId)
         assertTrue(resumed.runtimeSessionId.isNotBlank())
     }
 }

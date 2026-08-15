@@ -104,7 +104,7 @@ class HermesGatewayTest {
         val gateway = gateway()
         gateway.connect()
 
-        val resumed = gateway.resumeStoredSession("stored-42")
+        val resumed = gateway.resumeStoredSession("stored-42", "default")
         assertEquals("runtime-7", resumed.runtimeSessionId)
         assertTrue(resumed.running == false)
 
@@ -264,9 +264,15 @@ class HermesGatewayTest {
                         val request = Json.parseToJsonElement(text).jsonObject
                         val id = request["id"].toString()
                         when (request["method"]?.jsonPrimitive?.content) {
-                            "session.resume" -> webSocket.send(
-                                """{"jsonrpc":"2.0","id":$id,"result":{"session_id":"runtime-7","resumed":"stored-42","running":false,"status":"idle","inflight":null,"messages":[{"id":"u1","role":"user","text":"Earlier message"}]}}""",
-                            )
+                            "session.resume" -> {
+                                assertEquals(
+                                    "default",
+                                    request["params"]?.jsonObject?.get("profile")?.jsonPrimitive?.content,
+                                )
+                                webSocket.send(
+                                    """{"jsonrpc":"2.0","id":$id,"result":{"session_id":"runtime-7","resumed":"stored-42","running":false,"status":"idle","inflight":null,"messages":[{"id":"u1","role":"user","text":"Earlier message"}]}}""",
+                                )
+                            }
 
                             "prompt.submit" -> {
                                 webSocket.send(

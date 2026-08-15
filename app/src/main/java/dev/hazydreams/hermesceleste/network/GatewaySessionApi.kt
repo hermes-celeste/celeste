@@ -47,14 +47,20 @@ suspend fun GatewayConnection.createSession(profile: String): CreatedSession {
     )
 }
 
-suspend fun GatewayConnection.resumeStoredSession(storedSessionId: String): ResumedSession {
+suspend fun GatewayConnection.resumeStoredSession(
+    storedSessionId: String,
+    profile: String,
+): ResumedSession {
     require(storedSessionId.isNotBlank()) { "Choose a Hermes session to open." }
+    val owningProfile = profile.trim()
+    require(owningProfile.isNotBlank()) { "Hermes did not identify the conversation profile." }
     val result = request(
         method = "session.resume",
         params = buildJsonObject {
             put("session_id", storedSessionId)
             put("cols", 96)
             put("source", "android")
+            put("profile", owningProfile)
         },
         timeoutMillis = 30_000,
     ).asObject("Hermes returned no resumed session.")

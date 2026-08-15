@@ -327,6 +327,7 @@ class DashboardClientTest {
             baseUrl = baseUrl,
             credential = GatewayCredential.StaticToken("private-token"),
             storedSessionId = "stored-42",
+            profile = "work",
         )
 
         assertEquals("runtime-7", resumed.runtimeSessionId)
@@ -351,6 +352,7 @@ class DashboardClientTest {
             baseUrl = baseUrl,
             credential = GatewayCredential.None,
             storedSessionId = "stored-42",
+            profile = "work",
         )
         val canonical = decodeGatewayMessages(Json.parseToJsonElement(transcript).jsonArray)
 
@@ -620,6 +622,10 @@ class DashboardClientTest {
                             "stored-42",
                             request["params"]?.jsonObject?.get("session_id")?.jsonPrimitive?.content,
                         )
+                        assertEquals(
+                            "work",
+                            request["params"]?.jsonObject?.get("profile")?.jsonPrimitive?.content,
+                        )
                         webSocket.send(
                             """{"jsonrpc":"2.0","id":"session-resume","result":{"session_id":"runtime-7","resumed":"stored-42","messages":$messages}}""",
                         )
@@ -681,7 +687,7 @@ class DashboardClientTest {
 
         suspend fun execute(client: DashboardClient, baseUrl: String): Any = when (this) {
             SessionList -> client.listSessions(baseUrl, GatewayCredential.None)
-            SessionResume -> client.resumeSession(baseUrl, GatewayCredential.None, "stored-42")
+            SessionResume -> client.resumeSession(baseUrl, GatewayCredential.None, "stored-42", "default")
         }
     }
 

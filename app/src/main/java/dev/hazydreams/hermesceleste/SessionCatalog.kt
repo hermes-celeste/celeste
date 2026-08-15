@@ -33,12 +33,14 @@ internal data class SessionKey(
 
 internal data class SessionScope(
     val originKey: String,
-    val profile: String,
+    val profile: String? = null,
 ) {
     init {
         require(originKey.isNotBlank()) { "A catalog scope needs an origin." }
-        require(profile.isNotBlank()) { "A catalog scope needs a profile." }
     }
+
+    val isProfileScoped: Boolean
+        get() = !profile.isNullOrBlank()
 
     companion object {
         fun from(origin: String, profile: String): SessionScope? {
@@ -47,10 +49,16 @@ internal data class SessionScope(
             if (normalizedOrigin.isBlank() || normalizedProfile.isBlank()) return null
             return SessionScope(normalizedOrigin, normalizedProfile)
         }
+
+        fun unscoped(origin: String): SessionScope? {
+            val normalizedOrigin = normalizeOrigin(origin)
+            if (normalizedOrigin.isBlank()) return null
+            return SessionScope(normalizedOrigin)
+        }
     }
 
     fun accepts(key: SessionKey): Boolean =
-        key.originKey == originKey && key.profile == profile
+        key.originKey == originKey && (profile == null || key.profile == profile)
 }
 
 /** Captures every generation that must still be current before a list publishes. */
@@ -89,6 +97,7 @@ internal data class SessionCatalogState(
     val request: SessionCatalogRequest? = null,
     val queryResults: List<StoredSession>? = null,
     val queryInFlight: Boolean = false,
+    val openingKey: SessionKey? = null,
 ) {
     val filteredRows: List<StoredSession>
         get() = queryResults ?: searchLoadedSessions(rows, query)
@@ -148,6 +157,7 @@ internal object SessionCatalogReducer {
             request = request,
             queryResults = if (state.query.isBlank()) null else if (keepRows) state.filteredRows else emptyList(),
             queryInFlight = false,
+            openingKey = null,
         )
     }
 
@@ -163,6 +173,7 @@ internal object SessionCatalogReducer {
         request = null,
         queryResults = if (state.query.isBlank()) null else if (keepRows && state.scope == scope) state.filteredRows else emptyList(),
         queryInFlight = false,
+        openingKey = null,
     )
 
     fun succeeded(
@@ -179,6 +190,7 @@ internal object SessionCatalogReducer {
             request = null,
             queryResults = if (state.query.isBlank()) null else searchLoadedSessions(filtered, state.query),
             queryInFlight = false,
+            openingKey = null,
         )
     }
 
@@ -193,14 +205,51 @@ internal object SessionCatalogReducer {
             errorMessage = message,
             request = null,
             queryInFlight = false,
+            openingKey = null,
         )
     }
+
+    fun opening(state: SessionCatalogState, key: SessionKey): SessionCatalogState = state.copy(
+        phase = SessionCatalogStatus.Opening,
+        errorMessage = null,
+        request = null,
+        queryInFlight = false,
+        openingKey = key,
+    )
+
+    fun openingSucceeded(state: SessionCatalogState): SessionCatalogState = state.copy(
+        phase = if (state.rows.isEmpty()) SessionCatalogStatus.Empty else SessionCatalogStatus.Ready,
+        errorMessage = null,
+        request = null,
+        queryInFlight = false,
+        openingKey = null,
+    )
+
+    fun openingFailed(
+        state: SessionCatalogState,
+        message: String,
+    ): SessionCatalogState = state.copy(
+        phase = if (state.rows.isEmpty()) SessionCatalogStatus.Error else SessionCatalogStatus.Stale,
+        errorMessage = message,
+        request = null,
+        queryInFlight = false,
+        openingKey = null,
+    )
+
+    fun openingCancelled(state: SessionCatalogState): SessionCatalogState = state.copy(
+        phase = if (state.rows.isEmpty()) SessionCatalogStatus.Empty else SessionCatalogStatus.Ready,
+        errorMessage = null,
+        request = null,
+        queryInFlight = false,
+        openingKey = null,
+    )
 
     fun actionStarted(state: SessionCatalogState): SessionCatalogState = state.copy(
         phase = SessionCatalogStatus.ActionInFlight,
         errorMessage = null,
         request = null,
         queryInFlight = false,
+        openingKey = null,
     )
 
     fun actionFailed(
@@ -211,21 +260,32 @@ internal object SessionCatalogReducer {
         errorMessage = message,
         request = null,
         queryInFlight = false,
+        openingKey = null,
     )
 
     /**
-     * Phase 1 has no verified profile filter on session.list. Keep every row
-     * with a verified profile in the server response order; omit ambiguous
-     * rows instead of assigning them to the selected creation profile.
+     * Hermes session.list is origin-scoped but currently does not identify the
+     * owning profile. Keep every durable row in server order for an unscoped
+     * response, including rows with unknown ownership. A genuinely
+     * profile-scoped response may publish only rows with matching verified
+     * ownership. Unknown rows are never reassigned to the creation target.
      */
     internal fun filterAuthoritativeRows(
         scope: SessionScope,
         rows: List<StoredSession>,
     ): List<StoredSession> {
-        val seen = linkedSetOf<SessionKey>()
+        val origin = normalizeOrigin(scope.originKey)
+        if (origin.isBlank()) return emptyList()
+        val seen = linkedSetOf<String>()
         return rows.filter { row ->
-            val key = row.keyFor(scope.originKey) ?: return@filter false
-            seen.add(key)
+            val rowId = row.id.trim()
+            if (rowId.isBlank()) return@filter false
+            if (scope.isProfileScoped) {
+                val key = row.keyFor(origin) ?: return@filter false
+                if (!scope.accepts(key)) return@filter false
+            }
+            val profileIdentity = normalizeProfile(row.profile).ifBlank { UNKNOWN_PROFILE }
+            seen.add("$origin\u0000$profileIdentity\u0000$rowId")
         }
     }
 }
@@ -265,6 +325,16 @@ internal class SessionAliasIndex {
 
 internal fun StoredSession.keyFor(origin: String): SessionKey? =
     SessionKey.from(origin, profile, id)
+
+internal fun StoredSession.catalogRowKey(origin: String): String? {
+    val normalizedOrigin = normalizeOrigin(origin)
+    val normalizedId = id.trim()
+    if (normalizedOrigin.isBlank() || normalizedId.isBlank()) return null
+    val profileIdentity = normalizeProfile(profile).ifBlank { UNKNOWN_PROFILE }
+    return "$normalizedOrigin\u0000$profileIdentity\u0000$normalizedId"
+}
+
+private const val UNKNOWN_PROFILE = "<unknown-profile>"
 
 internal fun normalizeProfile(value: String): String =
     value.trim().lowercase(Locale.ROOT)

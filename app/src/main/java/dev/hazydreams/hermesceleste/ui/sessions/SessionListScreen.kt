@@ -45,10 +45,11 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import dev.hazydreams.hermesceleste.SessionCatalogState
 import dev.hazydreams.hermesceleste.SessionCatalogStatus
+import dev.hazydreams.hermesceleste.catalogRowKey
+import dev.hazydreams.hermesceleste.keyFor
 import dev.hazydreams.hermesceleste.searchLoadedSessions
 import dev.hazydreams.hermesceleste.network.DashboardProfile
 import dev.hazydreams.hermesceleste.network.StoredSession
-import dev.hazydreams.hermesceleste.keyFor
 import dev.hazydreams.hermesceleste.ui.CelesteBackdrop
 import dev.hazydreams.hermesceleste.ui.CelesteBlue
 import dev.hazydreams.hermesceleste.ui.CelesteError
@@ -59,7 +60,6 @@ import dev.hazydreams.hermesceleste.ui.CelestePanel
 import dev.hazydreams.hermesceleste.ui.CelestePaper
 import dev.hazydreams.hermesceleste.ui.EditorialDivider
 import dev.hazydreams.hermesceleste.ui.StatusMessage
-import java.util.Locale
 
 @Composable
 internal fun SessionListScreen(
@@ -77,6 +77,7 @@ internal fun SessionListScreen(
     onQueryChange: (String) -> Unit = {},
     onRefresh: () -> Unit = {},
     onRetry: () -> Unit = onRefresh,
+    onCancelOpening: () -> Unit = {},
     onBack: (() -> Unit)? = null,
     activeSession: StoredSession? = null,
     activeSessionRunning: Boolean = false,
@@ -101,6 +102,7 @@ internal fun SessionListScreen(
     val controlsBusy = catalog.phase == SessionCatalogStatus.Loading ||
         catalog.phase == SessionCatalogStatus.Refreshing ||
         catalog.phase == SessionCatalogStatus.Reconnecting ||
+        catalog.phase == SessionCatalogStatus.Opening ||
         catalog.phase == SessionCatalogStatus.ActionInFlight ||
         loadingMessage != null
     val selectedKey = activeSession?.keyFor(catalog.scope?.originKey.orEmpty())
@@ -129,7 +131,7 @@ internal fun SessionListScreen(
                     Text("Conversations", style = MaterialTheme.typography.headlineLarge)
                     Spacer(Modifier.height(4.dp))
                     Text(
-                        "New chats use ${selectedProfile.trim().ifBlank { "default" }} · all loaded profiles · server order",
+                        "New chats use ${selectedProfile.trim().ifBlank { "default" }} · all loaded profiles · ownership may be unavailable · server order",
                         color = CelesteMuted,
                         style = MaterialTheme.typography.bodyMedium,
                     )
@@ -252,6 +254,12 @@ internal fun SessionListScreen(
                 fontSize = 11.sp,
                 modifier = Modifier.padding(horizontal = 32.dp, vertical = 6.dp),
             )
+            Text(
+                "Rows without a verified profile stay visible but cannot be opened safely.",
+                color = CelesteMuted,
+                fontSize = 11.sp,
+                modifier = Modifier.padding(horizontal = 32.dp, vertical = 0.dp),
+            )
 
             when (visibleStatus) {
                 SessionCatalogStatus.Loading -> {
@@ -285,7 +293,12 @@ internal fun SessionListScreen(
                         modifier = Modifier.padding(horizontal = 28.dp, vertical = 8.dp),
                         verticalArrangement = Arrangement.spacedBy(8.dp),
                     ) {
-                        StatusMessage("Reconnecting conversation scope…", CelesteBlue, showSpinner = true)
+                        StatusMessage(
+                            "Reconnecting conversation scope…",
+                            CelesteBlue,
+                            showSpinner = true,
+                            announce = true,
+                        )
                         TextButton(
                             onClick = onRetry,
                             modifier = Modifier.semantics { contentDescription = "Retry conversation connection" },
@@ -299,7 +312,28 @@ internal fun SessionListScreen(
                             loadingMessage ?: "Starting a new conversation…",
                             CelesteBlue,
                             showSpinner = true,
+                            announce = true,
                         )
+                    }
+                }
+
+                SessionCatalogStatus.Opening -> {
+                    Column(
+                        Modifier.padding(horizontal = 28.dp, vertical = 8.dp),
+                        verticalArrangement = Arrangement.spacedBy(5.dp),
+                    ) {
+                        StatusMessage(
+                            loadingMessage ?: "Opening conversation…",
+                            CelesteBlue,
+                            showSpinner = true,
+                            announce = true,
+                        )
+                        TextButton(
+                            onClick = onCancelOpening,
+                            modifier = Modifier.semantics {
+                                contentDescription = "Cancel opening conversation"
+                            },
+                        ) { Text("Cancel", color = CelesteBlue, fontWeight = FontWeight.SemiBold) }
                     }
                 }
 
@@ -323,7 +357,6 @@ internal fun SessionListScreen(
                 )
 
                 SessionCatalogStatus.Ready,
-                SessionCatalogStatus.Opening,
                 SessionCatalogStatus.NotReady,
                 -> Unit
             }
@@ -342,7 +375,7 @@ internal fun SessionListScreen(
                         SessionRow(
                             session = session,
                             showProfile = profiles.size > 1,
-                            enabled = !controlsBusy,
+                            enabled = !controlsBusy && session.profile.isNotBlank(),
                             selected = selectedKey != null && session.keyFor(catalog.scope?.originKey.orEmpty()) == selectedKey,
                             running = activeSessionRunning && selectedKey != null && session.keyFor(catalog.scope?.originKey.orEmpty()) == selectedKey,
                             onClick = { onSessionSelected(session) },
@@ -427,13 +460,16 @@ internal fun sessionRowSemantics(
 ): SessionRowSemantics {
     val title = session.title.ifBlank { "Untitled conversation" }
     val metadata = buildList {
-        if (showProfile && session.profile.isNotBlank()) add(session.profile)
+        if (session.profile.isNotBlank() && showProfile) add(session.profile)
+        if (session.profile.isBlank()) add("profile unavailable")
         if (session.messageCount > 0) add("${session.messageCount} messages")
         if (session.source.isNotBlank()) add(session.source)
         if (selected) add("open")
         if (running) add("running")
     }.joinToString("  ·  ").ifBlank { "No messages yet" }
+    val canOpen = session.profile.isNotBlank()
     val stateDescription = when {
+        !canOpen -> "Unavailable: profile ownership unavailable"
         !enabled -> "Unavailable"
         running -> "Open and running"
         selected -> "Open and selected"
@@ -441,7 +477,7 @@ internal fun sessionRowSemantics(
     }
     return SessionRowSemantics(
         selected = selected,
-        contentDescription = "$title. $metadata. Open conversation.",
+        contentDescription = "$title. $metadata. ${if (canOpen) "Open conversation." else "Cannot open conversation: profile ownership is unavailable."}",
         stateDescription = stateDescription,
         metadata = metadata,
     )
@@ -495,7 +531,8 @@ private fun EmptyCatalog(onNewConversation: () -> Unit) {
 }
 
 private fun sessionRowKey(session: StoredSession, originKey: String): String =
-    "$originKey\u0000${session.profile.trim().lowercase(Locale.ROOT)}\u0000${session.id.trim()}"
+    session.catalogRowKey(originKey)
+        ?: "$originKey\u0000<invalid-row>\u0000${session.id.trim()}"
 
 private fun legacyCatalogState(
     sessions: List<StoredSession>,

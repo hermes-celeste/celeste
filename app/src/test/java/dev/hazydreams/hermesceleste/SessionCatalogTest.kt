@@ -20,8 +20,8 @@ class SessionCatalogTest {
     }
 
     @Test
-    fun unscopedCatalogKeepsServerOrderDeduplicatesRowsAndDropsAmbiguousProfiles() {
-        val scope = requireNotNull(SessionScope.from(origin, "work"))
+    fun unscopedCatalogKeepsServerOrderDeduplicatesRowsAndRetainsUnknownOwnership() {
+        val scope = requireNotNull(SessionScope.unscoped(origin))
         val rows = listOf(
             row("work-first", profile = "work"),
             row("default-row"),
@@ -31,7 +31,8 @@ class SessionCatalogTest {
 
         val filtered = SessionCatalogReducer.filterAuthoritativeRows(scope, rows)
 
-        assertEquals(listOf("work-first", "default-row"), filtered.map(StoredSession::id))
+        assertEquals(listOf("work-first", "default-row", "ambiguous"), filtered.map(StoredSession::id))
+        assertEquals("", filtered.last().profile)
     }
 
     @Test
@@ -44,7 +45,7 @@ class SessionCatalogTest {
 
     @Test
     fun unscopedCatalogKeepsKnownProfilesWithoutReorderingMatches() {
-        val scope = requireNotNull(SessionScope.from(origin, "work"))
+        val scope = requireNotNull(SessionScope.unscoped(origin))
         val rows = listOf(
             row("work-first", profile = "work"),
             row("default-row"),
@@ -53,6 +54,21 @@ class SessionCatalogTest {
 
         assertEquals(
             listOf("work-first", "default-row", "work-second"),
+            SessionCatalogReducer.filterAuthoritativeRows(scope, rows).map(StoredSession::id),
+        )
+    }
+
+    @Test
+    fun profileScopedCatalogExcludesUnknownAndForeignOwnership() {
+        val scope = requireNotNull(SessionScope.from(origin, "work"))
+        val rows = listOf(
+            row("work-row", profile = "work"),
+            row("default-row", profile = "default"),
+            row("unknown-row", profile = ""),
+        )
+
+        assertEquals(
+            listOf("work-row"),
             SessionCatalogReducer.filterAuthoritativeRows(scope, rows).map(StoredSession::id),
         )
     }
