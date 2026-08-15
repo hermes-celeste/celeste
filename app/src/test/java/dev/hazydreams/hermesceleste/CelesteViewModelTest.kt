@@ -263,6 +263,76 @@ class CelesteViewModelTest {
     }
 
     @Test
+    fun uncertainFirstPromptInNewConversationResolvesAcceptedWithoutResending() = runTest {
+        val gateway = FakeGateway()
+        val dashboard = FakeDashboard(gateway)
+        val viewModel = CelesteViewModel(
+            dashboard = dashboard,
+            reconnectDelayMillis = { _, _ -> 0L },
+        )
+        viewModel.updateDashboardUrl("http://hermes.test:9119")
+        viewModel.findDashboard()
+        viewModel.loadSessions()
+        viewModel.createNewConversation()
+        advanceUntilIdle()
+
+        gateway.failNext("prompt.submit", IOException("first prompt response lost"))
+        gateway.resumePayload = resumePayload(
+            messages = emptyList(),
+            running = true,
+            runtimeSessionId = "runtime-first-resumed",
+            storedSessionId = "stored-new-1",
+            inflightUserText = "first prompt",
+            inflightAssistantText = "working",
+            inflightStreaming = true,
+        )
+        viewModel.updateDraft("first prompt")
+        viewModel.sendMessage()
+        advanceUntilIdle()
+
+        assertEquals(1, gateway.methods.count { it == "prompt.submit" })
+        assertEquals(1, gateway.methods.count { it == "session.resume" })
+        assertEquals("", viewModel.state.value.draft)
+        assertEquals(DeliveryStatus.Accepted, viewModel.state.value.deliveryStatus)
+        assertEquals(TurnState.Running, viewModel.state.value.turnState)
+        assertTrue(viewModel.state.value.messages.any { it.text == "first prompt" })
+        viewModel.leaveConversation()
+    }
+
+    @Test
+    fun uncertainFirstPromptWithoutAdmissionAuthorityIsRejectedWithoutResending() = runTest {
+        val gateway = FakeGateway()
+        val dashboard = FakeDashboard(gateway)
+        val viewModel = CelesteViewModel(
+            dashboard = dashboard,
+            reconnectDelayMillis = { _, _ -> 0L },
+        )
+        viewModel.updateDashboardUrl("http://hermes.test:9119")
+        viewModel.findDashboard()
+        viewModel.loadSessions()
+        viewModel.createNewConversation()
+        advanceUntilIdle()
+
+        gateway.failNext("prompt.submit", IOException("first prompt response lost"))
+        gateway.resumePayload = resumePayload(
+            messages = emptyList(),
+            running = false,
+            storedSessionId = "stored-new-1",
+        )
+        viewModel.updateDraft("first prompt rejected")
+        viewModel.sendMessage()
+        advanceUntilIdle()
+
+        assertEquals(1, gateway.methods.count { it == "prompt.submit" })
+        assertEquals(1, gateway.methods.count { it == "session.resume" })
+        assertEquals("first prompt rejected", viewModel.state.value.draft)
+        assertEquals(DeliveryStatus.Rejected, viewModel.state.value.deliveryStatus)
+        assertEquals(TurnState.Idle, viewModel.state.value.turnState)
+        assertTrue(viewModel.state.value.messages.isEmpty())
+        viewModel.leaveConversation()
+    }
+
+    @Test
     fun removesPersistedPrefixFromInflightProjection() {
         val suffix = CelesteViewModel.unpersistedInflightText(
             inflight = "Already stored and still arriving",

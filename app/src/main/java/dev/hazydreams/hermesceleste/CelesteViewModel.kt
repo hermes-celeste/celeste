@@ -879,6 +879,12 @@ internal class CelesteViewModel(
                 }
                 currentRuntimeSessionId = created.runtimeSessionId
                 currentStoredSessionId = created.storedSessionId
+                authoritativeAdmissionEvidence = AdmissionEvidence(
+                    scopeKey = sessionScopeKey(created.storedSessionId, selectedProfile),
+                    inflightUserText = "",
+                    inflightCorrections = emptyList(),
+                    queuedUserTexts = emptyList(),
+                )
                 currentSessionCanResume = false
                 val summary = StoredSession(
                     id = created.storedSessionId,
