@@ -7,6 +7,7 @@ import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.booleanOrNull
+import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonArray
@@ -19,6 +20,43 @@ data class CreatedSession(
     val storedSessionId: String,
     val profile: String?,
 )
+
+data class AttachmentReference(
+    val id: String,
+    val uri: String,
+    val mimeType: String? = null,
+    val name: String? = null,
+)
+
+enum class AttachmentReadiness {
+    Ready,
+    Uploading,
+    Failed,
+}
+
+data class AttachmentDraft(
+    val reference: AttachmentReference,
+    val readiness: AttachmentReadiness,
+)
+
+data class SubmitOptions(
+    val queued: Boolean = false,
+    val attachments: List<AttachmentReference> = emptyList(),
+)
+
+enum class SteerOutcome {
+    Steered,
+    Queued,
+    Rejected,
+    Unsupported,
+}
+
+enum class RedirectOutcome {
+    Redirected,
+    Queued,
+    Rejected,
+    Unsupported,
+}
 
 suspend fun GatewayConnection.createSession(profile: String): CreatedSession {
     val selectedProfile = profile.trim().ifEmpty { "default" }
@@ -78,20 +116,119 @@ suspend fun GatewayConnection.resumeStoredSession(storedSessionId: String): Resu
         status = status,
         inflightAssistantText = inflightAssistantText(inflight),
         hasLiveProjection = inflight.isTruthy() || queued.isTruthy(),
+        supportsActiveTurnRedirect = result.explicitRedirectCapability() == true,
     )
 }
 
 suspend fun GatewayConnection.submitPrompt(runtimeSessionId: String, text: String): JsonObject {
+    return submitPrompt(runtimeSessionId, text, SubmitOptions())
+}
+
+suspend fun GatewayConnection.submitPrompt(
+    runtimeSessionId: String,
+    text: String,
+    options: SubmitOptions,
+): JsonObject {
     require(runtimeSessionId.isNotBlank()) { "No Hermes conversation is open." }
-    require(text.isNotBlank()) { "Write a message first." }
+    require(text.isNotBlank() || options.attachments.isNotEmpty()) { "Write a message first." }
     return request(
         method = "prompt.submit",
         params = buildJsonObject {
             put("session_id", runtimeSessionId)
             put("text", text)
+            if (options.queued) put("queued", true)
+            if (options.attachments.isNotEmpty()) {
+                put(
+                    "attachments",
+                    buildJsonArray {
+                        options.attachments.forEach { attachment ->
+                            add(
+                                buildJsonObject {
+                                    put("id", attachment.id)
+                                    put("uri", attachment.uri)
+                                    attachment.mimeType?.let { put("mime_type", it) }
+                                    attachment.name?.let { put("name", it) }
+                                },
+                            )
+                        }
+                    },
+                )
+            }
         },
         timeoutMillis = 180_000,
     ).asObject("Hermes returned no prompt status.")
+}
+
+suspend fun GatewayConnection.submitQueuedPrompt(
+    runtimeSessionId: String,
+    text: String,
+    options: SubmitOptions = SubmitOptions(queued = true),
+): JsonObject = submitPrompt(
+    runtimeSessionId = runtimeSessionId,
+    text = text,
+    options = options.copy(queued = true),
+)
+
+suspend fun GatewayConnection.submitQueuedPrompt(
+    runtimeSessionId: String,
+    text: String,
+    attachments: List<AttachmentReference>,
+): JsonObject = submitQueuedPrompt(
+    runtimeSessionId,
+    text,
+    SubmitOptions(queued = true, attachments = attachments),
+)
+
+suspend fun GatewayConnection.steerSession(
+    runtimeSessionId: String,
+    text: String,
+): SteerOutcome {
+    require(runtimeSessionId.isNotBlank()) { "No Hermes conversation is open." }
+    require(text.isNotBlank()) { "Write a message first." }
+    val result = try {
+        request(
+            method = "session.steer",
+            params = buildJsonObject {
+                put("session_id", runtimeSessionId)
+                put("text", text)
+            },
+        ).asObject("Hermes returned no steer status.")
+    } catch (error: GatewayRpcException) {
+        if (error.isUnsupportedActiveTurnMethod()) return SteerOutcome.Unsupported
+        throw error
+    }
+    return when (result.string("status")?.lowercase()) {
+        "steered" -> SteerOutcome.Steered
+        "queued" -> SteerOutcome.Queued
+        "rejected" -> SteerOutcome.Rejected
+        else -> throw IOException("Hermes returned an unknown steer status.")
+    }
+}
+
+suspend fun GatewayConnection.redirectSession(
+    runtimeSessionId: String,
+    text: String,
+): RedirectOutcome {
+    require(runtimeSessionId.isNotBlank()) { "No Hermes conversation is open." }
+    require(text.isNotBlank()) { "Write a message first." }
+    val result = try {
+        request(
+            method = "session.redirect",
+            params = buildJsonObject {
+                put("session_id", runtimeSessionId)
+                put("text", text)
+            },
+        ).asObject("Hermes returned no redirect status.")
+    } catch (error: GatewayRpcException) {
+        if (error.isUnsupportedActiveTurnMethod()) return RedirectOutcome.Unsupported
+        throw error
+    }
+    return when (result.string("status")?.lowercase()) {
+        "redirected" -> RedirectOutcome.Redirected
+        "queued" -> RedirectOutcome.Queued
+        "rejected" -> RedirectOutcome.Rejected
+        else -> throw IOException("Hermes returned an unknown redirect status.")
+    }
 }
 
 suspend fun GatewayConnection.interruptSession(runtimeSessionId: String): JsonObject {
@@ -138,7 +275,7 @@ private fun decodeGatewayMessage(element: JsonElement): ConversationMessage? {
 private fun JsonElement?.scalarIdentity(): String? =
     (this as? JsonPrimitive)?.contentOrNull?.takeIf(String::isNotBlank)
 
-private fun inflightAssistantText(element: JsonElement?): String {
+internal fun inflightAssistantText(element: JsonElement?): String {
     val row = element as? JsonObject ?: return ""
     return sequenceOf("assistant", "text", "content")
         .mapNotNull(row::string)
@@ -146,7 +283,7 @@ private fun inflightAssistantText(element: JsonElement?): String {
         .orEmpty()
 }
 
-private fun JsonElement?.isTruthy(): Boolean = when (this) {
+internal fun JsonElement?.isTruthy(): Boolean = when (this) {
     null, JsonNull -> false
     is JsonObject, is JsonArray -> true
     is JsonPrimitive -> booleanOrNull
@@ -164,3 +301,23 @@ internal fun JsonObject.string(key: String): String? =
 
 internal fun JsonObject.boolean(key: String): Boolean? =
     get(key)?.jsonPrimitive?.booleanOrNull
+
+internal fun JsonObject.explicitRedirectCapability(): Boolean? {
+    val info = this["info"] as? JsonObject
+    val containers = listOfNotNull(
+        this,
+        this["capabilities"] as? JsonObject,
+        info?.get("capabilities") as? JsonObject,
+        info,
+    )
+    val keys = listOf(
+        "supports_active_turn_redirect",
+        "supportsActiveTurnRedirect",
+    )
+    return containers.asSequence()
+        .flatMap { container -> keys.asSequence().mapNotNull { key -> container.boolean(key) } }
+        .firstOrNull()
+}
+
+private fun GatewayRpcException.isUnsupportedActiveTurnMethod(): Boolean =
+    code == 4010 || code == -32601

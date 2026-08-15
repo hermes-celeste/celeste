@@ -9,6 +9,9 @@ import dev.hazydreams.hermesceleste.connection.ReusableSecret
 import dev.hazydreams.hermesceleste.connection.SavedAuthMode
 import dev.hazydreams.hermesceleste.connection.SavedConnectionDescriptor
 import dev.hazydreams.hermesceleste.connection.connectionBootstrapDecision
+import dev.hazydreams.hermesceleste.network.AttachmentDraft
+import dev.hazydreams.hermesceleste.network.AttachmentReadiness
+import dev.hazydreams.hermesceleste.network.AttachmentReference
 import dev.hazydreams.hermesceleste.network.AuthenticationRejected
 import dev.hazydreams.hermesceleste.network.AuthenticationMaterial
 import dev.hazydreams.hermesceleste.network.ConversationMessage
@@ -21,14 +24,22 @@ import dev.hazydreams.hermesceleste.network.GatewayConnection
 import dev.hazydreams.hermesceleste.network.GatewayConnectionState
 import dev.hazydreams.hermesceleste.network.GatewayCredential
 import dev.hazydreams.hermesceleste.network.GatewayEvent
+import dev.hazydreams.hermesceleste.network.GatewayRpcException
+import dev.hazydreams.hermesceleste.network.RedirectOutcome
 import dev.hazydreams.hermesceleste.network.ResumedSession
 import dev.hazydreams.hermesceleste.network.StoredSession
+import dev.hazydreams.hermesceleste.network.SubmitOptions
+import dev.hazydreams.hermesceleste.network.SteerOutcome
 import dev.hazydreams.hermesceleste.network.boolean
 import dev.hazydreams.hermesceleste.network.createSession
+import dev.hazydreams.hermesceleste.network.explicitRedirectCapability
 import dev.hazydreams.hermesceleste.network.interruptSession
+import dev.hazydreams.hermesceleste.network.redirectSession
 import dev.hazydreams.hermesceleste.network.resumeStoredSession
+import dev.hazydreams.hermesceleste.network.steerSession
 import dev.hazydreams.hermesceleste.network.string
 import dev.hazydreams.hermesceleste.network.submitPrompt
+import dev.hazydreams.hermesceleste.network.submitQueuedPrompt
 import java.io.IOException
 import java.util.concurrent.atomic.AtomicLong
 import kotlin.math.min
@@ -50,6 +61,96 @@ internal enum class TurnState {
     Idle,
     Running,
     Reconnecting,
+    UnsupportedGateway,
+}
+
+enum class BusyInputPolicy {
+    Steer,
+    Queue,
+    Redirect,
+}
+
+enum class ComposerAction {
+    None,
+    Send,
+    Steer,
+    Queue,
+    Redirect,
+    Stop,
+}
+
+enum class DeliveryStatus {
+    None,
+    Pending,
+    Accepted,
+    Rejected,
+    Uncertain,
+}
+
+data class ActiveTurnPayload(
+    val text: String,
+    val attachments: List<AttachmentDraft> = emptyList(),
+)
+
+internal fun composerAction(
+    turnState: TurnState,
+    payload: ActiveTurnPayload,
+    policy: BusyInputPolicy,
+    redirectSupported: Boolean,
+): ComposerAction {
+    if (payload.attachments.any { it.readiness != AttachmentReadiness.Ready }) {
+        return ComposerAction.None
+    }
+    return when (turnState) {
+        TurnState.Idle -> if (payload.text.isNotBlank() || payload.attachments.isNotEmpty()) {
+            ComposerAction.Send
+        } else {
+            ComposerAction.None
+        }
+        TurnState.Synchronizing, TurnState.Reconnecting, TurnState.UnsupportedGateway -> ComposerAction.None
+        TurnState.Running -> when {
+            payload.attachments.isNotEmpty() -> ComposerAction.Queue
+            payload.text.isBlank() -> ComposerAction.Stop
+            policy == BusyInputPolicy.Queue -> ComposerAction.Queue
+            policy == BusyInputPolicy.Redirect && redirectSupported -> ComposerAction.Redirect
+            else -> ComposerAction.Steer
+        }
+    }
+}
+
+private enum class ActiveTurnOperationKind {
+    Submit,
+    Steer,
+    Queue,
+    Redirect,
+}
+
+private fun ActiveTurnOperationKind.composerAction(): ComposerAction = when (this) {
+    ActiveTurnOperationKind.Submit -> ComposerAction.Send
+    ActiveTurnOperationKind.Steer -> ComposerAction.Steer
+    ActiveTurnOperationKind.Queue -> ComposerAction.Queue
+    ActiveTurnOperationKind.Redirect -> ComposerAction.Redirect
+}
+
+private data class PendingOperation(
+    val sequence: Long,
+    val kind: ActiveTurnOperationKind,
+    val gateway: GatewayConnection,
+    val generation: Long,
+    val runtimeSessionId: String,
+    val storedSessionId: String,
+    val profile: String,
+    val scopeKey: String,
+    val text: String,
+    val draftSnapshot: String,
+    val attachments: List<AttachmentReference>,
+    val localMessageId: String? = null,
+)
+
+private enum class OperationResult {
+    Accepted,
+    Rejected,
+    Unsupported,
 }
 
 internal enum class ConnectionPhase {
@@ -76,7 +177,12 @@ internal data class CelesteUiState(
     val messages: List<ConversationMessage> = emptyList(),
     val streamingText: String = "",
     val draft: String = "",
+    val attachments: List<AttachmentDraft> = emptyList(),
     val turnState: TurnState = TurnState.Idle,
+    val busyInputPolicy: BusyInputPolicy = BusyInputPolicy.Steer,
+    val redirectSupported: Boolean = false,
+    val deliveryStatus: DeliveryStatus = DeliveryStatus.None,
+    val lastAction: ComposerAction? = null,
     val loadingMessage: String? = null,
     val errorMessage: String? = null,
 )
@@ -93,6 +199,12 @@ private data class RememberedDashboard(
     val persistenceError: Throwable?,
 )
 
+private data class PreservedDraft(
+    val scopeKey: String?,
+    val text: String,
+    val attachments: List<AttachmentDraft>,
+)
+
 internal class CelesteViewModel(
     private val dashboard: DashboardService = DashboardClient(),
     private val connectionStore: ConnectionStore = InMemoryConnectionStore(),
@@ -104,6 +216,10 @@ internal class CelesteViewModel(
     val state: StateFlow<CelesteUiState> = mutableState.asStateFlow()
 
     private val localMessageCounter = AtomicLong(0)
+    private val operationSequence = AtomicLong(0)
+    private var pendingOperation: PendingOperation? = null
+    private var gatewayGeneration = 0L
+    private val busyInputPolicies = mutableMapOf<String, BusyInputPolicy>()
     private var credential: GatewayCredential? = null
     private var gateway: GatewayConnection? = null
     private var gatewayEventsJob: Job? = null
@@ -114,6 +230,7 @@ internal class CelesteViewModel(
     private var connectionAttempt = 0L
     private val connectionStoreMutex = Mutex()
     private var currentDescriptor: SavedConnectionDescriptor? = null
+    private var preservedDraft: PreservedDraft? = null
     private var reconnectAttempts = 0
     private var reconciling = false
     private var currentSessionCanResume = true
@@ -147,9 +264,45 @@ internal class CelesteViewModel(
         mutableState.value = mutableState.value.copy(draft = value)
     }
 
+    fun updateAttachments(value: List<AttachmentDraft>) {
+        mutableState.value = mutableState.value.copy(attachments = value.toList())
+    }
+
+    fun selectBusyInputPolicy(policy: BusyInputPolicy) {
+        val snapshot = mutableState.value
+        if (policy == BusyInputPolicy.Redirect && !snapshot.redirectSupported) return
+        val key = profilePreferenceKey()
+        busyInputPolicies[key] = policy
+        mutableState.value = snapshot.copy(busyInputPolicy = policy)
+    }
+
     fun selectProfile(name: String) {
-        if (mutableState.value.profiles.none { it.name == name }) return
-        mutableState.value = mutableState.value.copy(selectedProfile = name)
+        val snapshot = mutableState.value
+        if (snapshot.profiles.none { it.name == name }) return
+        if (snapshot.activeSummary != null && snapshot.activeSummary.profile != name) {
+            closeGateway()
+            preservedDraft = null
+            mutableState.value = snapshot.copy(
+                selectedProfile = name,
+                activeSummary = null,
+                messages = emptyList(),
+                streamingText = "",
+                draft = "",
+                attachments = emptyList(),
+                turnState = TurnState.Idle,
+                busyInputPolicy = busyInputPolicies[profilePreferenceKey(name)] ?: BusyInputPolicy.Steer,
+                redirectSupported = false,
+                deliveryStatus = DeliveryStatus.None,
+                lastAction = null,
+                loadingMessage = null,
+                errorMessage = null,
+            )
+            return
+        }
+        mutableState.value = snapshot.copy(
+            selectedProfile = name,
+            busyInputPolicy = busyInputPolicies[profilePreferenceKey(name)] ?: BusyInputPolicy.Steer,
+        )
     }
 
     fun findDashboard() {
@@ -157,6 +310,7 @@ internal class CelesteViewModel(
         if (rawUrl.isBlank()) return
         val attempt = beginConnectionAttempt()
         closeGateway()
+        preservedDraft = null
         credential = null
         currentDescriptor = null
         dashboard.clearAuthentication()
@@ -167,6 +321,8 @@ internal class CelesteViewModel(
             messages = emptyList(),
             streamingText = "",
             draft = "",
+            attachments = emptyList(),
+            deliveryStatus = DeliveryStatus.None,
             loadingMessage = "Finding Hermes…",
             errorMessage = null,
         )
@@ -283,6 +439,7 @@ internal class CelesteViewModel(
     fun leaveSessionList() {
         beginConnectionAttempt()
         closeGateway()
+        preservedDraft = null
         credential = null
         mutableState.value = mutableState.value.copy(
             connectionPhase = ConnectionPhase.ManualSetup,
@@ -291,6 +448,8 @@ internal class CelesteViewModel(
             messages = emptyList(),
             streamingText = "",
             draft = "",
+            attachments = emptyList(),
+            deliveryStatus = DeliveryStatus.None,
             errorMessage = null,
         )
     }
@@ -302,6 +461,7 @@ internal class CelesteViewModel(
     fun useAnotherConnection() {
         beginConnectionAttempt()
         closeGateway()
+        preservedDraft = null
         credential = null
         currentDescriptor = null
         dashboard.clearAuthentication()
@@ -313,6 +473,7 @@ internal class CelesteViewModel(
         val activeCredential = credential
         val attempt = beginConnectionAttempt()
         closeGateway()
+        preservedDraft = null
         credential = null
         currentDescriptor = null
         mutableState.value = snapshot.copy(
@@ -322,8 +483,10 @@ internal class CelesteViewModel(
             messages = emptyList(),
             streamingText = "",
             draft = "",
+            attachments = emptyList(),
             password = "",
             sessionToken = "",
+            deliveryStatus = DeliveryStatus.None,
             loadingMessage = "Signing out…",
             errorMessage = null,
         )
@@ -352,6 +515,7 @@ internal class CelesteViewModel(
         val activeCredential = credential
         val attempt = beginConnectionAttempt()
         closeGateway()
+        preservedDraft = null
         credential = null
         currentDescriptor = null
         mutableState.value = CelesteUiState(
@@ -518,6 +682,17 @@ internal class CelesteViewModel(
         descriptor: SavedConnectionDescriptor?,
         probe: DashboardProbeResult? = null,
     ) {
+        val current = mutableState.value
+        val currentScope = current.activeSummary?.let { summary ->
+            sessionScopeKey(summary.id, summary.profile)
+        }
+        if (current.draft.isNotEmpty() || current.attachments.isNotEmpty()) {
+            preservedDraft = PreservedDraft(
+                scopeKey = currentScope,
+                text = current.draft,
+                attachments = current.attachments,
+            )
+        }
         credential = null
         currentDescriptor = null
         dashboard.clearAuthentication()
@@ -529,6 +704,14 @@ internal class CelesteViewModel(
             phase = ConnectionPhase.AuthenticationRequired,
             probe = probe,
             errorMessage = "Saved sign-in is no longer valid. Sign in again.",
+        ).copy(
+            draft = current.draft,
+            attachments = current.attachments,
+            deliveryStatus = if (current.draft.isNotEmpty() || current.attachments.isNotEmpty()) {
+                DeliveryStatus.Uncertain
+            } else {
+                DeliveryStatus.None
+            },
         )
     }
 
@@ -585,18 +768,28 @@ internal class CelesteViewModel(
         val connection = mutableState.value.probe ?: return
         val activeCredential = credential ?: return
         closeGateway()
+        val restoredDraft = preservedDraft?.takeIf {
+            it.scopeKey == sessionScopeKey(summary.id, summary.profile)
+        }
+        preservedDraft = null
         currentSessionCanResume = true
         mutableState.value = mutableState.value.copy(
             activeSummary = summary,
             messages = emptyList(),
             streamingText = "",
-            draft = "",
+            draft = restoredDraft?.text.orEmpty(),
+            attachments = restoredDraft?.attachments.orEmpty(),
             turnState = TurnState.Synchronizing,
+            busyInputPolicy = busyInputPolicies[profilePreferenceKey(summary.profile)] ?: BusyInputPolicy.Steer,
+            redirectSupported = false,
+            deliveryStatus = if (restoredDraft == null) DeliveryStatus.None else DeliveryStatus.Uncertain,
+            lastAction = null,
             loadingMessage = "Opening ${summary.title.ifBlank { "conversation" }}…",
             errorMessage = null,
         )
 
         val newGateway = dashboard.createGateway(connection.baseUrl, activeCredential)
+        gatewayGeneration += 1
         gateway = newGateway
         observeGateway(newGateway)
         viewModelScope.launch {
@@ -604,9 +797,11 @@ internal class CelesteViewModel(
                 newGateway.connect()
                 reconcile(newGateway, summary.id)
             }.onSuccess {
+                if (gateway !== newGateway) return@onSuccess
                 reconnectAttempts = 0
                 mutableState.value = mutableState.value.copy(loadingMessage = null)
             }.onFailure { error ->
+                if (gateway !== newGateway) return@onFailure
                 mutableState.value = mutableState.value.copy(
                     loadingMessage = null,
                     errorMessage = error.message ?: "Could not open that Hermes conversation.",
@@ -628,12 +823,18 @@ internal class CelesteViewModel(
             messages = emptyList(),
             streamingText = "",
             draft = "",
+            attachments = emptyList(),
             turnState = TurnState.Synchronizing,
+            busyInputPolicy = busyInputPolicies[profilePreferenceKey(selectedProfile)] ?: BusyInputPolicy.Steer,
+            redirectSupported = false,
+            deliveryStatus = DeliveryStatus.None,
+            lastAction = null,
             loadingMessage = "Starting a new $selectedProfile conversation…",
             errorMessage = null,
         )
 
         val newGateway = dashboard.createGateway(connection.baseUrl, activeCredential)
+        gatewayGeneration += 1
         gateway = newGateway
         observeGateway(newGateway)
         viewModelScope.launch {
@@ -672,9 +873,13 @@ internal class CelesteViewModel(
                 )
                 events.forEach(::applyEvent)
             }.onSuccess {
+                if (gateway !== newGateway) return@onSuccess
                 reconnectAttempts = 0
             }.onFailure { error ->
-                if (gateway === newGateway) closeGateway()
+                if (gateway !== newGateway) return@onFailure
+                reconciling = false
+                bufferedEvents.clear()
+                closeGateway()
                 mutableState.value = mutableState.value.copy(
                     turnState = TurnState.Idle,
                     loadingMessage = null,
@@ -686,76 +891,318 @@ internal class CelesteViewModel(
 
     fun leaveConversation() {
         closeGateway()
+        preservedDraft = null
         mutableState.value = mutableState.value.copy(
             activeSummary = null,
             messages = emptyList(),
             streamingText = "",
             draft = "",
+            attachments = emptyList(),
             turnState = TurnState.Idle,
+            redirectSupported = false,
+            deliveryStatus = DeliveryStatus.None,
+            lastAction = null,
             loadingMessage = null,
             errorMessage = null,
         )
     }
 
     fun sendMessage() {
+        val snapshot = mutableState.value
+        val action = composerAction(
+            turnState = snapshot.turnState,
+            payload = ActiveTurnPayload(snapshot.draft, snapshot.attachments),
+            policy = snapshot.busyInputPolicy,
+            redirectSupported = snapshot.redirectSupported,
+        )
+        when (action) {
+            ComposerAction.Send -> dispatchActiveTurn(ActiveTurnOperationKind.Submit)
+            ComposerAction.Steer -> dispatchActiveTurn(ActiveTurnOperationKind.Steer)
+            ComposerAction.Queue -> dispatchActiveTurn(ActiveTurnOperationKind.Queue)
+            ComposerAction.Redirect -> dispatchActiveTurn(ActiveTurnOperationKind.Redirect)
+            ComposerAction.Stop -> interrupt()
+            ComposerAction.None -> Unit
+        }
+    }
+
+    fun steerMessage() {
+        dispatchActiveTurn(ActiveTurnOperationKind.Steer)
+    }
+
+    fun queueMessage() {
+        dispatchActiveTurn(ActiveTurnOperationKind.Queue)
+    }
+
+    fun redirectMessage() {
+        if (mutableState.value.redirectSupported) {
+            dispatchActiveTurn(ActiveTurnOperationKind.Redirect)
+        }
+    }
+
+    private fun dispatchActiveTurn(kind: ActiveTurnOperationKind) {
         val activeGateway = gateway ?: return
         val snapshot = mutableState.value
         val runtimeId = currentRuntimeSessionId ?: return
-        val text = snapshot.draft.trim()
-        if (text.isBlank() || snapshot.turnState != TurnState.Idle) return
+        val storedId = currentStoredSessionId ?: return
+        val draftSnapshot = snapshot.draft
+        val text = draftSnapshot.trim()
+        if (text.isBlank() && snapshot.attachments.isEmpty()) return
+        if (pendingOperation != null) return
+        if (snapshot.attachments.any { it.readiness != AttachmentReadiness.Ready }) {
+            mutableState.value = snapshot.copy(
+                deliveryStatus = DeliveryStatus.Rejected,
+                lastAction = kind.composerAction(),
+                errorMessage = "Attachment is still uploading or needs to be retried.",
+            )
+            return
+        }
+        val attachments = snapshot.attachments.map(AttachmentDraft::reference)
+        if (kind == ActiveTurnOperationKind.Steer || kind == ActiveTurnOperationKind.Redirect) {
+            if (attachments.isNotEmpty() || text.isBlank()) return
+            if (kind == ActiveTurnOperationKind.Redirect && !snapshot.redirectSupported) return
+        }
+        if (kind != ActiveTurnOperationKind.Submit && snapshot.turnState != TurnState.Running) return
+        if (kind == ActiveTurnOperationKind.Submit && snapshot.turnState != TurnState.Idle) return
 
-        val localId = "local-${localMessageCounter.incrementAndGet()}"
-        mutableState.value = snapshot.copy(
-            messages = snapshot.messages + ConversationMessage(
-                role = "user",
-                text = text,
-                id = localId,
-                pending = true,
+        val localMessageId = if (kind == ActiveTurnOperationKind.Submit) {
+            "local-${localMessageCounter.incrementAndGet()}"
+        } else {
+            null
+        }
+        val operation = PendingOperation(
+            sequence = operationSequence.incrementAndGet(),
+            kind = kind,
+            gateway = activeGateway,
+            generation = gatewayGeneration,
+            runtimeSessionId = runtimeId,
+            storedSessionId = storedId,
+            profile = snapshot.activeSummary?.profile ?: snapshot.selectedProfile,
+            scopeKey = sessionScopeKey(
+                storedId,
+                snapshot.activeSummary?.profile ?: snapshot.selectedProfile,
             ),
-            streamingText = "",
-            draft = "",
-            turnState = TurnState.Running,
+            text = text,
+            draftSnapshot = draftSnapshot,
+            attachments = attachments,
+            localMessageId = localMessageId,
+        )
+        pendingOperation = operation
+        mutableState.value = snapshot.copy(
+            messages = if (localMessageId == null) {
+                snapshot.messages
+            } else {
+                snapshot.messages + ConversationMessage(
+                    role = "user",
+                    text = text,
+                    id = localMessageId,
+                    pending = true,
+                )
+            },
+            streamingText = if (kind == ActiveTurnOperationKind.Submit) "" else snapshot.streamingText,
+            turnState = if (kind == ActiveTurnOperationKind.Submit) TurnState.Running else snapshot.turnState,
+            deliveryStatus = DeliveryStatus.Pending,
+            lastAction = operation.kind.composerAction(),
             errorMessage = null,
         )
-        // prompt.submit creates the durable row before work begins. From this point on,
-        // uncertain delivery must reconcile by stored ID and must never create/resend.
-        currentSessionCanResume = true
+        if (kind == ActiveTurnOperationKind.Submit) currentSessionCanResume = true
+
         viewModelScope.launch {
-            runCatching { activeGateway.submitPrompt(runtimeId, text) }
-                .onSuccess {
-                    mutableState.value = mutableState.value.copy(
-                        messages = mutableState.value.messages.map { message ->
-                            if (message.id == localId) message.copy(pending = false) else message
-                        },
-                    )
-                }
-                .onFailure { error ->
-                    mutableState.value = mutableState.value.copy(
-                        errorMessage = error.message ?: "Hermes could not send that message.",
-                    )
-                    if (gateway === activeGateway) {
-                        runCatching { reconcile(activeGateway, currentStoredSessionId ?: return@launch) }
+            runCatching {
+                when (kind) {
+                    ActiveTurnOperationKind.Submit -> activeGateway.submitPrompt(
+                        operation.runtimeSessionId,
+                        operation.text,
+                        SubmitOptions(attachments = operation.attachments),
+                    ).let(::submitOperationResult)
+                    ActiveTurnOperationKind.Queue -> activeGateway.submitQueuedPrompt(
+                        operation.runtimeSessionId,
+                        operation.text,
+                        SubmitOptions(attachments = operation.attachments),
+                    ).let(::submitOperationResult)
+                    ActiveTurnOperationKind.Steer -> activeGateway.steerSession(
+                        operation.runtimeSessionId,
+                        operation.text,
+                    ).let { outcome ->
+                        when (outcome) {
+                            SteerOutcome.Steered, SteerOutcome.Queued -> OperationResult.Accepted
+                            SteerOutcome.Rejected -> OperationResult.Rejected
+                            SteerOutcome.Unsupported -> OperationResult.Unsupported
+                        }
+                    }
+                    ActiveTurnOperationKind.Redirect -> activeGateway.redirectSession(
+                        operation.runtimeSessionId,
+                        operation.text,
+                    ).let { outcome ->
+                        when (outcome) {
+                            RedirectOutcome.Redirected, RedirectOutcome.Queued -> OperationResult.Accepted
+                            RedirectOutcome.Rejected -> OperationResult.Rejected
+                            RedirectOutcome.Unsupported -> OperationResult.Unsupported
+                        }
                     }
                 }
+            }.onSuccess { result ->
+                if (!isCurrentOperation(operation)) return@onSuccess
+                pendingOperation = null
+                when (result) {
+                    OperationResult.Accepted -> {
+                        clearAcceptedDraft(operation)
+                        mutableState.value = mutableState.value.copy(
+                            deliveryStatus = DeliveryStatus.Accepted,
+                            lastAction = operation.kind.composerAction(),
+                            errorMessage = null,
+                        )
+                    }
+
+                    OperationResult.Rejected, OperationResult.Unsupported -> {
+                        discardOptimisticSubmission(operation)
+                        mutableState.value = mutableState.value.copy(
+                            turnState = if (operation.kind == ActiveTurnOperationKind.Submit) {
+                                TurnState.Idle
+                            } else {
+                                mutableState.value.turnState
+                            },
+                            redirectSupported = if (result == OperationResult.Unsupported &&
+                                operation.kind == ActiveTurnOperationKind.Redirect
+                            ) {
+                                false
+                            } else {
+                                mutableState.value.redirectSupported
+                            },
+                            deliveryStatus = DeliveryStatus.Rejected,
+                            lastAction = operation.kind.composerAction(),
+                            errorMessage = if (result == OperationResult.Unsupported) {
+                                "That active-turn action is unavailable. You can queue it for the next turn."
+                            } else {
+                                when (operation.kind) {
+                                    ActiveTurnOperationKind.Redirect -> "Redirect was not accepted. You can queue it for the next turn."
+                                    ActiveTurnOperationKind.Steer -> "Guidance was not accepted. You can queue it for the next turn."
+                                    else -> "Hermes did not accept that message."
+                                }
+                            },
+                        )
+                    }
+                }
+            }.onFailure { error ->
+                if (!isCurrentOperation(operation)) return@onFailure
+                pendingOperation = null
+                val definiteRejection = error is GatewayRpcException &&
+                    (error.code == 4010 || error.code == -32601)
+                if (definiteRejection) discardOptimisticSubmission(operation)
+                mutableState.value = mutableState.value.copy(
+                    turnState = if (definiteRejection && operation.kind == ActiveTurnOperationKind.Submit) {
+                        TurnState.Idle
+                    } else {
+                        mutableState.value.turnState
+                    },
+                    deliveryStatus = if (definiteRejection) DeliveryStatus.Rejected else DeliveryStatus.Uncertain,
+                    lastAction = operation.kind.composerAction(),
+                    errorMessage = if (definiteRejection) {
+                        "That active-turn action is unavailable. You can queue it for the next turn."
+                    } else {
+                        "Delivery uncertain; reconnecting before you try again."
+                    },
+                )
+                if (!definiteRejection && gateway === activeGateway) {
+                    val reconciliation = runCatching {
+                        reconcile(activeGateway, operation.storedSessionId)
+                    }
+                    if (reconciliation.isFailure && gateway === activeGateway) {
+                        mutableState.value = mutableState.value.copy(
+                            turnState = TurnState.Reconnecting,
+                        )
+                        scheduleReconnect(wasRunning = true, immediate = true)
+                    }
+                }
+            }
         }
+    }
+
+    private fun submitOperationResult(result: JsonObject): OperationResult =
+        when (val status = result.string("status")?.lowercase()) {
+            "accepted", "queued", "streaming", "submitted", "running" -> OperationResult.Accepted
+            "rejected", "failed", "error" -> OperationResult.Rejected
+            null -> throw IOException("Hermes returned no prompt status.")
+            else -> throw IOException("Hermes returned an unknown prompt status: $status")
+        }
+
+    private fun discardOptimisticSubmission(operation: PendingOperation) {
+        val localId = operation.localMessageId ?: return
+        mutableState.value = mutableState.value.copy(
+            messages = mutableState.value.messages.filterNot { it.id == localId },
+        )
+    }
+
+    private fun isCurrentOperation(operation: PendingOperation): Boolean =
+        pendingOperation?.sequence == operation.sequence &&
+            gateway === operation.gateway &&
+            gatewayGeneration == operation.generation &&
+            currentRuntimeSessionId == operation.runtimeSessionId &&
+            currentStoredSessionId == operation.storedSessionId &&
+            mutableState.value.activeSummary?.profile == operation.profile &&
+            sessionScopeKey(operation.storedSessionId, operation.profile) == operation.scopeKey
+
+    private fun clearAcceptedDraft(operation: PendingOperation) {
+        val snapshot = mutableState.value
+        val sameDraft = snapshot.draft == operation.draftSnapshot &&
+            snapshot.attachments.map(AttachmentDraft::reference) == operation.attachments
+        mutableState.value = snapshot.copy(
+            draft = if (sameDraft) "" else snapshot.draft,
+            attachments = if (sameDraft) emptyList() else snapshot.attachments,
+            messages = operation.localMessageId?.let { localId ->
+                snapshot.messages.map { message ->
+                    if (message.id == localId) message.copy(pending = false) else message
+                }
+            } ?: snapshot.messages,
+        )
     }
 
     fun interrupt() {
         val activeGateway = gateway ?: return
         val runtimeId = currentRuntimeSessionId ?: return
+        val storedId = currentStoredSessionId ?: return
         if (mutableState.value.turnState != TurnState.Running) return
+        val correctionWasPending = pendingOperation != null
+        pendingOperation = null
+        val generation = gatewayGeneration
         mutableState.value = mutableState.value.copy(
             turnState = TurnState.Synchronizing,
+            deliveryStatus = if (correctionWasPending) {
+                DeliveryStatus.Uncertain
+            } else {
+                DeliveryStatus.Pending
+            },
+            lastAction = if (correctionWasPending) mutableState.value.lastAction else ComposerAction.Stop,
             errorMessage = null,
         )
         viewModelScope.launch {
             runCatching {
                 activeGateway.interruptSession(runtimeId)
-                reconcile(activeGateway, currentStoredSessionId ?: return@launch)
+                if (gateway !== activeGateway || gatewayGeneration != generation) return@runCatching
+                reconcile(activeGateway, storedId)
+            }.onSuccess {
+                if (gateway === activeGateway && gatewayGeneration == generation) {
+                    mutableState.value = mutableState.value.copy(
+                        deliveryStatus = if (correctionWasPending) {
+                            DeliveryStatus.Uncertain
+                        } else {
+                            DeliveryStatus.Accepted
+                        },
+                        lastAction = ComposerAction.Stop,
+                        errorMessage = if (correctionWasPending) {
+                            "Delivery uncertain; reconnecting before you try again."
+                        } else {
+                            null
+                        },
+                    )
+                }
             }.onFailure { error ->
+                if (gateway !== activeGateway || gatewayGeneration != generation) return@onFailure
                 mutableState.value = mutableState.value.copy(
-                    errorMessage = error.message ?: "Hermes could not stop that turn.",
+                    turnState = TurnState.Reconnecting,
+                    deliveryStatus = DeliveryStatus.Uncertain,
+                    errorMessage = error.message ?: "Delivery uncertain; reconnecting before you try again.",
                 )
+                scheduleReconnect(wasRunning = true, immediate = true)
             }
         }
     }
@@ -804,10 +1251,22 @@ internal class CelesteViewModel(
             }
             if (health.isFailure && gateway === activeGateway) {
                 val wasRunning = mutableState.value.turnState == TurnState.Running
+                val operationWasPending = pendingOperation != null
+                pendingOperation = null
+                gatewayGeneration += 1
                 activeGateway.close()
                 mutableState.value = mutableState.value.copy(
                     turnState = TurnState.Reconnecting,
-                    errorMessage = health.exceptionOrNull()?.message ?: "Reconnecting to Hermes…",
+                    deliveryStatus = if (operationWasPending) {
+                        DeliveryStatus.Uncertain
+                    } else {
+                        mutableState.value.deliveryStatus
+                    },
+                    errorMessage = if (operationWasPending) {
+                        "Delivery uncertain; reconnecting before you try again."
+                    } else {
+                        health.exceptionOrNull()?.message ?: "Reconnecting to Hermes…"
+                    },
                 )
                 scheduleReconnect(wasRunning = wasRunning, immediate = true)
             }
@@ -817,6 +1276,17 @@ internal class CelesteViewModel(
 
     private var currentRuntimeSessionId: String? = null
     private var currentStoredSessionId: String? = null
+
+    private fun normalizedEndpoint(): String =
+        runCatching { DashboardUrlPolicy.normalize(mutableState.value.dashboardUrl) }
+            .getOrDefault(mutableState.value.dashboardUrl.trim())
+            .trimEnd('/')
+
+    private fun profilePreferenceKey(profile: String? = null): String =
+        "${normalizedEndpoint()}|${profile ?: mutableState.value.activeSummary?.profile ?: mutableState.value.selectedProfile}"
+
+    private fun sessionScopeKey(storedId: String, profile: String): String =
+        "${profilePreferenceKey(profile)}|$storedId"
 
     private fun observeGateway(activeGateway: GatewayConnection) {
         gatewayEventsJob = viewModelScope.launch {
@@ -833,10 +1303,18 @@ internal class CelesteViewModel(
             activeGateway.state.collect { connectionState ->
                 if (gateway !== activeGateway) return@collect
                 if (connectionState is GatewayConnectionState.Disconnected) {
+                    if (pendingOperation != null) {
+                        pendingOperation = null
+                        mutableState.value = mutableState.value.copy(
+                            deliveryStatus = DeliveryStatus.Uncertain,
+                            errorMessage = "Delivery uncertain; reconnecting before you try again.",
+                        )
+                    }
+                    gatewayGeneration += 1
                     val wasRunning = mutableState.value.turnState == TurnState.Running
                     mutableState.value = mutableState.value.copy(
                         turnState = TurnState.Reconnecting,
-                        errorMessage = connectionState.reason,
+                        errorMessage = mutableState.value.errorMessage ?: connectionState.reason,
                     )
                     scheduleReconnect(wasRunning)
                 }
@@ -845,22 +1323,32 @@ internal class CelesteViewModel(
     }
 
     private suspend fun reconcile(activeGateway: GatewayConnection, storedSessionId: String) {
+        val generation = gatewayGeneration
+        if (!isCurrentGateway(activeGateway, generation)) return
         reconciling = true
         bufferedEvents.clear()
+        var events = emptyList<GatewayEvent>()
         try {
             val resumed = activeGateway.resumeStoredSession(storedSessionId)
-            if (gateway !== activeGateway) return
+            if (!isCurrentGateway(activeGateway, generation)) return
+            if (resumed.storedSessionId != storedSessionId) {
+                throw IOException("Hermes resumed a different conversation.")
+            }
             applyResumedSession(resumed)
-            val events = bufferedEvents.toList()
+            events = bufferedEvents.toList()
             bufferedEvents.clear()
-            reconciling = false
-            events.forEach(::applyEvent)
         } catch (error: Throwable) {
-            bufferedEvents.clear()
-            reconciling = false
+            if (isCurrentGateway(activeGateway, generation)) bufferedEvents.clear()
             throw error
+        } finally {
+            if (isCurrentGateway(activeGateway, generation)) reconciling = false
         }
+        if (isCurrentGateway(activeGateway, generation)) events.forEach(::applyEvent)
     }
+
+    private fun isCurrentGateway(activeGateway: GatewayConnection, generation: Long): Boolean =
+        gateway === activeGateway && gatewayGeneration == generation
+
 
     private fun applyResumedSession(resumed: ResumedSession) {
         currentRuntimeSessionId = resumed.runtimeSessionId
@@ -870,16 +1358,28 @@ internal class CelesteViewModel(
             inflight = resumed.inflightAssistantText,
             messages = resumed.messages,
         )
+        val current = mutableState.value
         mutableState.value = mutableState.value.copy(
             messages = resumed.messages,
             streamingText = streamingSuffix,
-            turnState = if (resumed.running == true || resumed.hasLiveProjection) {
-                TurnState.Running
+            turnState = resumedTurnState(resumed),
+            redirectSupported = resumed.supportsActiveTurnRedirect,
+            errorMessage = if (current.deliveryStatus == DeliveryStatus.Uncertain) {
+                current.errorMessage
             } else {
-                TurnState.Idle
+                null
             },
-            errorMessage = null,
         )
+    }
+
+    private fun resumedTurnState(resumed: ResumedSession): TurnState {
+        if (resumed.running == true || resumed.hasLiveProjection) return TurnState.Running
+        if (resumed.running == false) return TurnState.Idle
+        return when (resumed.status?.lowercase()) {
+            "running", "streaming", "busy", "working", "queued" -> TurnState.Running
+            "idle", "complete", "completed", "interrupted" -> TurnState.Idle
+            else -> TurnState.UnsupportedGateway
+        }
     }
 
     private fun applyEvent(event: GatewayEvent) {
@@ -956,9 +1456,13 @@ internal class CelesteViewModel(
             }
 
             "session.info" -> {
-                event.payload.boolean("running")?.let { running ->
+                val running = event.payload.boolean("running")
+                val redirect = event.payload.explicitRedirectCapability()
+                if (running != null || redirect != null) {
                     mutableState.value = mutableState.value.copy(
-                        turnState = if (running) TurnState.Running else TurnState.Idle,
+                        turnState = running?.let { if (it) TurnState.Running else TurnState.Idle }
+                            ?: mutableState.value.turnState,
+                        redirectSupported = redirect ?: mutableState.value.redirectSupported,
                     )
                 }
             }
@@ -1043,12 +1547,15 @@ internal class CelesteViewModel(
         activeGateway: GatewayConnection,
         profile: String,
     ) {
+        val generation = gatewayGeneration
+        if (!isCurrentGateway(activeGateway, generation)) return
         val previousStoredId = currentStoredSessionId
         reconciling = true
         bufferedEvents.clear()
+        var events = emptyList<GatewayEvent>()
         try {
             val created = activeGateway.createSession(profile)
-            if (gateway !== activeGateway) return
+            if (!isCurrentGateway(activeGateway, generation)) return
             currentRuntimeSessionId = created.runtimeSessionId
             currentStoredSessionId = created.storedSessionId
             val previousSummary = mutableState.value.activeSummary
@@ -1062,15 +1569,15 @@ internal class CelesteViewModel(
                 turnState = TurnState.Idle,
                 errorMessage = null,
             )
-            val events = bufferedEvents.toList()
+            events = bufferedEvents.toList()
             bufferedEvents.clear()
-            reconciling = false
-            events.forEach(::applyEvent)
         } catch (error: Throwable) {
-            bufferedEvents.clear()
-            reconciling = false
+            if (isCurrentGateway(activeGateway, generation)) bufferedEvents.clear()
             throw error
+        } finally {
+            if (isCurrentGateway(activeGateway, generation)) reconciling = false
         }
+        if (isCurrentGateway(activeGateway, generation)) events.forEach(::applyEvent)
     }
 
     private fun scheduleReconnect(wasRunning: Boolean, immediate: Boolean = false) {
@@ -1120,6 +1627,8 @@ internal class CelesteViewModel(
     private fun closeGateway() {
         val activeGateway = gateway
         gateway = null
+        pendingOperation = null
+        gatewayGeneration += 1
         reconnectJob?.cancel()
         reconnectJob = null
         foregroundCheckJob?.cancel()

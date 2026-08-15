@@ -91,6 +91,7 @@ data class ResumedSession(
     val status: String? = null,
     val inflightAssistantText: String = "",
     val hasLiveProjection: Boolean = false,
+    val supportsActiveTurnRedirect: Boolean = false,
 )
 
 sealed interface GatewayCredential {
@@ -549,6 +550,13 @@ class DashboardClient(
                     ?: result["session_key"]?.jsonPrimitive?.contentOrNull
                     ?: storedSessionId,
                 messages = decodeGatewayMessages(result["messages"]?.jsonArray.orEmpty()),
+                running = result["running"]?.jsonPrimitive?.booleanOrNull
+                    ?: (result["info"] as? JsonObject)?.get("running")?.jsonPrimitive?.booleanOrNull,
+                status = result["status"]?.jsonPrimitive?.contentOrNull
+                    ?: (result["info"] as? JsonObject)?.get("status")?.jsonPrimitive?.contentOrNull,
+                inflightAssistantText = inflightAssistantText(result["inflight"]),
+                hasLiveProjection = result["inflight"].isTruthy() || result["queued"].isTruthy(),
+                supportsActiveTurnRedirect = result.explicitRedirectCapability() == true,
             )
         }
     }
