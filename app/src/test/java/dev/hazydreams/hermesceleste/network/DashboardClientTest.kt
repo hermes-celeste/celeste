@@ -318,17 +318,19 @@ class DashboardClientTest {
 
     @Test
     fun resumesTheSelectedStoredConversation() = runBlocking {
-        server.enqueue(sessionResumeWebSocket())
+        server.enqueue(sessionResumeWebSocket(expectedProfile = "default"))
         val baseUrl = server.url("/").toString().trimEnd('/')
 
         val resumed = DashboardClient().resumeSession(
             baseUrl = baseUrl,
             credential = GatewayCredential.StaticToken("private-token"),
             storedSessionId = "stored-42",
+            profile = "default",
         )
 
         assertEquals("runtime-7", resumed.runtimeSessionId)
         assertEquals("stored-42", resumed.storedSessionId)
+        assertEquals("default", resumed.profile)
         assertEquals(listOf("user", "assistant"), resumed.messages.map { it.role })
         assertEquals("perfect. lets build that.", resumed.messages.first().text)
     }
@@ -607,6 +609,7 @@ class DashboardClientTest {
     private fun sessionResumeWebSocket(
         messages: String =
             """[{"role":"user","text":"perfect. lets build that."},{"role":"assistant","text":"on it."}]""",
+        expectedProfile: String? = null,
     ): MockResponse =
         MockResponse.Builder()
             .webSocketUpgrade(
@@ -618,8 +621,14 @@ class DashboardClientTest {
                             "stored-42",
                             request["params"]?.jsonObject?.get("session_id")?.jsonPrimitive?.content,
                         )
+                        expectedProfile?.let { profile ->
+                            assertEquals(
+                                profile,
+                                request["params"]?.jsonObject?.get("profile")?.jsonPrimitive?.content,
+                            )
+                        }
                         webSocket.send(
-                            """{"jsonrpc":"2.0","id":"session-resume","result":{"session_id":"runtime-7","resumed":"stored-42","messages":$messages}}""",
+                            """{"jsonrpc":"2.0","id":"session-resume","result":{"session_id":"runtime-7","resumed":"stored-42","info":{"profile_name":"default"},"messages":$messages}}""",
                         )
                     }
 

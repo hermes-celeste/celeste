@@ -15,6 +15,7 @@ import dev.hazydreams.hermesceleste.network.GatewayConnectionState
 import dev.hazydreams.hermesceleste.network.GatewayCredential
 import dev.hazydreams.hermesceleste.network.GatewayEvent
 import dev.hazydreams.hermesceleste.network.StoredSession
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -24,11 +25,15 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.resetMain
+import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
@@ -246,7 +251,7 @@ class CelesteViewModelTest {
         assertEquals("runtime-new-2", promptParams["session_id"]?.jsonPrimitive?.content)
 
         gateway.resumePayload = Json.parseToJsonElement(
-            """{"session_id":"runtime-resumed","resumed":"stored-new-2","running":false,"status":"idle","inflight":null,"messages":[]}""",
+            """{"session_id":"runtime-resumed","resumed":"stored-new-2","running":false,"status":"idle","info":{"profile_name":"work"},"inflight":null,"messages":[]}""",
         ) as JsonObject
         gateway.disconnect("after first prompt")
         advanceUntilIdle()
@@ -267,8 +272,239 @@ class CelesteViewModelTest {
         assertEquals("and still arriving", suffix)
     }
 
+    @Test
+    fun uncertainSteerResolvesFromAuthoritativeCorrectionsWithoutResending() = runTest {
+        val gateway = FakeGateway()
+        gateway.resumePayload = resumePayload(
+            messages = emptyList(),
+            running = true,
+            inflightAssistantText = "working",
+            inflightStreaming = true,
+        )
+        val viewModel = openConversation(gateway)
+        gateway.failNext("session.steer", IOException("socket lost after write"))
+        gateway.resumePayload = resumePayload(
+            messages = emptyList(),
+            running = true,
+            inflightAssistantText = "working",
+            inflightCorrections = listOf("guide the next step"),
+            inflightStreaming = true,
+        )
+
+        viewModel.updateDraft("guide the next step")
+        viewModel.steerMessage()
+        advanceUntilIdle()
+
+        assertEquals(1, gateway.methods.count { it == "session.steer" })
+        assertEquals("", viewModel.state.value.draft)
+        assertEquals(DeliveryStatus.Accepted, viewModel.state.value.deliveryStatus)
+        assertEquals(TurnState.Running, viewModel.state.value.turnState)
+        assertTrue(viewModel.state.value.messages.any { it.text == "guide the next step" })
+        viewModel.leaveConversation()
+    }
+
+    @Test
+    fun uncertainRedirectResolvesFromAuthoritativeCorrectionsWithoutFallingBackToStop() = runTest {
+        val gateway = FakeGateway()
+        gateway.resumePayload = resumePayload(
+            messages = emptyList(),
+            running = true,
+            supportsRedirect = true,
+        )
+        val viewModel = openConversation(gateway)
+        gateway.failNext("session.redirect", IOException("redirect response lost"))
+        gateway.resumePayload = resumePayload(
+            messages = emptyList(),
+            running = true,
+            inflightAssistantText = "working",
+            inflightCorrections = listOf("change direction"),
+            inflightStreaming = true,
+            supportsRedirect = true,
+        )
+
+        viewModel.updateDraft("change direction")
+        viewModel.redirectMessage()
+        advanceUntilIdle()
+
+        assertEquals(1, gateway.methods.count { it == "session.redirect" })
+        assertEquals(0, gateway.methods.count { it == "session.interrupt" })
+        assertEquals(0, gateway.methods.count { it == "session.steer" })
+        assertEquals("", viewModel.state.value.draft)
+        assertEquals(DeliveryStatus.Accepted, viewModel.state.value.deliveryStatus)
+        assertTrue(viewModel.state.value.messages.any { it.text == "change direction" })
+        viewModel.leaveConversation()
+    }
+
+    @Test
+    fun uncertainQueueResolutionPreservesGatewayFifoOrderWithoutResending() = runTest {
+        val gateway = FakeGateway()
+        gateway.resumePayload = resumePayload(messages = emptyList(), running = true)
+        val viewModel = openConversation(gateway)
+        gateway.failNext("prompt.submit", IOException("queue response lost"))
+        gateway.resumePayload = resumePayload(
+            messages = emptyList(),
+            running = true,
+            queuedUserTexts = listOf("queue first", "queue second"),
+        )
+
+        viewModel.updateDraft("queue first")
+        viewModel.queueMessage()
+        advanceUntilIdle()
+
+        assertEquals(1, gateway.methods.count { it == "prompt.submit" })
+        assertEquals(
+            listOf("queue first", "queue second"),
+            viewModel.state.value.messages.map { it.text },
+        )
+        assertEquals("", viewModel.state.value.draft)
+        assertEquals(DeliveryStatus.Accepted, viewModel.state.value.deliveryStatus)
+        viewModel.leaveConversation()
+    }
+
+    @Test
+    fun stopWinsCorrectionRaceAndDoesNotResendTheCorrection() = runTest {
+        val gateway = FakeGateway()
+        gateway.resumePayload = resumePayload(messages = emptyList(), running = true)
+        val viewModel = openConversation(gateway)
+        gateway.steerGate = CompletableDeferred()
+        viewModel.updateDraft("keep this draft")
+        viewModel.steerMessage()
+        runCurrent()
+
+        gateway.resumePayload = resumePayload(messages = emptyList(), running = false)
+        viewModel.interrupt()
+        advanceUntilIdle()
+
+        assertEquals(1, gateway.methods.count { it == "session.steer" })
+        assertEquals(1, gateway.methods.count { it == "session.interrupt" })
+        assertEquals(TurnState.Idle, viewModel.state.value.turnState)
+        assertEquals("keep this draft", viewModel.state.value.draft)
+        assertTrue(viewModel.state.value.errorMessage.orEmpty().contains("correction"))
+
+        gateway.steerGate?.complete(Unit)
+        advanceUntilIdle()
+        assertEquals(1, gateway.methods.count { it == "session.steer" })
+        assertEquals("keep this draft", viewModel.state.value.draft)
+        viewModel.leaveConversation()
+    }
+
+    @Test
+    fun lateCorrectionFromAnOldGatewayGenerationCannotResolveTheNewProjection() = runTest {
+        val gateway = FakeGateway()
+        gateway.resumePayload = resumePayload(messages = emptyList(), running = true)
+        val viewModel = openConversation(gateway)
+        gateway.steerGate = CompletableDeferred()
+        viewModel.updateDraft("generation-bound guidance")
+        viewModel.steerMessage()
+        runCurrent()
+
+        gateway.resumePayload = resumePayload(messages = emptyList(), running = false)
+        gateway.disconnect("replace this socket")
+        advanceUntilIdle()
+        gateway.steerGate?.complete(Unit)
+        advanceUntilIdle()
+
+        assertEquals(1, gateway.methods.count { it == "session.steer" })
+        assertEquals("generation-bound guidance", viewModel.state.value.draft)
+        assertEquals(DeliveryStatus.Rejected, viewModel.state.value.deliveryStatus)
+        assertEquals(TurnState.Idle, viewModel.state.value.turnState)
+        viewModel.leaveConversation()
+    }
+
+    @Test
+    fun mismatchedResumeProfileCannotReconcileAStoreIdCollision() = runTest {
+        val gateway = FakeGateway()
+        gateway.resumePayload = resumePayload(messages = emptyList(), running = true)
+        val viewModel = openConversation(gateway)
+        gateway.failNext("session.steer", IOException("steer response lost"))
+        gateway.resumePayloads += resumePayload(
+            messages = listOf(ConversationMessage(role = "user", text = "wrong profile")),
+            running = true,
+            profile = "work",
+        )
+        gateway.resumePayloads += resumePayload(
+            messages = emptyList(),
+            running = false,
+            profile = "default",
+        )
+
+        viewModel.updateDraft("profile-scoped guidance")
+        viewModel.steerMessage()
+        advanceUntilIdle()
+
+        assertEquals("default", viewModel.state.value.activeSummary?.profile)
+        assertFalse(viewModel.state.value.messages.any { it.text == "wrong profile" })
+        assertEquals("profile-scoped guidance", viewModel.state.value.draft)
+        assertEquals(DeliveryStatus.Rejected, viewModel.state.value.deliveryStatus)
+        assertEquals(1, gateway.methods.count { it == "session.steer" })
+        viewModel.leaveConversation()
+    }
+
+    @Test
+    fun mismatchedResumeOriginCannotReconcileAStoreIdCollision() = runTest {
+        val gateway = FakeGateway()
+        gateway.resumePayload = resumePayload(
+            messages = emptyList(),
+            running = true,
+            origin = "http://hermes.test:9119/",
+        )
+        val viewModel = openConversation(gateway)
+        gateway.failNext("session.steer", IOException("steer response lost"))
+        gateway.resumePayloads += resumePayload(
+            messages = listOf(ConversationMessage(role = "user", text = "wrong origin")),
+            running = true,
+            origin = "http://other-hermes.test:9119",
+        )
+        gateway.resumePayloads += resumePayload(
+            messages = emptyList(),
+            running = false,
+        )
+
+        viewModel.updateDraft("origin-scoped guidance")
+        viewModel.steerMessage()
+        advanceUntilIdle()
+
+        assertFalse(viewModel.state.value.messages.any { it.text == "wrong origin" })
+        assertEquals("origin-scoped guidance", viewModel.state.value.draft)
+        assertEquals(DeliveryStatus.Rejected, viewModel.state.value.deliveryStatus)
+        assertEquals(1, gateway.methods.count { it == "session.steer" })
+        viewModel.leaveConversation()
+    }
+
+    @Test
+    fun lateResultFromAReplacedGatewayOriginCannotMutateAReopenedCollision() = runTest {
+        val firstGateway = FakeGateway()
+        firstGateway.resumePayload = resumePayload(messages = emptyList(), running = true)
+        val dashboard = FakeDashboard(firstGateway)
+        val viewModel = openConversation(dashboard)
+        firstGateway.steerGate = CompletableDeferred()
+        viewModel.updateDraft("old gateway guidance")
+        viewModel.steerMessage()
+        runCurrent()
+
+        val secondGateway = FakeGateway()
+        secondGateway.resumePayload = resumePayload(
+            messages = listOf(ConversationMessage(role = "user", text = "new gateway")),
+            running = false,
+        )
+        dashboard.gateway = secondGateway
+        viewModel.leaveConversation()
+        viewModel.openSession(dashboard.session)
+        advanceUntilIdle()
+        firstGateway.steerGate?.complete(Unit)
+        advanceUntilIdle()
+
+        assertEquals("new gateway", viewModel.state.value.messages.single().text)
+        assertFalse(viewModel.state.value.messages.any { it.text == "old gateway guidance" })
+        assertEquals(0, secondGateway.methods.count { it == "session.steer" })
+        viewModel.leaveConversation()
+    }
+
     private suspend fun openConversation(gateway: FakeGateway): CelesteViewModel {
-        val dashboard = FakeDashboard(gateway)
+        return openConversation(FakeDashboard(gateway))
+    }
+
+    private suspend fun openConversation(dashboard: FakeDashboard): CelesteViewModel {
         val viewModel = CelesteViewModel(
             dashboard = dashboard,
             reconnectDelayMillis = { _, _ -> 0L },
@@ -281,7 +517,7 @@ class CelesteViewModelTest {
     }
 
     private class FakeDashboard(
-        private val gateway: FakeGateway,
+        var gateway: FakeGateway,
         private val authRequired: Boolean = false,
     ) : DashboardService {
         var profileFailure: Throwable? = null
@@ -348,11 +584,17 @@ class CelesteViewModelTest {
 
         val methods = mutableListOf<String>()
         val requests = mutableListOf<Pair<String, JsonObject>>()
+        private val failures = mutableMapOf<String, MutableList<Throwable>>()
         var connectCount = 0
         var createCount = 0
         var failHealthCheck = false
         var connectFailure: Throwable? = null
-        var resumePayload: JsonObject = resumePayload(messages = emptyList(), running = false)
+        var resumePayload: JsonObject = CelesteViewModelTest.resumePayload(messages = emptyList(), running = false)
+        val resumePayloads = mutableListOf<JsonObject>()
+        var steerGate: CompletableDeferred<Unit>? = null
+        var redirectGate: CompletableDeferred<Unit>? = null
+        var promptGate: CompletableDeferred<Unit>? = null
+        var eventSessionId = "runtime-7"
 
         override suspend fun connect() {
             connectCount += 1
@@ -367,8 +609,19 @@ class CelesteViewModelTest {
         ): JsonElement {
             methods += method
             requests += method to params
+            failures[method]?.let { queuedFailures ->
+                if (queuedFailures.isNotEmpty()) throw queuedFailures.removeAt(0)
+            }
             return when (method) {
-                "session.resume" -> resumePayload
+                "session.resume" -> {
+                    val payload = if (resumePayloads.isEmpty()) {
+                        resumePayload
+                    } else {
+                        resumePayloads.removeAt(0)
+                    }
+                    eventSessionId = payload["session_id"]?.jsonPrimitive?.content ?: eventSessionId
+                    payload
+                }
                 "session.create" -> {
                     createCount += 1
                     buildJsonObject {
@@ -384,9 +637,18 @@ class CelesteViewModelTest {
                     }
                     buildJsonObject { put("sessions", "healthy") }
                 }
-                "prompt.submit" -> buildJsonObject { put("status", "streaming") }
-                "session.steer" -> buildJsonObject { put("status", "queued") }
-                "session.redirect" -> buildJsonObject { put("status", "redirected") }
+                "prompt.submit" -> {
+                    promptGate?.await()
+                    buildJsonObject { put("status", "streaming") }
+                }
+                "session.steer" -> {
+                    steerGate?.await()
+                    buildJsonObject { put("status", "queued") }
+                }
+                "session.redirect" -> {
+                    redirectGate?.await()
+                    buildJsonObject { put("status", "redirected") }
+                }
                 "session.interrupt" -> buildJsonObject { put("status", "interrupted") }
                 else -> buildJsonObject {}
             }
@@ -400,10 +662,14 @@ class CelesteViewModelTest {
             mutableEvents.tryEmit(
                 GatewayEvent(
                     type = type,
-                    sessionId = "runtime-7",
+                    sessionId = eventSessionId,
                     payload = Json.parseToJsonElement(payload) as JsonObject,
                 ),
             )
+        }
+
+        fun failNext(method: String, error: Throwable) {
+            failures.getOrPut(method) { mutableListOf() } += error
         }
 
         fun disconnect(reason: String) {
@@ -415,13 +681,60 @@ class CelesteViewModelTest {
         private fun resumePayload(
             messages: List<ConversationMessage>,
             running: Boolean,
-        ): JsonObject {
-            val encodedMessages = messages.joinToString(",") { message ->
-                """{"id":${Json.encodeToString(message.id ?: "")},"role":${Json.encodeToString(message.role)},"text":${Json.encodeToString(message.text)}}"""
+            profile: String = "default",
+            runtimeSessionId: String = "runtime-7",
+            storedSessionId: String = "stored-42",
+            inflightUserText: String = "",
+            inflightAssistantText: String = "",
+            inflightCorrections: List<String> = emptyList(),
+            queuedUserTexts: List<String> = emptyList(),
+            inflightStreaming: Boolean = false,
+            supportsRedirect: Boolean = false,
+            origin: String? = null,
+        ): JsonObject = buildJsonObject {
+            put("session_id", runtimeSessionId)
+            put("resumed", storedSessionId)
+            put("running", running)
+            put("status", if (running) "streaming" else "idle")
+            put("info", buildJsonObject {
+                put("profile_name", profile)
+                origin?.let { put("origin", it) }
+            })
+            val hasInflight = inflightUserText.isNotBlank() ||
+                inflightAssistantText.isNotBlank() ||
+                inflightCorrections.isNotEmpty() ||
+                inflightStreaming
+            put("inflight", if (hasInflight) {
+                buildJsonObject {
+                    if (inflightUserText.isNotBlank()) put("user", inflightUserText)
+                    if (inflightAssistantText.isNotBlank()) put("assistant", inflightAssistantText)
+                    if (inflightStreaming) put("streaming", true)
+                    if (inflightCorrections.isNotEmpty()) {
+                        put("corrections", buildJsonArray {
+                            inflightCorrections.forEach { add(JsonPrimitive(it)) }
+                        })
+                    }
+                }
+            } else JsonNull)
+            if (queuedUserTexts.isNotEmpty()) {
+                put("queued", buildJsonArray {
+                    queuedUserTexts.forEach { add(JsonPrimitive(it)) }
+                })
             }
-            return Json.parseToJsonElement(
-                """{"session_id":"runtime-7","resumed":"stored-42","running":$running,"status":"${if (running) "streaming" else "idle"}","inflight":null,"messages":[$encodedMessages]}""",
-            ) as JsonObject
+            if (supportsRedirect) {
+                put("capabilities", buildJsonObject {
+                    put("supports_active_turn_redirect", true)
+                })
+            }
+            put("messages", buildJsonArray {
+                messages.forEach { message ->
+                    add(buildJsonObject {
+                        put("id", message.id.orEmpty())
+                        put("role", message.role)
+                        put("text", message.text)
+                    })
+                }
+            })
         }
     }
 }

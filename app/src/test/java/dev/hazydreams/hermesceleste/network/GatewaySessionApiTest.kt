@@ -5,12 +5,14 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -46,18 +48,25 @@ class GatewaySessionApiTest {
                 put("resumed", "stored-7")
                 put("running", true)
                 put(
+                    "info",
+                    buildJsonObject {
+                        put("profile_name", "work")
+                        put("origin", "https://hermes.test")
+                    },
+                )
+                put(
                     "inflight",
                     buildJsonObject {
                         put("user", "original prompt")
                         put("assistant", "before correction after correction")
                         put("streaming", true)
                         put("corrections", buildJsonArray {
-                            add("first correction")
-                            add("second correction")
+                            add(JsonPrimitive("first correction"))
+                            add(JsonPrimitive("second correction"))
                         })
                         put("correction_offsets", buildJsonArray {
-                            add(17)
-                            add(36)
+                            add(JsonPrimitive(17))
+                            add(JsonPrimitive(36))
                         })
                     },
                 )
@@ -69,9 +78,11 @@ class GatewaySessionApiTest {
             },
         )
 
-        val resumed = gateway.resumeStoredSession("stored-7")
+        val resumed = gateway.resumeStoredSession("stored-7", profile = "work")
 
         assertTrue(resumed.supportsActiveTurnRedirect)
+        assertEquals("work", resumed.profile)
+        assertEquals("https://hermes.test", resumed.origin)
         assertEquals("original prompt", resumed.inflightUserText)
         assertEquals(
             listOf("first correction", "second correction"),
@@ -79,10 +90,33 @@ class GatewaySessionApiTest {
         )
         assertEquals(listOf(17, 36), resumed.correctionOffsets)
         assertEquals("queued prompt", resumed.queuedUserText)
+        assertEquals(
+            "work",
+            gateway.requests.single { it.first == "session.resume" }
+                .second["profile"]?.jsonPrimitive?.content,
+        )
         assertNull(
             buildJsonObject { put("version", "new-enough") }
                 .explicitRedirectCapability(),
         )
+    }
+
+    @Test
+    fun resumeRequiresTheReturnedStoredIdentity() {
+        val missingIdentity = buildJsonObject {
+            put("session_id", "runtime-7")
+        }
+        assertThrows(java.io.IOException::class.java) {
+            decodeResumedSession(missingIdentity, "stored-7")
+        }
+
+        val differentIdentity = buildJsonObject {
+            put("session_id", "runtime-7")
+            put("resumed", "stored-other")
+        }
+        assertThrows(java.io.IOException::class.java) {
+            decodeResumedSession(differentIdentity, "stored-7")
+        }
     }
 
     @Test

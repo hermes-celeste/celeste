@@ -810,7 +810,7 @@ internal class CelesteViewModel(
         viewModelScope.launch {
             runCatching {
                 newGateway.connect()
-                reconcile(newGateway, summary.id)
+                reconcile(newGateway, summary.id, summary.profile)
             }.onSuccess {
                 if (gateway !== newGateway) return@onSuccess
                 reconnectAttempts = 0
@@ -1143,7 +1143,7 @@ internal class CelesteViewModel(
                 )
                 if (!definiteRejection && gateway === activeGateway) {
                     val reconciliation = runCatching {
-                        reconcile(activeGateway, operation.storedSessionId)
+                        reconcile(activeGateway, operation.storedSessionId, operation.profile)
                     }
                     if (reconciliation.isFailure && gateway === activeGateway) {
                         mutableState.value = mutableState.value.copy(
@@ -1233,7 +1233,7 @@ internal class CelesteViewModel(
                 activeGateway.interruptSession(runtimeId)
                 if (!isCurrentStop(stop)) return@runCatching
                 pendingStop = pendingStop?.copy(rpcAccepted = true, uncertain = false)
-                reconcile(activeGateway, storedId)
+                reconcile(activeGateway, storedId, stop.profile)
             }.onSuccess {
                 val currentStop = pendingStop
                 if (currentStop == null || !isCurrentStop(currentStop)) return@onSuccess
@@ -1308,7 +1308,13 @@ internal class CelesteViewModel(
                     params = buildJsonObject { put("limit", 1) },
                     timeoutMillis = 8_000,
                 )
-                if (currentSessionCanResume) reconcile(activeGateway, storedSessionId)
+                if (currentSessionCanResume) {
+                    reconcile(
+                        activeGateway,
+                        storedSessionId,
+                        mutableState.value.activeSummary?.profile,
+                    )
+                }
             }
             if (health.isFailure && gateway === activeGateway) {
                 val wasRunning = mutableState.value.turnState == TurnState.Running
@@ -1385,17 +1391,34 @@ internal class CelesteViewModel(
         }
     }
 
-    private suspend fun reconcile(activeGateway: GatewayConnection, storedSessionId: String) {
+    private suspend fun reconcile(
+        activeGateway: GatewayConnection,
+        storedSessionId: String,
+        expectedProfile: String? = null,
+    ) {
         val generation = gatewayGeneration
         if (!isCurrentGateway(activeGateway, generation)) return
+        val profile = (expectedProfile
+            ?: mutableState.value.activeSummary?.profile
+            ?: mutableState.value.selectedProfile)
+            .trim()
+            .ifBlank { "default" }
+        val expectedOrigin = normalizedEndpoint()
         reconciling = true
         bufferedEvents.clear()
         var events = emptyList<GatewayEvent>()
         try {
-            val resumed = activeGateway.resumeStoredSession(storedSessionId)
+            val resumed = activeGateway.resumeStoredSession(storedSessionId, profile)
             if (!isCurrentGateway(activeGateway, generation)) return
             if (resumed.storedSessionId != storedSessionId) {
                 throw IOException("Hermes resumed a different conversation.")
+            }
+            val resumedProfile = resumed.profile?.trim().orEmpty()
+            if (resumedProfile.isBlank() || resumedProfile != profile) {
+                throw IOException("Hermes resumed this conversation in a different profile.")
+            }
+            if (resumed.origin != null && !resumeOriginMatches(resumed.origin, expectedOrigin)) {
+                throw IOException("Hermes resumed this conversation from a different gateway origin.")
             }
             applyResumedSession(resumed, activeGateway, generation)
             events = bufferedEvents.toList()
@@ -1411,6 +1434,14 @@ internal class CelesteViewModel(
 
     private fun isCurrentGateway(activeGateway: GatewayConnection, generation: Long): Boolean =
         gateway === activeGateway && gatewayGeneration == generation
+
+    private fun resumeOriginMatches(origin: String, expectedOrigin: String): Boolean {
+        val trimmedOrigin = origin.trim().trimEnd('/')
+        if (trimmedOrigin == expectedOrigin) return true
+        return runCatching {
+            DashboardUrlPolicy.normalize(trimmedOrigin).trimEnd('/') == expectedOrigin
+        }.getOrDefault(false)
+    }
 
 
     private enum class PendingOperationResolution {
@@ -1831,7 +1862,12 @@ internal class CelesteViewModel(
                 val result = runCatching {
                     activeGateway.connect()
                     if (currentSessionCanResume) {
-                        reconcile(activeGateway, storedSessionId)
+                        reconcile(
+                            activeGateway,
+                            storedSessionId,
+                            mutableState.value.activeSummary?.profile
+                                ?: mutableState.value.selectedProfile,
+                        )
                     } else {
                         recreateBlankSession(activeGateway, mutableState.value.selectedProfile)
                     }

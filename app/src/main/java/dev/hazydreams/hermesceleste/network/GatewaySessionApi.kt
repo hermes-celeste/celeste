@@ -85,18 +85,23 @@ suspend fun GatewayConnection.createSession(profile: String): CreatedSession {
     )
 }
 
-suspend fun GatewayConnection.resumeStoredSession(storedSessionId: String): ResumedSession {
+suspend fun GatewayConnection.resumeStoredSession(
+    storedSessionId: String,
+    profile: String? = null,
+): ResumedSession {
     require(storedSessionId.isNotBlank()) { "Choose a Hermes session to open." }
+    val selectedProfile = profile?.trim()?.takeIf(String::isNotBlank)
     val result = request(
         method = "session.resume",
         params = buildJsonObject {
             put("session_id", storedSessionId)
             put("cols", 96)
             put("source", "android")
+            selectedProfile?.let { put("profile", it) }
         },
         timeoutMillis = 30_000,
     ).asObject("Hermes returned no resumed session.")
-    return decodeResumedSession(result, storedSessionId)
+    return decodeResumedSession(result, storedSessionId, selectedProfile)
 }
 
 suspend fun GatewayConnection.submitPrompt(runtimeSessionId: String, text: String): JsonObject {
@@ -269,6 +274,7 @@ private data class DecodedInflightSnapshot(
 internal fun decodeResumedSession(
     result: JsonObject,
     requestedStoredSessionId: String,
+    expectedProfile: String? = null,
 ): ResumedSession {
     val runtimeId = result.string("session_id")
         ?.takeIf(String::isNotBlank)
@@ -286,13 +292,24 @@ internal fun decodeResumedSession(
     val queuedUserTexts = decodeQueuedUserTexts(
         result["queued"] ?: result["queued_prompts"],
     )
+    val profile = result.string("profile")
+        ?: result.string("profile_name")
+        ?: result.string("profile_id")
+        ?: info?.string("profile_name")
+        ?: info?.string("profile")
+    val origin = result.string("origin") ?: info?.string("origin")
 
-    return ResumedSession(
+    val resumedStoredSessionId = result.string("resumed")
+        ?: result.string("stored_session_id")
+        ?: result.string("session_key")
+        ?: throw IOException("Hermes returned no stored conversation identity.")
+    if (resumedStoredSessionId != requestedStoredSessionId) {
+        throw IOException("Hermes resumed a different conversation.")
+    }
+
+    val resumed = ResumedSession(
         runtimeSessionId = runtimeId,
-        storedSessionId = result.string("resumed")
-            ?: result.string("stored_session_id")
-            ?: result.string("session_key")
-            ?: requestedStoredSessionId,
+        storedSessionId = resumedStoredSessionId,
         messages = decodeGatewayMessages(result["messages"]?.jsonArray.orEmpty()),
         running = running,
         status = status,
@@ -306,7 +323,14 @@ internal fun decodeResumedSession(
         queuedUserText = queuedUserTexts.firstOrNull().orEmpty(),
         hasLiveProjection = inflightSnapshot != null || queuedUserTexts.isNotEmpty(),
         supportsActiveTurnRedirect = result.explicitRedirectCapability() == true,
+        profile = profile?.takeIf(String::isNotBlank),
+        origin = origin?.takeIf(String::isNotBlank),
     )
+    val selectedProfile = expectedProfile?.trim()?.takeIf(String::isNotBlank)
+    if (selectedProfile != null && resumed.profile?.trim() != selectedProfile) {
+        throw IOException("Hermes resumed this conversation in a different profile.")
+    }
+    return resumed
 }
 
 internal fun decodeInflightCorrections(element: JsonElement?): List<InflightCorrection> {

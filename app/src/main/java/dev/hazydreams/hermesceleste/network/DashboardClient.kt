@@ -106,6 +106,10 @@ data class ResumedSession(
     val queuedUserText: String = "",
     val hasLiveProjection: Boolean = false,
     val supportsActiveTurnRedirect: Boolean = false,
+    /** Authoritative profile identity returned by session.resume's session.info. */
+    val profile: String? = null,
+    /** Optional gateway-provided origin identity, when the server exposes one. */
+    val origin: String? = null,
 )
 
 sealed interface GatewayCredential {
@@ -439,11 +443,14 @@ class DashboardClient(
         baseUrl: String,
         credential: GatewayCredential,
         storedSessionId: String,
+        profile: String? = null,
     ): ResumedSession {
         require(storedSessionId.isNotBlank()) { "Choose a Hermes session to open." }
         val authParameter = resolveWebSocketCredential(baseUrl, credential)
         val wsUrl = buildWebSocketUrl(baseUrl, authParameter?.first, authParameter?.second)
-        return withTimeout(20_000) { requestSessionResume(wsUrl, storedSessionId) }
+        return withTimeout(20_000) {
+            requestSessionResume(wsUrl, storedSessionId, profile)
+        }
     }
 
     private suspend fun resolveWebSocketCredential(
@@ -532,7 +539,9 @@ class DashboardClient(
     private suspend fun requestSessionResume(
         wsUrl: String,
         storedSessionId: String,
+        profile: String? = null,
     ): ResumedSession {
+        val selectedProfile = profile?.trim()?.takeIf(String::isNotBlank)
         val frame = buildJsonObject {
             put("jsonrpc", "2.0")
             put("id", SESSION_RESUME_REQUEST_ID)
@@ -543,6 +552,7 @@ class DashboardClient(
                     put("session_id", storedSessionId)
                     put("cols", 80)
                     put("source", "android")
+                    selectedProfile?.let { put("profile", it) }
                 },
             )
         }
@@ -558,7 +568,11 @@ class DashboardClient(
             if (runtimeId.isBlank()) {
                 throw InvalidDashboardResponse("Hermes returned no runtime session identity.")
             }
-            decodeResumedSession(result, storedSessionId)
+            decodeResumedSession(
+                result,
+                storedSessionId,
+                selectedProfile,
+            )
         }
     }
 
