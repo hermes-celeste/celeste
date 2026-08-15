@@ -368,6 +368,10 @@ internal object AgentActivityReducer {
                 // without retaining the hidden body in memory.
                 ActivityCapabilityState.ToolAndServerReasoning
             }
+            projection.capability == ActivityCapabilityState.LegacyToolOnly ->
+                ActivityCapabilityState.LegacyToolOnly
+            projection.capability == ActivityCapabilityState.ToolOnly ->
+                ActivityCapabilityState.ToolOnly
             else -> capabilityForItems(rekeyed)
         }
         return projection.copy(
@@ -378,6 +382,7 @@ internal object AgentActivityReducer {
             items = rekeyed,
             source = when {
                 capability == ActivityCapabilityState.Unsupported -> ActivitySource.Unavailable
+                capability == ActivityCapabilityState.LegacyToolOnly -> ActivitySource.Legacy
                 rekeyed.any { item ->
                     item is ToolActivity && item.correlation != CorrelationQuality.ExactId
                 } -> ActivitySource.Legacy
@@ -390,7 +395,8 @@ internal object AgentActivityReducer {
                 capability == ActivityCapabilityState.Unsupported -> ActivityPresentationState.Unavailable
                 running || rekeyed.any(ActivityItem::isInFlight) -> ActivityPresentationState.Running
                 rekeyed.isNotEmpty() -> ActivityPresentationState.Available
-                capability == ActivityCapabilityState.ToolAndServerReasoning -> ActivityPresentationState.Available
+                capability != ActivityCapabilityState.Unknown &&
+                    capability != ActivityCapabilityState.Stale -> ActivityPresentationState.Available
                 else -> ActivityPresentationState.Discovering
             },
         )
@@ -437,6 +443,25 @@ internal object AgentActivityReducer {
             capability = ActivityCapabilityState.Unsupported,
             presentation = ActivityPresentationState.Unavailable,
         )
+
+    /**
+     * Resolve a completed resume with no activity evidence without leaving the
+     * user at the indefinite discovery state. Explicit legacy/tool capability
+     * remains truthful even when this particular session has no activity rows.
+     */
+    fun markAbsent(projection: AgentActivityProjection): AgentActivityProjection = when {
+        projection.capability == ActivityCapabilityState.Unknown -> markUnavailable(projection)
+        projection.capability == ActivityCapabilityState.LegacyToolOnly -> projection.copy(
+            source = ActivitySource.Legacy,
+            presentation = ActivityPresentationState.Available,
+        )
+        projection.capability == ActivityCapabilityState.Unsupported -> markUnavailable(projection)
+        projection.presentation == ActivityPresentationState.Stale -> projection
+        else -> projection.copy(
+            source = ActivitySource.Resumed,
+            presentation = ActivityPresentationState.Available,
+        )
+    }
 
     /** Settle cards when Hermes ends a turn without sending tool.complete. */
     fun settleOpenItems(
@@ -536,7 +561,7 @@ internal object AgentActivityReducer {
     ): AgentActivityProjection {
         val rawName = payload.firstString("name", "tool_name")?.trim().orEmpty()
         if (rawName.isBlank()) return unavailableAfterMalformed(projection)
-        val name = safeToolName(rawName)
+        val name = safeToolName(rawName, payload.toolNameIsUnsafe())
         val callId = payload.activityCallId()
         val effectiveLegacy = legacy || callId == null
         val input = payload.detailFrom(
@@ -612,7 +637,11 @@ internal object AgentActivityReducer {
             keys = listOf("preview", "progress", "delta", "text", "context"),
             limit = TOOL_ACTIVITY_DETAIL_LIMIT,
         ) ?: return unavailableAfterMalformed(projection)
-        val fallbackName = if (rawName.isBlank()) "Tool activity" else safeToolName(rawName)
+        val fallbackName = if (rawName.isBlank()) {
+            "Tool activity"
+        } else {
+            safeToolName(rawName, payload.toolNameIsUnsafe())
+        }
         val items = projection.items.toMutableList()
         val candidates = items.withIndex().filter { (_, item) ->
             item is ToolActivity &&
@@ -672,10 +701,13 @@ internal object AgentActivityReducer {
         now: Instant,
     ): AgentActivityProjection {
         val rawName = payload.firstString("name", "tool_name")?.trim().orEmpty()
-        val name = safeToolName(rawName.ifBlank { "Tool activity" })
+        val name = safeToolName(
+            rawName.ifBlank { "Tool activity" },
+            payload.toolNameIsUnsafe(),
+        )
         val callId = payload.activityCallId()
         val output = payload.detailFrom(
-            keys = listOf("result_text", "summary", "output", "result", "error"),
+            keys = listOf("result_text", "summary", "output", "result", "error", "failure_reason"),
             limit = TOOL_ACTIVITY_DETAIL_LIMIT,
         )
         val input = payload.detailFrom(
@@ -684,9 +716,25 @@ internal object AgentActivityReducer {
         )
         val failed = payload.booleanLike("is_error", "failed") ||
             payload.firstString("status")?.lowercase() in setOf("error", "failed", "failure") ||
-            payload.firstString("error")?.isNotBlank() == true
+            payload.firstString("error", "failure_reason")?.isNotBlank() == true
         val phase = if (failed) ToolPhase.Failed else ToolPhase.Completed
         val items = projection.items.toMutableList()
+
+        // A resume snapshot may already contain the terminal row for this
+        // completion. Old gateways commonly replay the same tool.complete
+        // without an event ID, so match the terminal row by its safe identity
+        // and displayed fields before creating another occurrence.
+        val terminalReplay = terminalToolReplayIndex(
+            items = items,
+            callId = callId,
+            rawName = rawName,
+            name = name,
+            input = input,
+            output = output,
+            phase = phase,
+        )
+        if (terminalReplay >= 0) return projection
+
         val candidates = when {
             callId != null -> items.withIndex().filter { (_, item) ->
                 item is ToolActivity && item.callId == callId && item.phase.isInFlight()
@@ -745,6 +793,30 @@ internal object AgentActivityReducer {
         )
     }
 
+    private fun terminalToolReplayIndex(
+        items: List<ActivityItem>,
+        callId: String?,
+        rawName: String,
+        name: String,
+        input: DisplayedDetail?,
+        output: DisplayedDetail?,
+        phase: ToolPhase,
+    ): Int {
+        val candidates = items.withIndex().filter { (_, item) ->
+            item is ToolActivity &&
+                item.phase.isTerminal() &&
+                (callId == null || item.callId == callId) &&
+                (rawName.isBlank() || item.name == name)
+        }
+        val matches = candidates.filter { (_, item) ->
+            val tool = item as ToolActivity
+            tool.phase == phase &&
+                (input == null || tool.input?.text == input.text) &&
+                (output == null || tool.output?.text == output.text)
+        }
+        return matches.singleOrNull()?.index ?: -1
+    }
+
     private fun applyReasoningSummary(
         projection: AgentActivityProjection,
         payload: JsonObject,
@@ -796,10 +868,13 @@ internal object AgentActivityReducer {
         val detail = payload.reasoningDetailFrom(listOf("text"), REASONING_ACTIVITY_DETAIL_LIMIT)
             ?: return projection.copy(serverReasoningAllowed = true)
         val items = projection.items.toMutableList()
-        val index = items.indexOfLast {
+        val streamingIndex = items.indexOfLast {
             it is ServerReasoningActivity &&
                 it.source == ReasoningSource.ServerFull &&
                 it.phase == ReasoningPhase.Streaming
+        }
+        val index = if (streamingIndex >= 0) streamingIndex else items.indexOfLast {
+            it is ServerReasoningActivity && it.phase != ReasoningPhase.Unavailable
         }
         if (index >= 0) {
             val existing = items[index] as ServerReasoningActivity
@@ -815,7 +890,12 @@ internal object AgentActivityReducer {
                     REASONING_ACTIVITY_DETAIL_LIMIT,
                 )
             }
-            items[index] = existing.copy(text = combined)
+            items[index] = existing.copy(
+                source = ReasoningSource.ServerFull,
+                phase = ReasoningPhase.Streaming,
+                text = combined,
+                serverLabel = existing.serverLabel ?: "Server-provided reasoning",
+            )
         } else {
             items += ServerReasoningActivity(
                 uiKey = nextReasoningKey(projection, items),
@@ -1021,7 +1101,8 @@ internal fun decodeGatewayActivity(elements: List<JsonElement>): List<ActivityIt
                 val callId = row.activityCallId()
                 val status = row.firstString("status")?.lowercase()
                 val failed = row.booleanLike("is_error", "failed") ||
-                    status in setOf("error", "failed", "failure")
+                    status in setOf("error", "failed", "failure") ||
+                    row.firstString("failure_reason")?.isNotBlank() == true
                 val running = !failed && (
                     row.booleanLike("pending", "running", "in_progress", "streaming") ||
                         status in setOf("started", "running", "in_progress", "streaming", "queued")
@@ -1029,7 +1110,10 @@ internal fun decodeGatewayActivity(elements: List<JsonElement>): List<ActivityIt
                 ToolActivity(
                     uiKey = "",
                     callId = callId,
-                    name = safeToolName(rawName.ifBlank { "Tool activity" }),
+                    name = safeToolName(
+                        rawName.ifBlank { "Tool activity" },
+                        row.toolNameIsUnsafe(),
+                    ),
                     phase = when {
                         failed -> ToolPhase.Failed
                         running -> ToolPhase.Running
@@ -1059,9 +1143,14 @@ internal fun decodeGatewayActivity(elements: List<JsonElement>): List<ActivityIt
                 // server-authored `reasoning` summary is eligible here.
                 val detail = row.reasoningDetailFrom(listOf("reasoning"), REASONING_ACTIVITY_DETAIL_LIMIT)
                     ?: return@mapNotNull null
+                // A persisted assistant `reasoning` field is not proof that the
+                // text was user-visible. Require either an explicit disclosure
+                // capability or the source-verified verbose marker; omission is
+                // deliberately fail-closed to protect provider/model reasoning.
+                val explicitCapability = row.reasoningDisplayCapability()
                 if (
-                    row.reasoningDisplayCapability() == false ||
-                    row.booleanValue("verbose") == false
+                    explicitCapability == false ||
+                    (explicitCapability != true && row.booleanValue("verbose") != true)
                 ) return@mapNotNull null
                 ServerReasoningActivity(
                     uiKey = "",
@@ -1104,7 +1193,7 @@ private fun JsonObject.reasoningDisplayCapability(): Boolean? {
 private fun JsonObject.isFailure(): Boolean =
     booleanLike("is_error", "failed") ||
         firstString("status")?.lowercase() in setOf("error", "failed", "failure") ||
-        firstString("error")?.isNotBlank() == true
+        firstString("error", "failure_reason")?.isNotBlank() == true
 
 private fun reasoningTextMatches(existing: String, incoming: String): Boolean =
     existing == incoming || existing.startsWith(incoming) || incoming.startsWith(existing)
@@ -1158,13 +1247,54 @@ private fun JsonElement.displayText(): String? = when (this) {
     else -> toString()
 }
 
-private fun safeToolName(raw: String): String {
+internal fun safeToolName(raw: String, unsafe: Boolean = false): String {
     val candidate = raw.trim()
-    if (candidate.isBlank()) return "Tool activity"
-    if (candidate.length > 80 || !candidate.matches(Regex("[A-Za-z0-9_.:-]+"))) {
+    if (candidate.isBlank() || unsafe) return "Tool activity"
+    if (
+        candidate.length > 80 ||
+        !candidate.matches(Regex("[A-Za-z0-9_.:-]+")) ||
+        sanitizeActivityText(candidate, 80) != candidate
+    ) {
         return "Tool activity"
     }
     return candidate.replace('_', ' ')
+}
+
+internal fun JsonObject.toolNameIsUnsafe(): Boolean {
+    fun marker(value: JsonObject): Boolean {
+        val unsafeKeys = listOf(
+            "unsafe_name",
+            "unsafe_tool_name",
+            "name_unsafe",
+            "sensitive_name",
+            "name_sensitive",
+            "tool_name_sensitive",
+            "private_name",
+        )
+        val safeKeys = listOf("name_safe", "tool_name_safe", "safe_tool_name", "name_is_safe")
+        if (unsafeKeys.any { key -> booleanMarker(value[key]) == true }) return true
+        if (safeKeys.any { key -> booleanMarker(value[key]) == false }) return true
+        if (booleanMarker(value["sensitive"]) == true || booleanMarker(value["private"]) == true) {
+            return true
+        }
+        return false
+    }
+
+    if (marker(this)) return true
+    return listOf("tool", "tool_call", "metadata", "tool_metadata")
+        .mapNotNull { this[it] as? JsonObject }
+        .any(::marker)
+}
+
+private fun booleanMarker(element: JsonElement?): Boolean? {
+    val primitive = element as? JsonPrimitive ?: return null
+    return primitive.booleanOrNull ?: primitive.contentOrNull?.trim()?.lowercase()?.let {
+        when (it) {
+            "true", "1", "yes", "on" -> true
+            "false", "0", "no", "off" -> false
+            else -> null
+        }
+    }
 }
 
 private fun safeServerLabel(raw: String?): String? {

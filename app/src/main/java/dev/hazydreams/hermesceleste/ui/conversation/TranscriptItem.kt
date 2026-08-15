@@ -31,6 +31,7 @@ import dev.hazydreams.hermesceleste.network.ActivitySource
 import dev.hazydreams.hermesceleste.network.AgentActivityProjection
 import dev.hazydreams.hermesceleste.network.ConversationMessage
 import dev.hazydreams.hermesceleste.network.ToolActivity
+import dev.hazydreams.hermesceleste.network.safeToolName
 import dev.hazydreams.hermesceleste.ui.CelesteBlue
 import dev.hazydreams.hermesceleste.ui.CelesteCoral
 import dev.hazydreams.hermesceleste.ui.CelesteGoldText
@@ -66,16 +67,55 @@ internal fun transcriptMessagesForActivity(
     val toolMessageCount = messages.count { it.role == "tool" }
     if (toolMessageCount == 0) return messages
 
-    val projectedToolCount = projection?.items?.count { it is ToolActivity } ?: 0
+    val projectedTools = projection?.items?.filterIsInstance<ToolActivity>().orEmpty()
     val canRenderTools = projection != null &&
         projection.source != ActivitySource.Unavailable &&
         projection.capability != ActivityCapabilityState.Unsupported &&
         projection.presentation != ActivityPresentationState.Unavailable &&
-        projectedToolCount >= toolMessageCount
+        projectedToolsCorrelateToMessages(messages, projectedTools)
     return if (canRenderTools) {
         messages.filterNot { it.role == "tool" }
     } else {
         messages
+    }
+}
+
+private fun projectedToolsCorrelateToMessages(
+    messages: List<ConversationMessage>,
+    projectedTools: List<ToolActivity>,
+): Boolean {
+    val used = mutableSetOf<Int>()
+    return messages.filter { it.role == "tool" }.all { message ->
+        val expectedName = safeToolName(message.toolName ?: "Tool activity")
+        val named = projectedTools.withIndex().filter { (index, tool) ->
+            index !in used && tool.name == expectedName
+        }
+        if (named.isEmpty()) return@all false
+
+        val identityMatches = message.id?.takeIf(String::isNotBlank)?.let { messageId ->
+            named.filter { (_, tool) ->
+                tool.callId == messageId || tool.callId == messageId.removePrefix("row-")
+            }
+        }.orEmpty()
+        val detail = message.text.takeIf(String::isNotBlank)
+        val detailMatches = if (detail == null) {
+            emptyList()
+        } else {
+            named.filter { (_, tool) ->
+                tool.input?.text == detail ||
+                    tool.progress?.text == detail ||
+                    tool.output?.text == detail
+            }
+        }
+        val match = when {
+            identityMatches.size == 1 -> identityMatches.single()
+            detailMatches.size == 1 -> detailMatches.single()
+            detail != null -> return@all false
+            named.size == 1 -> named.single()
+            else -> return@all false
+        }
+        used += match.index
+        true
     }
 }
 
@@ -151,7 +191,7 @@ private fun ToolMessage(message: ConversationMessage) {
             .padding(horizontal = 15.dp, vertical = 13.dp),
     ) {
         MessageLabel(
-            message.toolName?.replace('_', ' ') ?: "Tool",
+            safeToolName(message.toolName ?: "Tool"),
             CelesteGoldText,
             message.pending,
         )

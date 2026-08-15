@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
@@ -303,6 +304,10 @@ private fun ToolCardHeader(item: ToolActivity, expanded: Boolean) {
             color = toolPhaseColor(item.phase),
             style = MaterialTheme.typography.labelSmall,
             fontWeight = FontWeight.SemiBold,
+            modifier = Modifier.semantics {
+                contentDescription = "Tool, ${activityAnnouncementPhase(item.phase)}"
+                liveRegion = LiveRegionMode.Polite
+            },
         )
         Spacer(Modifier.size(7.dp))
         Text(if (expanded) "⌃" else "⌄", color = CelesteBlue, fontSize = 17.sp)
@@ -331,6 +336,10 @@ private fun ReasoningCardHeader(item: ServerReasoningActivity, expanded: Boolean
             color = CelesteBlue,
             style = MaterialTheme.typography.labelSmall,
             fontWeight = FontWeight.SemiBold,
+            modifier = Modifier.semantics {
+                contentDescription = "Server-provided reasoning, ${reasoningAnnouncementPhase(item.phase)}"
+                liveRegion = LiveRegionMode.Polite
+            },
         )
         Spacer(Modifier.size(7.dp))
         Text(if (expanded) "⌃" else "⌄", color = CelesteBlue, fontSize = 17.sp)
@@ -379,11 +388,16 @@ private fun ActivityDetailBlock(label: String, detail: DisplayedDetail) {
                 Text(if (copied) "Displayed detail copied" else "Copy")
             }
         }
-        Text(
-            text = detail.text,
-            color = CelesteInk,
-            style = MaterialTheme.typography.bodySmall,
-        )
+        SelectionContainer {
+            Text(
+                text = detail.text,
+                color = CelesteInk,
+                style = MaterialTheme.typography.bodySmall,
+                modifier = Modifier.semantics {
+                    contentDescription = activityDetailContentDescription(label)
+                },
+            )
+        }
         if (detail.wasTruncated) {
             Text(
                 text = "More content is unavailable in this view.",
@@ -409,6 +423,23 @@ private fun DetailUnavailable() {
         style = MaterialTheme.typography.bodySmall,
     )
 }
+
+internal fun activityAnnouncementPhase(phase: ToolPhase): String = when (phase) {
+    ToolPhase.Started,
+    ToolPhase.Running -> "running"
+    ToolPhase.Completed -> "completed"
+    ToolPhase.Failed -> "error"
+    ToolPhase.Interrupted -> "interrupted"
+}
+
+internal fun reasoningAnnouncementPhase(phase: ReasoningPhase): String = when (phase) {
+    ReasoningPhase.Streaming -> "streaming"
+    ReasoningPhase.Complete -> "complete"
+    ReasoningPhase.Unavailable -> "unavailable"
+}
+
+internal fun activityDetailContentDescription(label: String): String =
+    "$label, selectable displayed detail"
 
 private fun activityPresentationLabel(state: ActivityPresentationState): String = when (state) {
     ActivityPresentationState.Unknown -> "Checking activity support"

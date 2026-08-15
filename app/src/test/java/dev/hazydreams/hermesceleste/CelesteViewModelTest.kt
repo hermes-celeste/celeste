@@ -8,6 +8,7 @@ import dev.hazydreams.hermesceleste.network.AuthenticationRejected
 import dev.hazydreams.hermesceleste.network.ActivityCapabilityState
 import dev.hazydreams.hermesceleste.network.ActivityDisclosurePreferenceStore
 import dev.hazydreams.hermesceleste.network.ActivityDisclosureScope
+import dev.hazydreams.hermesceleste.network.ActivityPresentationState
 import dev.hazydreams.hermesceleste.network.AuthProvider
 import dev.hazydreams.hermesceleste.network.ConversationMessage
 import dev.hazydreams.hermesceleste.network.CorrelationQuality
@@ -30,8 +31,10 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
+import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.resetMain
+import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
 import kotlinx.serialization.json.Json
@@ -60,6 +63,66 @@ class CelesteViewModelTest {
     @After
     fun tearDown() {
         Dispatchers.resetMain()
+    }
+
+    @Test
+    fun emptyActivitySnapshotTimesOutToUnavailableWithoutBlockingTheConversation() = runTest {
+        val gateway = FakeGateway()
+        val viewModel = openConversation(
+            gateway = gateway,
+            activityDiscoveryTimeoutMillis = 100L,
+        )
+        runCurrent()
+
+        assertEquals(
+            ActivityPresentationState.Discovering,
+            viewModel.state.value.agentActivity?.presentation,
+        )
+
+        advanceTimeBy(100L)
+        runCurrent()
+
+        assertEquals(
+            ActivityPresentationState.Unavailable,
+            viewModel.state.value.agentActivity?.presentation,
+        )
+        assertEquals(TurnState.Idle, viewModel.state.value.turnState)
+        viewModel.leaveConversation()
+    }
+
+    @Test
+    fun reasoningDeltasAreCoalescedIntoOneProjectionUpdate() = runTest {
+        val gateway = FakeGateway()
+        val viewModel = openConversation(
+            gateway = gateway,
+            reasoningCoalescingWindowMillis = 100L,
+        )
+        runCurrent()
+
+        gateway.emit(
+            "reasoning.delta",
+            """{"text":"<reasoning-one>","verbose":true}""",
+        )
+        gateway.emit(
+            "reasoning.delta",
+            """{"text":"<reasoning-two>","verbose":true}""",
+        )
+        runCurrent()
+        assertTrue(
+            viewModel.state.value.agentActivity?.items.orEmpty()
+                .filterIsInstance<ServerReasoningActivity>().isEmpty(),
+        )
+
+        advanceTimeBy(100L)
+        runCurrent()
+
+        val reasoning = viewModel.state.value.agentActivity?.items
+            ?.filterIsInstance<ServerReasoningActivity>()
+            ?.single()
+        assertEquals("<reasoning-one><reasoning-two>", reasoning?.text?.text)
+        assertEquals(1, viewModel.state.value.agentActivity?.items
+            ?.filterIsInstance<ServerReasoningActivity>()?.size)
+        viewModel.leaveConversation()
     }
 
     @Test
@@ -117,7 +180,7 @@ class CelesteViewModelTest {
     }
 
     @Test
-    fun reconnectRestoresActivityProjectionFromAuthoritativeSnapshot() = runTest {
+    fun reconnectRestoresActivityProjectionAndFallsBackWhenSnapshotIsEmpty() = runTest {
         val gateway = FakeGateway()
         val viewModel = openConversation(gateway)
         gateway.emit(
@@ -138,7 +201,7 @@ class CelesteViewModelTest {
         advanceUntilIdle()
 
         assertEquals(
-            dev.hazydreams.hermesceleste.network.ActivityPresentationState.Discovering,
+            ActivityPresentationState.Unavailable,
             viewModel.state.value.agentActivity?.presentation,
         )
         assertEquals(TurnState.Idle, viewModel.state.value.turnState)
@@ -406,6 +469,23 @@ class CelesteViewModelTest {
     }
 
     @Test
+    fun messageFailureReasonSurfacesAsAUserSafeErrorAndSettlesTheTurn() = runTest {
+        val gateway = FakeGateway()
+        val viewModel = openConversation(gateway)
+        viewModel.updateDraft("Trigger a synthetic failure")
+        viewModel.sendMessage()
+        gateway.emit(
+            "message.complete",
+            """{"status":"complete","failure_reason":"Synthetic failure detail"}""",
+        )
+        advanceUntilIdle()
+
+        assertEquals(TurnState.Idle, viewModel.state.value.turnState)
+        assertEquals("Synthetic failure detail", viewModel.state.value.errorMessage)
+        viewModel.leaveConversation()
+    }
+
+    @Test
     fun messageCompletionSettlesAnUnfinishedToolWithoutBlockingTheTurn() = runTest {
         val gateway = FakeGateway()
         val viewModel = openConversation(gateway)
@@ -431,12 +511,16 @@ class CelesteViewModelTest {
         gateway: FakeGateway,
         activityDisclosurePreferences: ActivityDisclosurePreferenceStore =
             InMemoryActivityDisclosurePreferenceStore(),
+        activityDiscoveryTimeoutMillis: Long = 1_000L,
+        reasoningCoalescingWindowMillis: Long = 75L,
     ): CelesteViewModel {
         val dashboard = FakeDashboard(gateway)
         val viewModel = CelesteViewModel(
             dashboard = dashboard,
             reconnectDelayMillis = { _, _ -> 0L },
             activityDisclosurePreferences = activityDisclosurePreferences,
+            activityDiscoveryTimeoutMillis = activityDiscoveryTimeoutMillis,
+            reasoningCoalescingWindowMillis = reasoningCoalescingWindowMillis,
         )
         viewModel.updateDashboardUrl("http://hermes.test:9119")
         viewModel.findDashboard()

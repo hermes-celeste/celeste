@@ -1,6 +1,7 @@
 package dev.hazydreams.hermesceleste.network
 
 import android.content.Context
+import android.content.SharedPreferences
 import java.security.MessageDigest
 
 /**
@@ -62,12 +63,14 @@ class InMemoryActivityDisclosurePreferenceStore(
     }
 }
 
-class AndroidActivityDisclosurePreferenceStore(
-    context: Context,
+class AndroidActivityDisclosurePreferenceStore private constructor(
+    private val preferences: SharedPreferences,
 ) : ActivityDisclosurePreferenceStore {
-    private val preferences = context.applicationContext.getSharedPreferences(
-        PREFERENCES_NAME,
-        Context.MODE_PRIVATE,
+    constructor(context: Context) : this(
+        context.applicationContext.getSharedPreferences(
+            PREFERENCES_NAME,
+            Context.MODE_PRIVATE,
+        ),
     )
 
     override fun isServerReasoningDisclosureEnabled(): Boolean =
@@ -93,9 +96,15 @@ class AndroidActivityDisclosurePreferenceStore(
     private fun scopedKey(scope: ActivityDisclosureScope): String =
         "$SCOPED_REASONING_DISCLOSURE_PREFIX${scope.stablePreferenceKey()}"
 
-    private companion object {
-        const val PREFERENCES_NAME = "celeste_activity_preferences"
-        const val GLOBAL_REASONING_DISCLOSURE_KEY = "server_reasoning_disclosure_enabled"
-        const val SCOPED_REASONING_DISCLOSURE_PREFIX = "server_reasoning_disclosure_enabled:"
+    companion object {
+        /** JVM tests use the real SharedPreferences contract with a fake backend. */
+        internal fun fromPreferences(
+            preferences: SharedPreferences,
+        ): AndroidActivityDisclosurePreferenceStore =
+            AndroidActivityDisclosurePreferenceStore(preferences)
+
+        private const val PREFERENCES_NAME = "celeste_activity_preferences"
+        private const val GLOBAL_REASONING_DISCLOSURE_KEY = "server_reasoning_disclosure_enabled"
+        private const val SCOPED_REASONING_DISCLOSURE_PREFIX = "server_reasoning_disclosure_enabled:"
     }
 }

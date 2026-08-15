@@ -14,6 +14,40 @@ class AgentActivityTest {
     private val now = Instant.parse("2026-08-15T12:00:00Z")
 
     @Test
+    fun statusCapabilityDecodingDistinguishesUnknownUnsupportedAndSupportedModes() {
+        assertEquals(
+            ActivityCapabilityState.Unknown,
+            decodeActivityCapability(buildJsonObject {}),
+        )
+        assertEquals(
+            ActivityCapabilityState.Unsupported,
+            decodeActivityCapability(buildJsonObject { put("activity_supported", false) }),
+        )
+        assertEquals(
+            ActivityCapabilityState.ToolOnly,
+            decodeActivityCapability(
+                buildJsonObject {
+                    put(
+                        "activity",
+                        buildJsonObject {
+                            put("supported", true)
+                            put("tools", true)
+                        },
+                    )
+                },
+            ),
+        )
+        assertEquals(
+            ActivityCapabilityState.ToolAndServerReasoning,
+            decodeActivityCapability(
+                buildJsonObject {
+                    put("activity", buildJsonObject { put("server_reasoning", true) })
+                },
+            ),
+        )
+    }
+
+    @Test
     fun sanitizerRedactsCredentialsAndBoundsUnicodeWithoutRestoration() {
         val raw = "Bearer synthetic-bearer-token api_key=synthetic-api-key " + "😀".repeat(30)
 
@@ -390,6 +424,56 @@ class AgentActivityTest {
     }
 
     @Test
+    fun terminalReplayWithoutEventIdDoesNotCreateSecondCard() {
+        val projection = initialActivityProjection(
+            originKey = "https://hermes.test",
+            profile = "default",
+            storedSessionId = "stored-42",
+            runtimeSessionId = "runtime-7",
+        )
+        val terminalSnapshot = AgentActivityReducer.applySnapshot(
+            projection = projection,
+            items = listOf(
+                ToolActivity(
+                    uiKey = "",
+                    callId = null,
+                    name = "terminal",
+                    phase = ToolPhase.Completed,
+                    input = null,
+                    output = sanitizeActivityDetail("<tool-output>", TOOL_ACTIVITY_DETAIL_LIMIT),
+                    startedAt = null,
+                    finishedAt = now,
+                    correlation = CorrelationQuality.LegacyName,
+                ),
+            ),
+            binding = ActivityBinding(
+                originKey = "https://hermes.test/",
+                profile = "default",
+                storedSessionId = "stored-42",
+                runtimeSessionId = "runtime-7",
+            ),
+            running = false,
+            now = now,
+        )
+
+        val replay = reduceActivityEvent(
+            terminalSnapshot,
+            event(
+                type = "tool.complete",
+                sessionId = "runtime-7",
+                payload = buildJsonObject {
+                    put("name", "terminal")
+                    put("output", "<tool-output>")
+                },
+            ),
+            now = now,
+        )
+
+        assertEquals(terminalSnapshot, replay)
+        assertEquals(1, replay.items.filterIsInstance<ToolActivity>().size)
+    }
+
+    @Test
     fun malformedActivityEventDowngradesOnlyActivityPresentation() {
         val projection = initialActivityProjection(
             originKey = "https://hermes.test",
@@ -467,6 +551,23 @@ class AgentActivityTest {
     }
 
     @Test
+    fun snapshotReasoningWithoutDisclosureProofIsOmitted() {
+        val items = decodeGatewayActivity(
+            Json.parseToJsonElement(
+                """
+                [
+                  {"role":"assistant","reasoning":"<provider-reasoning>"},
+                  {"role":"assistant","reasoning":"<effort-only>","reasoning_effort":"high"},
+                  {"role":"assistant","reasoning":"<explicitly-hidden>","show_reasoning":false,"verbose":true}
+                ]
+                """.trimIndent(),
+            ).jsonArray,
+        )
+
+        assertTrue(items.isEmpty())
+    }
+
+    @Test
     fun reasoningRequiresTheExplicitStreamAndNeverUsesProviderThinkingContent() {
         var projection = initialActivityProjection(
             originKey = "https://hermes.test",
@@ -527,6 +628,67 @@ class AgentActivityTest {
         )
         assertEquals(1, snapshotItems.size)
         assertEquals("<server-summary>", snapshotItems.single().let { (it as ServerReasoningActivity).text.text })
+    }
+
+    @Test
+    fun unsafeToolNameMarkersFailClosedAcrossSnapshotsAndLegacyRows() {
+        val elements = Json.parseToJsonElement(
+            """
+            [
+              {"role":"tool","name":"secret_operation","metadata":{"sensitive":true},"output":"<tool-output>"}
+            ]
+            """.trimIndent(),
+        ).jsonArray
+
+        val activity = decodeGatewayActivity(elements).single() as ToolActivity
+        val message = decodeGatewayMessages(elements).single()
+
+        assertEquals("Tool activity", safeToolName("secret_operation", unsafe = true))
+        assertEquals("Tool activity", activity.name)
+        assertEquals("Tool activity", message.toolName)
+        assertFalse(activity.name.contains("secret_operation"))
+        assertFalse(message.toolName.orEmpty().contains("secret_operation"))
+    }
+
+    @Test
+    fun sanitizerRedactsHeadersQueriesTokensAndPrivateKeyBlocks() {
+        val bearer = "synthetic-" + "bearer-token"
+        val cookie = "synthetic-" + "cookie-value"
+        val sessionToken = "synthetic-" + "session-token"
+        val queryKey = "synthetic-" + "query-key"
+        val queryToken = "synthetic-" + "query-token"
+        val privateBody = "synthetic-" + "private-key"
+        val privateBegin = "-----" + "BEGIN PRIVATE KEY" + "-----"
+        val privateEnd = "-----" + "END PRIVATE KEY" + "-----"
+        val openAiToken = "sk-" + "synthetic-openai-token-1234"
+        val githubToken = "ghp_" + "syntheticgithub1234"
+        val jwtPayload = "syntheticjwtpayload0000000000"
+        val raw = listOf(
+            "Authorization: Bearer $bearer",
+            "Cookie: session=$cookie",
+            "x-hermes-session-token: $sessionToken",
+            "https://hermes.test/?api_key=$queryKey&token=$queryToken",
+            "$privateBegin\n$privateBody\n$privateEnd",
+            openAiToken,
+            githubToken,
+            "eyJ$jwtPayload.syntheticjwtsignature0000000000.syntheticjwtfinal0000000000",
+        ).joinToString("\n")
+
+        val detail = sanitizeActivityDetail(raw, maxCodePoints = 4_000)
+
+        assertTrue(detail.wasRedacted)
+        assertTrue(detail.text.contains("[redacted]"))
+        listOf(
+            bearer,
+            cookie,
+            sessionToken,
+            queryKey,
+            queryToken,
+            privateBody,
+            openAiToken,
+            githubToken,
+            jwtPayload,
+        ).forEach { secret -> assertFalse(detail.text.contains(secret)) }
     }
 
     @Test

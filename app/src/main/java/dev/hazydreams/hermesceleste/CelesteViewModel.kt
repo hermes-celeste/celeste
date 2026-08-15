@@ -119,6 +119,8 @@ internal class CelesteViewModel(
     },
     private val activityDisclosurePreferences: ActivityDisclosurePreferenceStore =
         InMemoryActivityDisclosurePreferenceStore(),
+    private val activityDiscoveryTimeoutMillis: Long = 1_000L,
+    private val reasoningCoalescingWindowMillis: Long = 75L,
 ) : ViewModel() {
     private val mutableState = MutableStateFlow(CelesteUiState())
     val state: StateFlow<CelesteUiState> = mutableState.asStateFlow()
@@ -131,6 +133,9 @@ internal class CelesteViewModel(
     private var reconnectJob: Job? = null
     private var foregroundCheckJob: Job? = null
     private var connectionJob: Job? = null
+    private var activityDiscoveryJob: Job? = null
+    private var reasoningCoalescingJob: Job? = null
+    private val pendingReasoningDeltas = mutableListOf<GatewayEvent>()
     private var connectionAttempt = 0L
     private val connectionStoreMutex = Mutex()
     private var currentDescriptor: SavedConnectionDescriptor? = null
@@ -790,6 +795,7 @@ internal class CelesteViewModel(
                     errorMessage = null,
                 )
                 events.forEach { applyEvent(it) }
+                scheduleActivityDiscoveryFallback()
             }.onSuccess {
                 reconnectAttempts = 0
             }.onFailure { error ->
@@ -989,6 +995,7 @@ internal class CelesteViewModel(
             bufferedEvents.clear()
             reconciling = false
             events.forEach { applyEvent(it) }
+            scheduleActivityDiscoveryFallback()
         } catch (error: Throwable) {
             bufferedEvents.clear()
             reconciling = false
@@ -1064,7 +1071,52 @@ internal class CelesteViewModel(
         )
     }
 
+    private fun scheduleActivityDiscoveryFallback() {
+        activityDiscoveryJob?.cancel()
+        val activity = mutableState.value.agentActivity ?: return
+        if (activity.presentation != dev.hazydreams.hermesceleste.network.ActivityPresentationState.Discovering) {
+            return
+        }
+        val expectedOrigin = activity.originKey
+        val expectedProfile = activity.profile
+        val expectedStoredSession = activity.storedSessionId
+        val expectedRuntime = activity.runtimeSessionId
+        activityDiscoveryJob = viewModelScope.launch {
+            delay(activityDiscoveryTimeoutMillis.coerceAtLeast(0L))
+            val current = mutableState.value.agentActivity
+            if (
+                current != null &&
+                current.presentation == dev.hazydreams.hermesceleste.network.ActivityPresentationState.Discovering &&
+                current.originKey == expectedOrigin &&
+                current.profile == expectedProfile &&
+                current.storedSessionId == expectedStoredSession &&
+                current.runtimeSessionId == expectedRuntime
+            ) {
+                val resolved = withContext(Dispatchers.Default) {
+                    AgentActivityReducer.markAbsent(current)
+                }
+                mutableState.value = mutableState.value.copy(agentActivity = resolved)
+            }
+            activityDiscoveryJob = null
+        }
+    }
+
     private suspend fun applyEvent(event: GatewayEvent) {
+        if (event.type == "reasoning.delta" && event.payload.boolean("verbose") == true) {
+            pendingReasoningDeltas += event
+            if (reasoningCoalescingJob?.isActive != true) {
+                reasoningCoalescingJob = viewModelScope.launch {
+                    delay(reasoningCoalescingWindowMillis.coerceAtLeast(0L))
+                    flushReasoningDeltas()
+                }
+            }
+            return
+        }
+        flushReasoningDeltas()
+        applyEventNow(event)
+    }
+
+    private suspend fun applyEventNow(event: GatewayEvent) {
         val runtimeId = currentRuntimeSessionId?.trim()?.takeIf(String::isNotBlank) ?: return
         val eventSessionId = event.sessionId.trim()
         if (eventSessionId.isNotBlank() && eventSessionId != runtimeId) return
@@ -1079,6 +1131,10 @@ internal class CelesteViewModel(
             }
             if (updated !== projection) {
                 mutableState.value = mutableState.value.copy(agentActivity = updated)
+                if (updated.presentation != dev.hazydreams.hermesceleste.network.ActivityPresentationState.Discovering) {
+                    activityDiscoveryJob?.cancel()
+                    activityDiscoveryJob = null
+                }
             }
         }
         when (event.type) {
@@ -1117,6 +1173,13 @@ internal class CelesteViewModel(
 
             "message.complete" -> {
                 val status = event.payload.string("status")?.lowercase()
+                val failureReason = event.payload.string("failure_reason")
+                    ?.takeIf(String::isNotBlank)
+                val explicitError = event.payload.string("error")
+                    ?.takeIf(String::isNotBlank)
+                val failed = status in setOf("error", "failed", "failure") ||
+                    failureReason != null ||
+                    explicitError != null
                 val content = event.payload.string("text")
                     ?: event.payload.string("content")
                     ?: event.payload.string("rendered")
@@ -1124,9 +1187,11 @@ internal class CelesteViewModel(
                 finalizeAssistant(content, keepRunning = false)
                 mutableState.value = mutableState.value.copy(
                     turnState = TurnState.Idle,
-                    errorMessage = if (status in setOf("error", "failed", "failure")) {
-                        event.payload.string("error")?.let { sanitizeActivityText(it, 240) }
-                            ?: "Hermes could not finish that response."
+                    errorMessage = if (failed) {
+                        sanitizeActivityText(
+                            failureReason ?: explicitError ?: "Hermes could not finish that response.",
+                            240,
+                        )
                     } else {
                         mutableState.value.errorMessage
                     },
@@ -1137,8 +1202,11 @@ internal class CelesteViewModel(
                 finalizeAssistant(keepRunning = false)
                 mutableState.value = mutableState.value.copy(
                     turnState = TurnState.Idle,
-                    errorMessage = event.payload.string("message")
-                        ?.let { sanitizeActivityText(it, 240) }
+                    errorMessage = (
+                        event.payload.string("failure_reason")
+                            ?: event.payload.string("error")
+                            ?: event.payload.string("message")
+                    )?.let { sanitizeActivityText(it, 240) }
                         ?: "Hermes reported an error.",
                 )
             }
@@ -1174,6 +1242,56 @@ internal class CelesteViewModel(
                 mutableState.value = mutableState.value.copy(turnState = TurnState.Running)
             }
         }
+    }
+
+    private suspend fun flushReasoningDeltas() {
+        reasoningCoalescingJob = null
+        val events = pendingReasoningDeltas.toList()
+        pendingReasoningDeltas.clear()
+        if (events.isEmpty()) return
+
+        val first = events.first()
+        val sameBinding = events.all { event ->
+            event.sessionId == first.sessionId &&
+                event.originKey == first.originKey &&
+                event.profile == first.profile &&
+                event.storedSessionId == first.storedSessionId
+        }
+        val hasExplicitReplayIdentity = events.any { event ->
+            event.eventId?.isNotBlank() == true ||
+                event.payload.keys.any {
+                    it == "event_id" || it == "eventId" || it == "event_seq" || it == "seq"
+                }
+        }
+        if (events.size == 1 || !sameBinding || hasExplicitReplayIdentity) {
+            events.forEach { applyEventNow(it) }
+            return
+        }
+
+        val mergedText = mergeReasoningDeltaText(events)
+        if (mergedText.isBlank()) return
+        val representative = events.last()
+        val combinedPayload = buildJsonObject {
+            representative.payload.forEach { (key, value) -> put(key, value) }
+            put("text", mergedText)
+            put("verbose", true)
+        }
+        applyEventNow(representative.copy(payload = combinedPayload, eventId = null))
+    }
+
+    private fun mergeReasoningDeltaText(events: List<GatewayEvent>): String {
+        var merged = ""
+        events.forEach { event ->
+            val text = event.payload.string("text").orEmpty()
+            if (text.isBlank()) return@forEach
+            merged = when {
+                merged.isBlank() -> text
+                text.startsWith(merged) -> text
+                merged.startsWith(text) || merged.endsWith(text) -> merged
+                else -> merged + text
+            }
+        }
+        return merged
     }
 
     private fun finalizeAssistant(
@@ -1259,6 +1377,7 @@ internal class CelesteViewModel(
             bufferedEvents.clear()
             reconciling = false
             events.forEach { applyEvent(it) }
+            scheduleActivityDiscoveryFallback()
         } catch (error: Throwable) {
             bufferedEvents.clear()
             reconciling = false
@@ -1315,6 +1434,11 @@ internal class CelesteViewModel(
         gateway = null
         reconnectJob?.cancel()
         reconnectJob = null
+        activityDiscoveryJob?.cancel()
+        activityDiscoveryJob = null
+        reasoningCoalescingJob?.cancel()
+        reasoningCoalescingJob = null
+        pendingReasoningDeltas.clear()
         foregroundCheckJob?.cancel()
         foregroundCheckJob = null
         gatewayEventsJob?.cancel()

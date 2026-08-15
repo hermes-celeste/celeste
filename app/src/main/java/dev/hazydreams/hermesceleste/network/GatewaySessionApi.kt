@@ -173,7 +173,11 @@ private fun decodeGatewayMessage(element: JsonElement): ConversationMessage? {
         ?: row.string("content")
         ?: row.string("context")
         ?: if (role == "tool") toolName.orEmpty() else ""
-    val safeToolName = if (role == "tool") toolName?.let { sanitizeActivityText(it, 80) } else toolName
+    val safeToolName = if (role == "tool") {
+        toolName?.let { safeToolName(it, row.toolNameIsUnsafe()) }
+    } else {
+        toolName
+    }
     val safeText = if (role == "tool") {
         sanitizeActivityText(text, TOOL_ACTIVITY_DETAIL_LIMIT)
     } else {

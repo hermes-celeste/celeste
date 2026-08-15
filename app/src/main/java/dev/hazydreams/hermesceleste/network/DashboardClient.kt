@@ -100,7 +100,23 @@ private fun activityCapabilityFromElement(element: JsonElement?): ActivityCapabi
             if (it) return ActivityCapabilityState.LegacyToolOnly
         }
         val mode = element["mode"] ?: element["state"] ?: element["capability"]
-        return activityCapabilityFromElement(mode)
+        activityCapabilityFromElement(mode)?.let { return it }
+        val hasReasoning = sequenceOf(
+            "server_reasoning",
+            "reasoning",
+            "reasoning_events",
+            "reasoning_stream",
+        ).mapNotNull { key -> (element[key] as? JsonPrimitive)?.booleanOrNull }
+            .firstOrNull { it }
+        if (hasReasoning == true) return ActivityCapabilityState.ToolAndServerReasoning
+        val hasTools = sequenceOf("tools", "tool_events", "tool_activity")
+            .mapNotNull { key -> (element[key] as? JsonPrimitive)?.booleanOrNull }
+            .firstOrNull { it }
+        val explicitlySupported = sequenceOf("supported", "available")
+            .mapNotNull { key -> (element[key] as? JsonPrimitive)?.booleanOrNull }
+            .firstOrNull { it }
+        if (hasTools == true || explicitlySupported == true) return ActivityCapabilityState.ToolOnly
+        return null
     }
     val primitive = element as? JsonPrimitive ?: return null
     primitive.booleanOrNull?.let { return if (it) ActivityCapabilityState.ToolOnly else ActivityCapabilityState.Unsupported }
