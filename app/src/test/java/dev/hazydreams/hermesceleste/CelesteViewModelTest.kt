@@ -24,6 +24,7 @@ import dev.hazydreams.hermesceleste.network.ServerReasoningActivity
 import dev.hazydreams.hermesceleste.network.StoredSession
 import dev.hazydreams.hermesceleste.network.ToolActivity
 import dev.hazydreams.hermesceleste.network.ToolPhase
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -386,6 +387,104 @@ class CelesteViewModelTest {
     }
 
     @Test
+    fun overlappingRecoverySerializesResumeAndReplaysEventsAfterItsSnapshot() = runTest {
+        val gateway = FakeGateway()
+        val viewModel = openConversation(gateway)
+        val firstResume = CompletableDeferred<JsonObject>()
+        val secondResume = CompletableDeferred<JsonObject>()
+        gateway.resumeGates += firstResume
+        gateway.resumeGates += secondResume
+        gateway.failPrompt = true
+
+        viewModel.updateDraft("Recover this turn")
+        viewModel.sendMessage()
+        runCurrent()
+        assertEquals(2, gateway.resumeRequestCount)
+
+        viewModel.interrupt()
+        runCurrent()
+        assertEquals(1, gateway.methods.count { it == "session.interrupt" })
+        assertEquals(2, gateway.resumeRequestCount)
+
+        gateway.emit("message.delta", """{"text":"buffered-after-snapshot"}""")
+        runCurrent()
+        firstResume.complete(resumePayload(messages = emptyList(), running = true))
+        runCurrent()
+
+        assertEquals("buffered-after-snapshot", viewModel.state.value.streamingText)
+        assertEquals(3, gateway.resumeRequestCount)
+
+        secondResume.complete(
+            resumePayload(
+                messages = listOf(
+                    ConversationMessage(role = "assistant", text = "new-authoritative-state", id = "new-state"),
+                ),
+                running = false,
+            ),
+        )
+        advanceUntilIdle()
+
+        assertEquals(
+            listOf("new-authoritative-state"),
+            viewModel.state.value.messages.map(ConversationMessage::text),
+        )
+        assertEquals("", viewModel.state.value.streamingText)
+        viewModel.leaveConversation()
+    }
+
+    @Test
+    fun lateResumeFromAnOlderGatewayGenerationCannotOverwriteTheSelectedSession() = runTest {
+        val oldGateway = FakeGateway()
+        val dashboard = FakeDashboard(oldGateway)
+        val viewModel = CelesteViewModel(
+            dashboard = dashboard,
+            reconnectDelayMillis = { _, _ -> 0L },
+        )
+        viewModel.updateDashboardUrl("http://hermes.test:9119")
+        viewModel.findDashboard()
+        viewModel.loadSessions()
+        viewModel.openSession(dashboard.session)
+        advanceUntilIdle()
+
+        val oldResume = CompletableDeferred<JsonObject>()
+        oldGateway.resumeGates += oldResume
+        oldGateway.failPrompt = true
+        viewModel.updateDraft("This must not leak")
+        viewModel.sendMessage()
+        runCurrent()
+        assertEquals(2, oldGateway.resumeRequestCount)
+
+        val newGateway = FakeGateway()
+        newGateway.resumePayload = resumePayload(
+            messages = listOf(
+                ConversationMessage(role = "assistant", text = "selected-session", id = "selected-state"),
+            ),
+            running = false,
+            storedSessionId = "stored-new",
+            runtimeSessionId = "runtime-new",
+        )
+        dashboard.gateway = newGateway
+        viewModel.openSession(dashboard.session.copy(id = "stored-new", title = "Selected conversation"))
+
+        oldResume.complete(
+            resumePayload(
+                messages = listOf(
+                    ConversationMessage(role = "assistant", text = "stale-old-session", id = "stale-state"),
+                ),
+                running = false,
+            ),
+        )
+        advanceUntilIdle()
+
+        assertEquals("stored-new", viewModel.state.value.activeSummary?.id)
+        assertEquals(
+            listOf("selected-session"),
+            viewModel.state.value.messages.map(ConversationMessage::text),
+        )
+        viewModel.leaveConversation()
+    }
+
+    @Test
     fun revokedProviderSessionStopsReconnectAndDeletesReusableAuthentication() = runTest {
         val gateway = FakeGateway()
         val dashboard = FakeDashboard(gateway, authRequired = true)
@@ -625,7 +724,7 @@ class CelesteViewModelTest {
     }
 
     private class FakeDashboard(
-        private val gateway: FakeGateway,
+        var gateway: FakeGateway,
         private val authRequired: Boolean = false,
     ) : DashboardService {
         var profileFailure: Throwable? = null
@@ -695,8 +794,11 @@ class CelesteViewModelTest {
         var connectCount = 0
         var createCount = 0
         var failHealthCheck = false
+        var failPrompt = false
         var connectFailure: Throwable? = null
         var resumePayload: JsonObject = resumePayload(messages = emptyList(), running = false)
+        val resumeGates = mutableListOf<CompletableDeferred<JsonObject>>()
+        var resumeRequestCount = 0
 
         override suspend fun connect() {
             connectCount += 1
@@ -712,7 +814,10 @@ class CelesteViewModelTest {
             methods += method
             requests += method to params
             return when (method) {
-                "session.resume" -> resumePayload
+                "session.resume" -> {
+                    resumeRequestCount += 1
+                    if (resumeGates.isEmpty()) resumePayload else resumeGates.removeAt(0).await()
+                }
                 "session.create" -> {
                     createCount += 1
                     buildJsonObject {
@@ -728,7 +833,13 @@ class CelesteViewModelTest {
                     }
                     buildJsonObject { put("sessions", "healthy") }
                 }
-                "prompt.submit" -> buildJsonObject { put("status", "streaming") }
+                "prompt.submit" -> {
+                    if (failPrompt) {
+                        failPrompt = false
+                        throw IOException("prompt delivery failed")
+                    }
+                    buildJsonObject { put("status", "streaming") }
+                }
                 "session.interrupt" -> buildJsonObject { put("status", "interrupting") }
                 else -> buildJsonObject {}
             }
@@ -757,12 +868,14 @@ class CelesteViewModelTest {
         private fun resumePayload(
             messages: List<ConversationMessage>,
             running: Boolean,
+            storedSessionId: String = "stored-42",
+            runtimeSessionId: String = "runtime-7",
         ): JsonObject {
             val encodedMessages = messages.joinToString(",") { message ->
                 """{"id":${Json.encodeToString(message.id ?: "")},"role":${Json.encodeToString(message.role)},"text":${Json.encodeToString(message.text)}}"""
             }
             return Json.parseToJsonElement(
-                """{"session_id":"runtime-7","resumed":"stored-42","running":$running,"status":"${if (running) "streaming" else "idle"}","inflight":null,"messages":[$encodedMessages]}""",
+                """{"session_id":"$runtimeSessionId","resumed":"$storedSessionId","running":$running,"status":"${if (running) "streaming" else "idle"}","inflight":null,"messages":[$encodedMessages]}""",
             ) as JsonObject
         }
     }
