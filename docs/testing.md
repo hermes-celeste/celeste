@@ -83,7 +83,28 @@ scripts/celeste-env adb install -r /path/to/Hermes-Celeste-latest.apk
 
 Use a real device for Android-only behavior such as lifecycle transitions, IME/insets, system back, permissions, network changes, launcher assets, and performance. Record the flows and device conditions exercised rather than reporting “tested on device” without specifics.
 
-There is currently no `app/src/androidTest` suite. The configured instrumentation runner and connected-device tasks do not constitute device coverage; report Android runtime behavior as untested unless it was explicitly exercised.
+### DF-05 activity-ownership gate
+
+The focused mounted Compose evidence lives in `app/src/androidTest/java/dev/hazydreams/hermesceleste/ui/conversation/ConversationActivityUiTest.kt`. It checks rendered action labels, one live-region owner, replacement of generic work by streaming/tool owners, and the running → reconnecting/error → idle presentation transitions. The harness is source coverage only until it runs on CI or a connected device:
+
+```bash
+scripts/celeste-env ./gradlew --no-daemon connectedDebugAndroidTest
+```
+
+The following physical-device acceptance matrix is **pending and has not run as part of this change**. Record the device model/API level, font scale, motion setting, and TalkBack state with the result before marking DF-05 accepted:
+
+| Flow | Acceptance evidence |
+| --- | --- |
+| Running with no output | One visible and polite spoken owner; action is `Stop response`; no duplicate header, placeholder, or footer status |
+| Streaming assistant output | Streaming owner replaces generic work; content updates do not create per-token announcements |
+| Tool activity | One stable tool owner is announced and updated in place; completion removes it without a duplicate |
+| Reconnect and retry | Draft remains intact; one reconnect owner and `Retry connection` action are exposed |
+| Interruption/cancellation | Expected cancellation is silent or useful; raw coroutine text is absent |
+| Recoverable error | One sanitized assertive error owner and actionable `Retry` are exposed |
+| Lifecycle/session safety | Background/foreground, session switch, stale events, and duplicate completion do not resurrect or duplicate an owner |
+| Accessibility and display | TalkBack, large font, touch targets, reduced motion, dark mode, and high-contrast behavior are checked |
+
+There is now a focused `app/src/androidTest` suite, but a configured instrumentation runner or source test does not constitute device coverage; report Android runtime behavior as untested until the harness or the relevant physical-device flow is explicitly exercised.
 
 Base-path-prefixed dashboard routing is supported in source but does not yet have a direct MockWebServer regression. Add one when route joining changes.
 
