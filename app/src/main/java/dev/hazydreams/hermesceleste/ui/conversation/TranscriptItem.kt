@@ -21,10 +21,15 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import dev.hazydreams.hermesceleste.attachments.AttachmentPreviewState
+import dev.hazydreams.hermesceleste.attachments.MessageAttachment
 import dev.hazydreams.hermesceleste.network.ConversationMessage
 import dev.hazydreams.hermesceleste.ui.CelesteBlue
 import dev.hazydreams.hermesceleste.ui.CelesteCoral
@@ -33,6 +38,7 @@ import dev.hazydreams.hermesceleste.ui.CelesteHairline
 import dev.hazydreams.hermesceleste.ui.CelesteInk
 import dev.hazydreams.hermesceleste.ui.CelesteMuted
 import dev.hazydreams.hermesceleste.ui.CelestePanelRaised
+import dev.hazydreams.hermesceleste.ui.CelestePaper
 import dev.hazydreams.hermesceleste.ui.CelesteSoftBlue
 
 internal const val STREAMING_TRANSCRIPT_KEY = "streaming:assistant"
@@ -47,6 +53,16 @@ internal fun transcriptItemKeys(messages: List<ConversationMessage>): List<Strin
         occurrences[base] = occurrence
         if (occurrence == 1) base else "$base:occurrence:$occurrence"
     }
+}
+
+internal fun messageAttachmentKeys(message: ConversationMessage): List<String> {
+    val id = message.id?.takeIf(String::isNotBlank)
+    val base = if (id == null) {
+        "transcript:fallback"
+    } else {
+        "transcript:id:${id.length}:$id"
+    }
+    return message.attachments.indices.map { index -> "$base:attachment:$index" }
 }
 
 @Composable
@@ -78,6 +94,48 @@ private fun UserMessage(message: ConversationMessage) {
                     color = CelesteInk,
                     style = MaterialTheme.typography.bodyLarge,
                 )
+            }
+            if (message.attachments.isNotEmpty()) {
+                Spacer(Modifier.height(10.dp))
+                AttachmentList(message.attachments)
+            }
+        }
+    }
+}
+
+@Composable
+private fun AttachmentList(attachments: List<MessageAttachment>) {
+    Column(verticalArrangement = Arrangement.spacedBy(7.dp)) {
+        attachments.forEachIndexed { index, attachment ->
+            val name = attachment.displayName?.takeIf(String::isNotBlank) ?: "Image"
+            val state = when (attachment.preview) {
+                AttachmentPreviewState.Ready -> "Image ready"
+                AttachmentPreviewState.Pending -> "Loading image"
+                AttachmentPreviewState.Unavailable -> "Image unavailable"
+            }
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(CelestePanelRaised.copy(alpha = 0.82f), RoundedCornerShape(12.dp))
+                    .padding(horizontal = 10.dp, vertical = 8.dp)
+                    .semantics {
+                        contentDescription = "Image ${index + 1}: $name, $state"
+                    },
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(42.dp)
+                        .background(CelestePaper, RoundedCornerShape(8.dp)),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text("▧", color = CelesteBlue, fontSize = 21.sp)
+                }
+                Spacer(Modifier.size(9.dp))
+                Column(Modifier.weight(1f)) {
+                    Text(name, color = CelesteInk, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Text(state, color = CelesteMuted, fontSize = 11.sp)
+                }
             }
         }
     }

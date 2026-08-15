@@ -1,6 +1,9 @@
 package dev.hazydreams.hermesceleste.network
 
+import dev.hazydreams.hermesceleste.attachments.MAX_ATTACHMENT_BYTES
 import java.io.IOException
+import java.util.Base64
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonNull
@@ -12,6 +15,7 @@ import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.longOrNull
 import kotlinx.serialization.json.put
 
 data class CreatedSession(
@@ -94,6 +98,118 @@ suspend fun GatewayConnection.submitPrompt(runtimeSessionId: String, text: Strin
     ).asObject("Hermes returned no prompt status.")
 }
 
+data class AttachmentSessionOwner(
+    val storedSessionId: String,
+    val runtimeSessionId: String?,
+) {
+    fun requestSessionId(): String =
+        runtimeSessionId?.takeIf(String::isNotBlank)
+            ?: storedSessionId.takeIf(String::isNotBlank)
+            ?: throw IOException("No Hermes conversation is open.")
+}
+
+data class AttachedImage(
+    val serverReference: String,
+    val byteSize: Long,
+)
+
+data class DetachedImage(
+    val detached: Boolean,
+    val serverFileDeleted: Boolean,
+)
+
+enum class AttachmentFailureClass {
+    Unsupported,
+    Definitive,
+    Unknown,
+    AuthRequired,
+}
+
+class AttachmentMediaUnavailable(message: String = "Image unavailable") : IOException(message)
+
+suspend fun GatewayConnection.attachImageBytes(
+    owner: AttachmentSessionOwner,
+    bytes: ByteArray,
+    filename: String?,
+    mimeType: String,
+    clientAttachmentId: String? = null,
+): AttachedImage {
+    require(bytes.isNotEmpty()) { "Image is empty." }
+    require(bytes.size.toLong() <= MAX_ATTACHMENT_BYTES) { "Image is too large." }
+    val safeName = safeAttachmentFilename(filename, mimeType)
+    val result = request(
+        method = "image.attach_bytes",
+        params = buildJsonObject {
+            put("session_id", owner.requestSessionId())
+            put("content_base64", Base64.getEncoder().encodeToString(bytes))
+            if (safeName != null) put("filename", safeName)
+            // The current Hermes method has no idempotency/client-id field. Keep
+            // the seam for a future contract, but never claim it is honored.
+        },
+        timeoutMillis = 180_000,
+    ).asObject("Hermes returned no image attachment status.")
+    val reference = result.string("path")?.takeIf(String::isNotBlank)
+        ?: result.string("ref_path")?.takeIf(String::isNotBlank)
+        ?: result.string("reference")?.takeIf(String::isNotBlank)
+        ?: throw IOException("Hermes returned no image attachment reference.")
+    return AttachedImage(
+        serverReference = reference,
+        byteSize = result["bytes"]?.jsonPrimitive?.longOrNull ?: bytes.size.toLong(),
+    )
+}
+
+suspend fun GatewayConnection.detachImage(
+    owner: AttachmentSessionOwner,
+    serverReference: String,
+): DetachedImage {
+    require(serverReference.isNotBlank()) { "An image reference is required." }
+    val result = request(
+        method = "image.detach",
+        params = buildJsonObject {
+            put("session_id", owner.requestSessionId())
+            put("path", serverReference)
+        },
+    ).asObject("Hermes returned no image detach status.")
+    return DetachedImage(
+        detached = result.boolean("detached") == true,
+        // image.detach removes session metadata only in the current protocol.
+        serverFileDeleted = false,
+    )
+}
+
+fun classifyAttachmentFailure(error: Throwable): AttachmentFailureClass = when {
+    error is AuthenticationRejected -> AttachmentFailureClass.AuthRequired
+    error is GatewayRpcException && error.code == -32601 -> AttachmentFailureClass.Unsupported
+    error is GatewayRpcException && error.code in setOf(4016, 4017, 4018) -> AttachmentFailureClass.Definitive
+    error is GatewayRpcException && error.message.orEmpty().contains("method not found", ignoreCase = true) ->
+        AttachmentFailureClass.Unsupported
+    error is TimeoutCancellationException || error is IOException -> AttachmentFailureClass.Unknown
+    else -> AttachmentFailureClass.Definitive
+}
+
+private fun safeAttachmentFilename(filename: String?, mimeType: String): String? {
+    val extension = when (mimeType.lowercase()) {
+        "image/jpeg" -> ".jpg"
+        "image/png" -> ".png"
+        "image/gif" -> ".gif"
+        "image/webp" -> ".webp"
+        "image/bmp" -> ".bmp"
+        "image/heic" -> ".heic"
+        "image/avif" -> ".avif"
+        else -> ".img"
+    }
+    val base = filename
+        ?.substringAfterLast('/')
+        ?.substringAfterLast('\\')
+        ?.let { it.substringBeforeLast('.', missingDelimiterValue = it) }
+        ?.filter { it.isLetterOrDigit() || it == '-' || it == '_' || it == ' ' }
+        ?.trim()
+        ?.take(80)
+        ?.takeIf(String::isNotBlank)
+        ?: "image"
+    return "$base$extension"
+}
+
 suspend fun GatewayConnection.interruptSession(runtimeSessionId: String): JsonObject {
     require(runtimeSessionId.isNotBlank()) { "No Hermes conversation is open." }
     return request(
@@ -113,7 +229,12 @@ internal fun decodeGatewayMessages(elements: List<JsonElement>): List<Conversati
             generateSequence("resume-$index") { current -> "$current-duplicate" }
                 .first(usedIds::add)
         }
-        message.copy(id = id)
+        message.copy(
+            id = id,
+            attachments = message.attachments.mapIndexed { attachmentIndex, attachment ->
+                attachment.copy(id = "$id:attachment:$attachmentIndex")
+            },
+        )
     }
 }
 
@@ -121,17 +242,23 @@ private fun decodeGatewayMessage(element: JsonElement): ConversationMessage? {
     val row = element as? JsonObject ?: return null
     val role = row.string("role")?.takeIf(String::isNotBlank) ?: return null
     val toolName = row.string("name") ?: row.string("tool_name")
-    val text = row.string("text")
+    val rawText = row.string("text")
         ?: row.string("content")
         ?: row.string("context")
         ?: if (role == "tool") toolName.orEmpty() else ""
+    val messageId = row["row_id"].scalarIdentity()?.let { "row-$it" }
+        ?: row["id"].scalarIdentity()
+        ?: row["message_id"].scalarIdentity()
+    val normalized = if (role == "user") normalizeImageReferences(rawText) else null
     return ConversationMessage(
         role = role,
-        text = text,
+        text = normalized?.visibleText ?: rawText,
         toolName = toolName,
-        id = row["row_id"].scalarIdentity()?.let { "row-$it" }
-            ?: row["id"].scalarIdentity()
-            ?: row["message_id"].scalarIdentity(),
+        id = messageId,
+        rawText = rawText,
+        attachments = normalized?.references.orEmpty().mapIndexed { index, reference ->
+            messageAttachmentFromReference(reference, index, messageId)
+        },
     )
 }
 

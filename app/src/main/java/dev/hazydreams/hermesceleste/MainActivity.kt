@@ -17,6 +17,8 @@ import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import dev.hazydreams.hermesceleste.connection.AndroidConnectionStore
+import dev.hazydreams.hermesceleste.attachments.FileAttachmentStagingStore
+import java.io.File
 import dev.hazydreams.hermesceleste.ui.CelesteRoutes
 import dev.hazydreams.hermesceleste.ui.HermesCelesteTheme
 
@@ -45,7 +47,12 @@ private class CelesteViewModelFactory(
     @Suppress("UNCHECKED_CAST")
     override fun <T : ViewModel> create(modelClass: Class<T>): T {
         require(modelClass.isAssignableFrom(CelesteViewModel::class.java))
-        return CelesteViewModel(connectionStore = AndroidConnectionStore(context)) as T
+        return CelesteViewModel(
+            connectionStore = AndroidConnectionStore(context),
+            attachmentStagingStore = FileAttachmentStagingStore(
+                File(context.noBackupFilesDir, "celeste_attachments"),
+            ),
+        ) as T
     }
 }
 

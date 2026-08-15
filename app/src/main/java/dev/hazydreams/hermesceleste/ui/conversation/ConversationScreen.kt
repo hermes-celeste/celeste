@@ -1,8 +1,17 @@
 package dev.hazydreams.hermesceleste.ui.conversation
 
+import android.content.ContentResolver
+import android.graphics.BitmapFactory
+import android.net.Uri
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.PickVisualMediaRequest
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -20,6 +29,9 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.windowInsetsPadding
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -41,12 +53,21 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import dev.hazydreams.hermesceleste.attachments.AttachmentCapabilityState
+import dev.hazydreams.hermesceleste.attachments.AttachmentDraft
+import dev.hazydreams.hermesceleste.attachments.AttachmentPreviewState
+import dev.hazydreams.hermesceleste.attachments.AttachmentTransferState
+import dev.hazydreams.hermesceleste.attachments.MAX_PENDING_ATTACHMENTS
 import dev.hazydreams.hermesceleste.TurnState
 import dev.hazydreams.hermesceleste.network.ConversationMessage
 import dev.hazydreams.hermesceleste.network.StoredSession
@@ -59,9 +80,11 @@ import dev.hazydreams.hermesceleste.ui.CelesteHairline
 import dev.hazydreams.hermesceleste.ui.CelesteInk
 import dev.hazydreams.hermesceleste.ui.CelesteMuted
 import dev.hazydreams.hermesceleste.ui.CelestePanel
+import dev.hazydreams.hermesceleste.ui.CelestePanelRaised
 import dev.hazydreams.hermesceleste.ui.CelestePaper
 
 import dev.hazydreams.hermesceleste.ui.StatusMessage
+import java.util.UUID
 
 @Composable
 internal fun ConversationScreen(
@@ -69,6 +92,9 @@ internal fun ConversationScreen(
     messages: List<ConversationMessage>,
     streamingText: String,
     draft: String,
+    attachments: List<AttachmentDraft> = emptyList(),
+    attachmentCapability: AttachmentCapabilityState = AttachmentCapabilityState.Unknown,
+    attachmentNotice: String? = null,
     turnState: TurnState,
     loadingMessage: String?,
     errorMessage: String?,
@@ -77,9 +103,25 @@ internal fun ConversationScreen(
     onInterrupt: () -> Unit,
     onReconnect: () -> Unit,
     onBack: () -> Unit,
+    onBeginAttachmentPicker: () -> Boolean = { true },
+    onAttachmentPickerResult: (ContentResolver, List<Uri>) -> Unit = { _, _ -> },
+    onRemoveAttachment: (UUID) -> Unit = {},
+    onRetryAttachment: (UUID) -> Unit = {},
 ) {
+    val context = LocalContext.current
+    val pickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.PickMultipleVisualMedia(
+            maxItems = MAX_PENDING_ATTACHMENTS,
+        ),
+    ) { uris ->
+        onAttachmentPickerResult(context.contentResolver, uris)
+    }
     val listState = rememberLazyListState()
     val focusManager = LocalFocusManager.current
+    val canCompose = turnState == TurnState.Idle || turnState == TurnState.Reconnecting
+    val canSend = turnState == TurnState.Idle &&
+        draft.isNotBlank() &&
+        attachments.all { it.transfer == AttachmentTransferState.Ready || it.transfer == AttachmentTransferState.Staged }
     val transcriptKeys = remember(messages) { transcriptItemKeys(messages) }
     val visibleMessageCount = messages.size + if (streamingText.isNotBlank()) 1 else 0
     val safeDrawingInsets = WindowInsets.safeDrawing
@@ -183,10 +225,35 @@ internal fun ConversationScreen(
                     .imePadding()
                     .padding(horizontal = 16.dp, vertical = 14.dp),
             ) {
+                if (attachments.isNotEmpty()) {
+                    ComposerAttachmentRail(
+                        attachments = attachments,
+                        onRemove = onRemoveAttachment,
+                        onRetry = onRetryAttachment,
+                    )
+                    Spacer(Modifier.height(10.dp))
+                }
+                if (attachmentNotice != null) {
+                    Text(
+                        text = attachmentNotice,
+                        color = CelesteError,
+                        style = MaterialTheme.typography.bodySmall,
+                        modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp),
+                    )
+                    Spacer(Modifier.height(6.dp))
+                } else if (attachmentCapability == AttachmentCapabilityState.Unsupported) {
+                    Text(
+                        text = "Image attachments are unavailable for this gateway.",
+                        color = CelesteMuted,
+                        style = MaterialTheme.typography.bodySmall,
+                        modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp),
+                    )
+                    Spacer(Modifier.height(6.dp))
+                }
                 OutlinedTextField(
                     value = draft,
                     onValueChange = onDraftChange,
-                    enabled = turnState == TurnState.Idle || turnState == TurnState.Reconnecting,
+                    enabled = canCompose,
                     modifier = Modifier.fillMaxWidth(),
                     placeholder = {
                         Text(
@@ -205,7 +272,7 @@ internal fun ConversationScreen(
                     keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
                     keyboardActions = KeyboardActions(
                         onSend = {
-                            if (draft.isNotBlank() && turnState == TurnState.Idle) {
+                            if (canSend) {
                                 onSend()
                                 focusManager.clearFocus()
                             }
@@ -238,6 +305,26 @@ internal fun ConversationScreen(
                         fontSize = 11.sp,
                         modifier = Modifier.weight(1f),
                     )
+                    if (canCompose) {
+                        OutlinedButton(
+                            onClick = {
+                                if (onBeginAttachmentPicker()) {
+                                    pickerLauncher.launch(
+                                        PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly),
+                                    )
+                                }
+                            },
+                            enabled = attachmentCapability != AttachmentCapabilityState.Unsupported &&
+                                attachments.size < MAX_PENDING_ATTACHMENTS,
+                            modifier = Modifier
+                                .height(46.dp)
+                                .semantics { contentDescription = "Add image attachment" },
+                            shape = RoundedCornerShape(23.dp),
+                            border = androidx.compose.foundation.BorderStroke(1.dp, CelesteBlue),
+                            colors = ButtonDefaults.outlinedButtonColors(contentColor = CelesteBlue),
+                        ) { Text("+ Image", fontWeight = FontWeight.SemiBold) }
+                        Spacer(Modifier.size(8.dp))
+                    }
                     when (turnState) {
                         TurnState.Running -> OutlinedButton(
                             onClick = onInterrupt,
@@ -260,7 +347,7 @@ internal fun ConversationScreen(
                                 onSend()
                                 focusManager.clearFocus()
                             },
-                            enabled = draft.isNotBlank() && turnState == TurnState.Idle,
+                            enabled = canSend,
                             modifier = Modifier.height(46.dp),
                             shape = RoundedCornerShape(23.dp),
                             colors = ButtonDefaults.buttonColors(
@@ -275,6 +362,141 @@ internal fun ConversationScreen(
             }
         }
     }
+}
+
+@Composable
+private fun ComposerAttachmentRail(
+    attachments: List<AttachmentDraft>,
+    onRemove: (UUID) -> Unit,
+    onRetry: (UUID) -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .horizontalScroll(rememberScrollState()),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        attachments.forEachIndexed { index, attachment ->
+            ComposerAttachmentCard(
+                index = index,
+                attachment = attachment,
+                onRemove = { onRemove(attachment.id) },
+                onRetry = { onRetry(attachment.id) },
+            )
+        }
+    }
+}
+
+@Composable
+private fun ComposerAttachmentCard(
+    index: Int,
+    attachment: AttachmentDraft,
+    onRemove: () -> Unit,
+    onRetry: () -> Unit,
+) {
+    val name = attachment.displayName?.takeIf(String::isNotBlank) ?: "Image"
+    val state = attachmentStateLabel(attachment)
+    Column(
+        modifier = Modifier
+            .width(176.dp)
+            .background(CelestePanelRaised, RoundedCornerShape(14.dp))
+            .border(1.dp, CelesteHairline, RoundedCornerShape(14.dp))
+            .padding(9.dp)
+            .semantics {
+                contentDescription = "Image ${index + 1}: $name, $state"
+            },
+        verticalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            AttachmentThumbnail(attachment)
+            Spacer(Modifier.size(8.dp))
+            Column(Modifier.weight(1f)) {
+                Text(
+                    text = name,
+                    color = CelesteInk,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    style = MaterialTheme.typography.bodySmall,
+                )
+                attachment.byteSize.takeIf { it > 0L }?.let { size ->
+                    Text(formatAttachmentSize(size), color = CelesteMuted, fontSize = 10.sp)
+                }
+            }
+        }
+        Text(state, color = if (attachment.error != null) CelesteError else CelesteMuted, fontSize = 11.sp)
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.End,
+        ) {
+            if (attachment.localFileId.isNotBlank() &&
+                attachment.error?.retryable == true &&
+                attachment.transfer in setOf(AttachmentTransferState.Failed, AttachmentTransferState.Unknown)
+            ) {
+                TextButton(
+                    onClick = onRetry,
+                    contentPadding = PaddingValues(horizontal = 5.dp, vertical = 2.dp),
+                    modifier = Modifier.semantics { contentDescription = "Retry image ${index + 1}" },
+                ) { Text("Retry", color = CelesteBlue, fontSize = 11.sp) }
+            }
+            TextButton(
+                onClick = onRemove,
+                contentPadding = PaddingValues(horizontal = 5.dp, vertical = 2.dp),
+                modifier = Modifier.semantics { contentDescription = "Remove image ${index + 1}" },
+            ) { Text("Remove", color = CelesteCoral, fontSize = 11.sp) }
+        }
+    }
+}
+
+@Composable
+private fun AttachmentThumbnail(attachment: AttachmentDraft) {
+    val bitmap = remember(attachment.previewBytes) {
+        attachment.previewBytes?.let { bytes ->
+            BitmapFactory.decodeByteArray(bytes, 0, bytes.size)?.asImageBitmap()
+        }
+    }
+    Box(
+        modifier = Modifier
+            .size(54.dp)
+            .background(CelestePaper, RoundedCornerShape(9.dp)),
+        contentAlignment = Alignment.Center,
+    ) {
+        if (bitmap != null) {
+            Image(
+                bitmap = bitmap,
+                contentDescription = null,
+                modifier = Modifier.size(54.dp),
+            )
+        } else {
+            Text(
+                text = if (attachment.preview == AttachmentPreviewState.Pending) "…" else "▧",
+                color = CelesteBlue,
+                fontSize = 22.sp,
+            )
+        }
+        if (attachment.transfer == AttachmentTransferState.Uploading) {
+            Box(
+                modifier = Modifier
+                    .size(8.dp)
+                    .background(CelesteGoldText, CircleShape),
+            )
+        }
+    }
+}
+
+private fun attachmentStateLabel(attachment: AttachmentDraft): String = when {
+    attachment.error != null -> attachment.error.message
+    attachment.transfer == AttachmentTransferState.Preparing -> "Preparing image"
+    attachment.transfer == AttachmentTransferState.Uploading -> "Uploading"
+    attachment.transfer == AttachmentTransferState.Staged -> "Ready to send"
+    attachment.transfer == AttachmentTransferState.Unknown -> "Upload status unknown — Retry"
+    attachment.preview == AttachmentPreviewState.Unavailable -> "Ready · preview unavailable"
+    else -> "Ready"
+}
+
+private fun formatAttachmentSize(bytes: Long): String = when {
+    bytes < 1024L -> "$bytes B"
+    bytes < 1024L * 1024L -> "${bytes / 1024L} KiB"
+    else -> "${bytes / (1024L * 1024L)} MiB"
 }
 
 private fun turnStateColor(turnState: TurnState): Color = when (turnState) {

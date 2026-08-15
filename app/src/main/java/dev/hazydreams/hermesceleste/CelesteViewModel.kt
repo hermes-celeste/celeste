@@ -1,5 +1,7 @@
 package dev.hazydreams.hermesceleste
 
+import android.content.ContentResolver
+import android.net.Uri
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import dev.hazydreams.hermesceleste.connection.ConnectionBootstrapDecision
@@ -9,7 +11,29 @@ import dev.hazydreams.hermesceleste.connection.ReusableSecret
 import dev.hazydreams.hermesceleste.connection.SavedAuthMode
 import dev.hazydreams.hermesceleste.connection.SavedConnectionDescriptor
 import dev.hazydreams.hermesceleste.connection.connectionBootstrapDecision
+import dev.hazydreams.hermesceleste.attachments.AttachmentCapabilityState
+import dev.hazydreams.hermesceleste.attachments.AttachmentDraft
+import dev.hazydreams.hermesceleste.attachments.AttachmentErrorKind
+import dev.hazydreams.hermesceleste.attachments.AttachmentOperationOwner
+import dev.hazydreams.hermesceleste.attachments.AttachmentPreviewState
+import dev.hazydreams.hermesceleste.attachments.AttachmentReducer
+import dev.hazydreams.hermesceleste.attachments.AttachmentSource
+import dev.hazydreams.hermesceleste.attachments.AttachmentStagingStore
+import dev.hazydreams.hermesceleste.attachments.AttachmentValidator
+import dev.hazydreams.hermesceleste.attachments.AttachmentTransferState
+import dev.hazydreams.hermesceleste.attachments.AttachmentValidationException
+import dev.hazydreams.hermesceleste.attachments.DraftOwner
+import dev.hazydreams.hermesceleste.attachments.MessageAttachment
+import dev.hazydreams.hermesceleste.attachments.MAX_PENDING_ATTACHMENTS
+import dev.hazydreams.hermesceleste.attachments.UserFacingAttachmentError
+import dev.hazydreams.hermesceleste.attachments.UnavailableAttachmentStagingStore
+import dev.hazydreams.hermesceleste.attachments.buildImagePrompt
 import dev.hazydreams.hermesceleste.network.AuthenticationRejected
+import dev.hazydreams.hermesceleste.network.AttachmentFailureClass
+import dev.hazydreams.hermesceleste.network.AttachmentSessionOwner
+import dev.hazydreams.hermesceleste.network.attachImageBytes
+import dev.hazydreams.hermesceleste.network.classifyAttachmentFailure
+import dev.hazydreams.hermesceleste.network.detachImage
 import dev.hazydreams.hermesceleste.network.AuthenticationMaterial
 import dev.hazydreams.hermesceleste.network.ConversationMessage
 import dev.hazydreams.hermesceleste.network.DashboardClient
@@ -30,6 +54,7 @@ import dev.hazydreams.hermesceleste.network.resumeStoredSession
 import dev.hazydreams.hermesceleste.network.string
 import dev.hazydreams.hermesceleste.network.submitPrompt
 import java.io.IOException
+import java.util.UUID
 import java.util.concurrent.atomic.AtomicLong
 import kotlin.math.min
 import kotlinx.coroutines.CancellationException
@@ -76,6 +101,10 @@ internal data class CelesteUiState(
     val messages: List<ConversationMessage> = emptyList(),
     val streamingText: String = "",
     val draft: String = "",
+    val attachments: List<AttachmentDraft> = emptyList(),
+    val editorGeneration: Long = 0L,
+    val attachmentCapability: AttachmentCapabilityState = AttachmentCapabilityState.Unknown,
+    val attachmentNotice: String? = null,
     val turnState: TurnState = TurnState.Idle,
     val loadingMessage: String? = null,
     val errorMessage: String? = null,
@@ -96,6 +125,7 @@ private data class RememberedDashboard(
 internal class CelesteViewModel(
     private val dashboard: DashboardService = DashboardClient(),
     private val connectionStore: ConnectionStore = InMemoryConnectionStore(),
+    private val attachmentStagingStore: AttachmentStagingStore = UnavailableAttachmentStagingStore(),
     private val reconnectDelayMillis: (attempt: Int, wasRunning: Boolean) -> Long = { attempt, wasRunning ->
         if (wasRunning && attempt == 0) 100L else min(5_000L, 1_000L shl attempt.coerceAtMost(2))
     },
@@ -118,6 +148,17 @@ internal class CelesteViewModel(
     private var reconciling = false
     private var currentSessionCanResume = true
     private val bufferedEvents = mutableListOf<GatewayEvent>()
+    private val attachmentJobs = mutableMapOf<UUID, Job>()
+    private var attachmentTransactionJob: Job? = null
+    private var attachmentPickerToken: AttachmentPickerToken? = null
+
+    private data class AttachmentPickerToken(
+        val owner: DraftOwner,
+        val editorGeneration: Long,
+        val runtimeSessionIdAtStart: String?,
+    )
+
+    private class StaleAttachmentTransaction : CancellationException()
 
     init {
         restoreSavedConnection()
@@ -144,7 +185,214 @@ internal class CelesteViewModel(
     }
 
     fun updateDraft(value: String) {
-        mutableState.value = mutableState.value.copy(draft = value)
+        val current = mutableState.value
+        if (current.draft == value) return
+        mutableState.value = current.copy(
+            draft = value,
+            editorGeneration = current.editorGeneration + 1,
+            attachmentNotice = null,
+        )
+    }
+
+    fun beginAttachmentPicker(): Boolean {
+        val snapshot = mutableState.value
+        if (snapshot.turnState != TurnState.Idle && snapshot.turnState != TurnState.Reconnecting) return false
+        if (snapshot.attachmentCapability == AttachmentCapabilityState.Unsupported) {
+            mutableState.value = snapshot.copy(
+                attachmentNotice = "This gateway does not support image attachments.",
+            )
+            return false
+        }
+        attachmentPickerToken = AttachmentPickerToken(
+            owner = currentAttachmentOwner(snapshot),
+            editorGeneration = snapshot.editorGeneration,
+            runtimeSessionIdAtStart = currentRuntimeSessionId,
+        )
+        return true
+    }
+
+    fun onAttachmentPickerResult(uris: List<Uri>) {
+        onAttachmentPickerResult(null, uris)
+    }
+
+    fun onAttachmentPickerResult(resolver: ContentResolver?, uris: List<Uri>) {
+        val token = attachmentPickerToken ?: return
+        attachmentPickerToken = null
+        val snapshot = mutableState.value
+        if (
+            !isCurrentAttachmentContext(snapshot, token.owner, token.editorGeneration) ||
+            currentRuntimeSessionId != token.runtimeSessionIdAtStart
+        ) return
+        if (uris.isEmpty()) return
+
+        val remaining = (MAX_PENDING_ATTACHMENTS - snapshot.attachments.size).coerceAtLeast(0)
+        if (remaining == 0) {
+            mutableState.value = snapshot.copy(
+                attachmentNotice = "You can attach up to four images.",
+            )
+            return
+        }
+        val acceptedUris = uris.take(remaining)
+        val dropped = uris.size - acceptedUris.size
+        val placeholders = acceptedUris.map { uri ->
+            AttachmentDraft(
+                displayName = null,
+                mimeType = "image/*",
+                source = AttachmentSource.PhotoPicker,
+                owner = token.owner,
+                generation = token.editorGeneration,
+            )
+        }
+        mutableState.value = snapshot.copy(
+            attachments = snapshot.attachments + placeholders,
+            attachmentNotice = if (dropped > 0) {
+                "$dropped image${if (dropped == 1) "" else "s"} not added; four is the maximum."
+            } else {
+                null
+            },
+        )
+        acceptedUris.zip(placeholders).forEach { (uri, placeholder) ->
+            val job = viewModelScope.launch {
+                runCatching {
+                    attachmentStagingStore.stageUri(
+                        resolver = resolver,
+                        uri = uri,
+                        owner = token.owner,
+                        generation = placeholder.generation,
+                    )
+                }.onSuccess { staged ->
+                    updateAttachmentIfCurrent(
+                        owner = token.owner,
+                        editorGeneration = token.editorGeneration,
+                        attachmentId = placeholder.id,
+                        expectedAttachmentGeneration = placeholder.generation,
+                        operationRuntimeSessionIdAtStart = token.runtimeSessionIdAtStart,
+                    ) { current ->
+                        current.copy(
+                            displayName = staged.attachment.displayName,
+                            mimeType = staged.attachment.mimeType,
+                            byteSize = staged.attachment.byteSize,
+                            localFileId = staged.attachment.localFileId,
+                            previewBytes = staged.previewBytes,
+                            preview = if (staged.previewBytes == null) {
+                                AttachmentPreviewState.Unavailable
+                            } else {
+                                AttachmentPreviewState.Ready
+                            },
+                            transfer = AttachmentTransferState.Ready,
+                            error = null,
+                        )
+                    }
+                }.onFailure { error ->
+                    updateAttachmentIfCurrent(
+                        owner = token.owner,
+                        editorGeneration = token.editorGeneration,
+                        attachmentId = placeholder.id,
+                        expectedAttachmentGeneration = placeholder.generation,
+                        operationRuntimeSessionIdAtStart = token.runtimeSessionIdAtStart,
+                    ) { current ->
+                        current.copy(
+                            transfer = AttachmentTransferState.Failed,
+                            preview = AttachmentPreviewState.Unavailable,
+                            error = attachmentError(error, AttachmentErrorKind.ReadFailed),
+                        )
+                    }
+                }
+                attachmentJobs.remove(placeholder.id)
+            }
+            attachmentJobs[placeholder.id] = job
+        }
+    }
+
+    fun removeAttachment(attachmentId: UUID) {
+        val snapshot = mutableState.value
+        val attachment = snapshot.attachments.firstOrNull { it.id == attachmentId } ?: return
+        if (attachment.owner != currentAttachmentOwner(snapshot)) return
+        attachmentJobs.remove(attachmentId)?.cancel()
+        mutableState.value = snapshot.copy(
+            attachments = snapshot.attachments.filterNot { it.id == attachmentId },
+            editorGeneration = snapshot.editorGeneration + 1,
+            attachmentNotice = null,
+        )
+        if (attachment.localFileId.isNotBlank()) {
+            viewModelScope.launch { runCatching { attachmentStagingStore.delete(attachment.localFileId) } }
+        }
+        val reference = attachment.serverReference
+        val activeGateway = gateway
+        val runtimeId = currentRuntimeSessionId
+        if (reference != null && activeGateway != null && runtimeId != null) {
+            val owner = attachment.owner
+            viewModelScope.launch {
+                if (
+                    gateway !== activeGateway ||
+                    currentRuntimeSessionId != runtimeId ||
+                    currentAttachmentOwner(mutableState.value) != owner
+                ) return@launch
+                runCatching {
+                    activeGateway.detachImage(
+                        AttachmentSessionOwner(owner.storedSessionIdOrNewConversationId, runtimeId),
+                        reference,
+                    )
+                }
+            }
+        }
+    }
+
+    fun retryAttachment(attachmentId: UUID) {
+        val snapshot = mutableState.value
+        val current = snapshot.attachments.firstOrNull { it.id == attachmentId } ?: return
+        if (current.owner != currentAttachmentOwner(snapshot) || current.localFileId.isBlank()) return
+        val nextGeneration = snapshot.editorGeneration + 1
+        val runtimeSessionIdAtStart = currentRuntimeSessionId
+        mutableState.value = snapshot.copy(
+            editorGeneration = nextGeneration,
+            attachmentNotice = null,
+            attachments = snapshot.attachments.map {
+                if (it.id == attachmentId) it.copy(
+                    generation = nextGeneration,
+                    transfer = AttachmentTransferState.Ready,
+                    error = null,
+                ) else it
+            },
+        )
+        viewModelScope.launch {
+            runCatching {
+                val bytes = attachmentStagingStore.readBytes(current.localFileId)
+                AttachmentValidator.validate(
+                    bytes,
+                    current.mimeType,
+                    current.displayName,
+                )
+            }.onSuccess {
+                updateAttachmentIfCurrent(
+                    owner = current.owner,
+                    editorGeneration = nextGeneration,
+                    attachmentId = attachmentId,
+                    expectedAttachmentGeneration = nextGeneration,
+                    operationRuntimeSessionIdAtStart = runtimeSessionIdAtStart,
+                ) { item ->
+                    item.copy(
+                        preview = AttachmentPreviewState.Ready,
+                        transfer = AttachmentTransferState.Ready,
+                        error = null,
+                    )
+                }
+            }.onFailure { error ->
+                updateAttachmentIfCurrent(
+                    owner = current.owner,
+                    editorGeneration = nextGeneration,
+                    attachmentId = attachmentId,
+                    expectedAttachmentGeneration = nextGeneration,
+                    operationRuntimeSessionIdAtStart = runtimeSessionIdAtStart,
+                ) { item ->
+                    item.copy(
+                        transfer = AttachmentTransferState.Failed,
+                        preview = AttachmentPreviewState.Unavailable,
+                        error = attachmentError(error, AttachmentErrorKind.ReadFailed),
+                    )
+                }
+            }
+        }
     }
 
     fun selectProfile(name: String) {
@@ -155,6 +403,7 @@ internal class CelesteViewModel(
     fun findDashboard() {
         val rawUrl = mutableState.value.dashboardUrl
         if (rawUrl.isBlank()) return
+        discardComposerForContextSwitch()
         val attempt = beginConnectionAttempt()
         closeGateway()
         credential = null
@@ -281,6 +530,7 @@ internal class CelesteViewModel(
     }
 
     fun leaveSessionList() {
+        discardComposerForContextSwitch()
         beginConnectionAttempt()
         closeGateway()
         credential = null
@@ -300,6 +550,7 @@ internal class CelesteViewModel(
     }
 
     fun useAnotherConnection() {
+        discardComposerForContextSwitch()
         beginConnectionAttempt()
         closeGateway()
         credential = null
@@ -311,6 +562,7 @@ internal class CelesteViewModel(
     fun signOut() {
         val snapshot = mutableState.value
         val activeCredential = credential
+        discardComposerForContextSwitch()
         val attempt = beginConnectionAttempt()
         closeGateway()
         credential = null
@@ -322,6 +574,10 @@ internal class CelesteViewModel(
             messages = emptyList(),
             streamingText = "",
             draft = "",
+            attachments = emptyList(),
+            editorGeneration = snapshot.editorGeneration + 1,
+            attachmentCapability = AttachmentCapabilityState.Unknown,
+            attachmentNotice = null,
             password = "",
             sessionToken = "",
             loadingMessage = "Signing out…",
@@ -350,6 +606,7 @@ internal class CelesteViewModel(
     fun forgetConnection() {
         val snapshot = mutableState.value
         val activeCredential = credential
+        discardComposerForContextSwitch()
         val attempt = beginConnectionAttempt()
         closeGateway()
         credential = null
@@ -377,6 +634,7 @@ internal class CelesteViewModel(
     }
 
     private fun restoreSavedConnection() {
+        discardComposerForContextSwitch()
         val attempt = beginConnectionAttempt()
         closeGateway()
         credential = null
@@ -581,9 +839,93 @@ internal class CelesteViewModel(
 
     private fun isCurrentConnectionAttempt(attempt: Long): Boolean = connectionAttempt == attempt
 
+    private fun currentAttachmentOwner(state: CelesteUiState): DraftOwner {
+        val rawOrigin = state.probe?.baseUrl ?: state.dashboardUrl
+        val origin = runCatching { DashboardUrlPolicy.normalize(rawOrigin) }.getOrDefault(rawOrigin.trim())
+        val profile = state.activeSummary?.profile
+            ?.takeIf(String::isNotBlank)
+            ?: state.selectedProfile.ifBlank { "default" }
+        val storedSession = currentStoredSessionId
+            ?.takeIf(String::isNotBlank)
+            ?: state.activeSummary?.id?.takeIf(String::isNotBlank)
+            ?: "new-conversation"
+        return DraftOwner(origin, profile, storedSession)
+    }
+
+    private fun isCurrentAttachmentContext(
+        state: CelesteUiState,
+        owner: DraftOwner,
+        editorGeneration: Long,
+    ): Boolean =
+        state.editorGeneration == editorGeneration && currentAttachmentOwner(state) == owner
+
+    private fun updateAttachmentIfCurrent(
+        owner: DraftOwner,
+        editorGeneration: Long,
+        attachmentId: UUID,
+        expectedAttachmentGeneration: Long,
+        operationRuntimeSessionIdAtStart: String? = currentRuntimeSessionId,
+        transform: (AttachmentDraft) -> AttachmentDraft,
+    ) {
+        val current = mutableState.value
+        if (!isCurrentAttachmentContext(current, owner, editorGeneration)) return
+        val attachment = current.attachments.firstOrNull { it.id == attachmentId } ?: return
+        val operation = AttachmentOperationOwner(
+            draftOwner = owner,
+            runtimeSessionIdAtStart = operationRuntimeSessionIdAtStart,
+            editorGeneration = editorGeneration,
+            attachmentId = attachmentId,
+            attachmentGeneration = expectedAttachmentGeneration,
+        )
+        if (
+            !AttachmentReducer.accepts(
+                operation = operation,
+                owner = owner,
+                runtimeSessionId = currentRuntimeSessionId,
+                editorGeneration = editorGeneration,
+                attachment = attachment,
+            )
+        ) return
+        val updated = transform(attachment)
+        if (updated == attachment) return
+        mutableState.value = current.copy(
+            attachments = current.attachments.map {
+                if (it.id == attachmentId) updated else it
+            },
+        )
+    }
+
+    private fun attachmentError(
+        error: Throwable,
+        fallback: AttachmentErrorKind,
+    ): UserFacingAttachmentError =
+        (error as? AttachmentValidationException)?.userError
+            ?: UserFacingAttachmentError(fallback)
+
+    private fun discardComposerForContextSwitch() {
+        attachmentPickerToken = null
+        attachmentTransactionJob?.cancel()
+        attachmentTransactionJob = null
+        attachmentJobs.values.forEach { it.cancel() }
+        attachmentJobs.clear()
+        val current = mutableState.value
+        val localFileIds = current.attachments.mapNotNull { it.localFileId.takeIf(String::isNotBlank) }
+        mutableState.value = current.copy(
+            draft = "",
+            attachments = emptyList(),
+            editorGeneration = current.editorGeneration + 1,
+            attachmentCapability = AttachmentCapabilityState.Unknown,
+            attachmentNotice = null,
+        )
+        localFileIds.forEach { localFileId ->
+            viewModelScope.launch { runCatching { attachmentStagingStore.delete(localFileId) } }
+        }
+    }
+
     fun openSession(summary: StoredSession) {
         val connection = mutableState.value.probe ?: return
         val activeCredential = credential ?: return
+        discardComposerForContextSwitch()
         closeGateway()
         currentSessionCanResume = true
         mutableState.value = mutableState.value.copy(
@@ -591,6 +933,10 @@ internal class CelesteViewModel(
             messages = emptyList(),
             streamingText = "",
             draft = "",
+            attachments = emptyList(),
+            editorGeneration = mutableState.value.editorGeneration + 1,
+            attachmentCapability = AttachmentCapabilityState.Unknown,
+            attachmentNotice = null,
             turnState = TurnState.Synchronizing,
             loadingMessage = "Opening ${summary.title.ifBlank { "conversation" }}…",
             errorMessage = null,
@@ -622,8 +968,9 @@ internal class CelesteViewModel(
         val connection = snapshot.probe ?: return
         val activeCredential = credential ?: return
         val selectedProfile = snapshot.selectedProfile
+        discardComposerForContextSwitch()
         closeGateway()
-        mutableState.value = snapshot.copy(
+        mutableState.value = mutableState.value.copy(
             activeSummary = null,
             messages = emptyList(),
             streamingText = "",
@@ -685,6 +1032,7 @@ internal class CelesteViewModel(
     }
 
     fun leaveConversation() {
+        discardComposerForContextSwitch()
         closeGateway()
         mutableState.value = mutableState.value.copy(
             activeSummary = null,
@@ -701,42 +1049,312 @@ internal class CelesteViewModel(
         val activeGateway = gateway ?: return
         val snapshot = mutableState.value
         val runtimeId = currentRuntimeSessionId ?: return
-        val text = snapshot.draft.trim()
-        if (text.isBlank() || snapshot.turnState != TurnState.Idle) return
+        if (snapshot.turnState != TurnState.Idle) return
 
+        val text = snapshot.draft.trim()
+        val attachments = snapshot.attachments
+        if (text.isBlank()) {
+            if (attachments.isNotEmpty()) {
+                mutableState.value = snapshot.copy(
+                    attachmentNotice = "Add a caption before sending images; image-only send is not enabled.",
+                )
+            }
+            return
+        }
+
+        val owner = currentAttachmentOwner(snapshot)
+        if (attachments.any { it.owner != owner }) {
+            mutableState.value = snapshot.copy(
+                attachmentNotice = "These images belong to another conversation. Select them again.",
+            )
+            return
+        }
+        val submittedGeneration = snapshot.editorGeneration
         val localId = "local-${localMessageCounter.incrementAndGet()}"
+        val optimisticAttachments = attachments.map { attachment ->
+            MessageAttachment(
+                id = attachment.id.toString(),
+                displayName = attachment.displayName,
+                mimeType = attachment.mimeType,
+                byteSize = attachment.byteSize,
+                serverReference = attachment.serverReference,
+                preview = attachment.preview,
+            )
+        }
         mutableState.value = snapshot.copy(
             messages = snapshot.messages + ConversationMessage(
                 role = "user",
                 text = text,
                 id = localId,
                 pending = true,
+                attachments = optimisticAttachments,
             ),
             streamingText = "",
-            draft = "",
             turnState = TurnState.Running,
             errorMessage = null,
+            attachmentNotice = null,
         )
         // prompt.submit creates the durable row before work begins. From this point on,
         // uncertain delivery must reconcile by stored ID and must never create/resend.
         currentSessionCanResume = true
-        viewModelScope.launch {
-            runCatching { activeGateway.submitPrompt(runtimeId, text) }
-                .onSuccess {
+        val transaction = viewModelScope.launch {
+            var activeAttachmentId: UUID? = null
+            try {
+                val references = mutableListOf<String>()
+                for (attachment in attachments) {
+                    activeAttachmentId = attachment.id
+                    ensureCurrentAttachmentTransaction(
+                        activeGateway = activeGateway,
+                        owner = owner,
+                        runtimeId = runtimeId,
+                        generation = submittedGeneration,
+                        text = text,
+                        attachmentIds = attachments.map(AttachmentDraft::id),
+                    )
+                    val stagedReference = attachment.serverReference
+                    if (
+                        attachment.transfer == AttachmentTransferState.Staged &&
+                        stagedReference != null &&
+                        stagedReference.isNotBlank()
+                    ) {
+                        references += stagedReference
+                        activeAttachmentId = null
+                        continue
+                    }
+                    updateAttachmentIfCurrent(
+                        owner = owner,
+                        editorGeneration = submittedGeneration,
+                        attachmentId = attachment.id,
+                        expectedAttachmentGeneration = attachment.generation,
+                    ) { current ->
+                        current.copy(transfer = AttachmentTransferState.Uploading, error = null)
+                    }
+                    val bytes = attachmentStagingStore.readBytes(attachment.localFileId)
+                    val validated = AttachmentValidator.validate(
+                        bytes,
+                        attachment.mimeType,
+                        attachment.displayName,
+                    )
+                    ensureCurrentAttachmentTransaction(
+                        activeGateway = activeGateway,
+                        owner = owner,
+                        runtimeId = runtimeId,
+                        generation = submittedGeneration,
+                        text = text,
+                        attachmentIds = attachments.map(AttachmentDraft::id),
+                    )
+                    val attached = activeGateway.attachImageBytes(
+                        owner = AttachmentSessionOwner(owner.storedSessionIdOrNewConversationId, runtimeId),
+                        bytes = bytes,
+                        filename = attachment.displayName,
+                        mimeType = validated.mimeType,
+                        clientAttachmentId = attachment.id.toString(),
+                    )
+                    references += attached.serverReference
+                    updateAttachmentIfCurrent(
+                        owner = owner,
+                        editorGeneration = submittedGeneration,
+                        attachmentId = attachment.id,
+                        expectedAttachmentGeneration = attachment.generation,
+                    ) { current ->
+                        current.copy(
+                            byteSize = attached.byteSize,
+                            mimeType = validated.mimeType,
+                            serverReference = attached.serverReference,
+                            transfer = AttachmentTransferState.Staged,
+                            error = null,
+                        )
+                    }
+                    if (
+                        gateway === activeGateway &&
+                        currentRuntimeSessionId == runtimeId &&
+                        isCurrentAttachmentContext(mutableState.value, owner, submittedGeneration)
+                    ) {
+                        mutableState.value = mutableState.value.copy(
+                            attachmentCapability = AttachmentCapabilityState.Supported,
+                        )
+                    }
+                    activeAttachmentId = null
+                }
+
+                ensureCurrentAttachmentTransaction(
+                    activeGateway = activeGateway,
+                    owner = owner,
+                    runtimeId = runtimeId,
+                    generation = submittedGeneration,
+                    text = text,
+                    attachmentIds = attachments.map(AttachmentDraft::id),
+                )
+                val submittedText = buildImagePrompt(text, references)
+                activeAttachmentId = null
+                activeGateway.submitPrompt(runtimeId, submittedText)
+                if (gateway === activeGateway) {
                     mutableState.value = mutableState.value.copy(
                         messages = mutableState.value.messages.map { message ->
                             if (message.id == localId) message.copy(pending = false) else message
                         },
                     )
                 }
-                .onFailure { error ->
-                    mutableState.value = mutableState.value.copy(
-                        errorMessage = error.message ?: "Hermes could not send that message.",
-                    )
-                    if (gateway === activeGateway) {
-                        runCatching { reconcile(activeGateway, currentStoredSessionId ?: return@launch) }
-                    }
+                clearSubmittedDraftIfCurrent(
+                    owner = owner,
+                    generation = submittedGeneration,
+                    text = text,
+                    attachmentIds = attachments.map(AttachmentDraft::id),
+                )
+            } catch (error: Throwable) {
+                if (error is CancellationException) throw error
+                handleAttachmentTransactionFailure(
+                    activeGateway = activeGateway,
+                    owner = owner,
+                    generation = submittedGeneration,
+                    runtimeId = runtimeId,
+                    text = text,
+                    attachmentIds = attachments.map(AttachmentDraft::id),
+                    localMessageId = localId,
+                    failedAttachmentId = activeAttachmentId,
+                    error = error,
+                )
+            } finally {
+                if (attachmentTransactionJob === coroutineContext[Job]) {
+                    attachmentTransactionJob = null
                 }
+            }
+        }
+        attachmentTransactionJob = transaction
+    }
+
+    private fun ensureCurrentAttachmentTransaction(
+        activeGateway: GatewayConnection,
+        owner: DraftOwner,
+        runtimeId: String,
+        generation: Long,
+        text: String,
+        attachmentIds: List<UUID>,
+    ) {
+        val current = mutableState.value
+        val ids = current.attachments.map(AttachmentDraft::id)
+        if (
+            gateway !== activeGateway ||
+            currentRuntimeSessionId != runtimeId ||
+            !isCurrentAttachmentContext(current, owner, generation) ||
+            current.draft.trim() != text ||
+            ids != attachmentIds
+        ) {
+            throw StaleAttachmentTransaction()
+        }
+    }
+
+    private suspend fun clearSubmittedDraftIfCurrent(
+        owner: DraftOwner,
+        generation: Long,
+        text: String,
+        attachmentIds: List<UUID>,
+    ) {
+        val current = mutableState.value
+        if (
+            !isCurrentAttachmentContext(current, owner, generation) ||
+            current.draft.trim() != text ||
+            current.attachments.map(AttachmentDraft::id) != attachmentIds
+        ) return
+        val localFileIds = current.attachments.mapNotNull { it.localFileId.takeIf(String::isNotBlank) }
+        mutableState.value = current.copy(
+            draft = "",
+            attachments = emptyList(),
+            editorGeneration = current.editorGeneration + 1,
+            attachmentNotice = null,
+        )
+        localFileIds.forEach { localFileId ->
+            runCatching { attachmentStagingStore.delete(localFileId) }
+        }
+    }
+
+    private suspend fun handleAttachmentTransactionFailure(
+        activeGateway: GatewayConnection,
+        owner: DraftOwner,
+        generation: Long,
+        runtimeId: String,
+        text: String,
+        attachmentIds: List<UUID>,
+        localMessageId: String,
+        failedAttachmentId: UUID?,
+        error: Throwable,
+    ) {
+        val current = mutableState.value
+        if (
+            !isCurrentAttachmentContext(current, owner, generation) ||
+            current.draft.trim() != text ||
+            current.attachments.map(AttachmentDraft::id) != attachmentIds
+        ) return
+
+        if (failedAttachmentId != null) {
+            val classification = if (error is AttachmentValidationException) {
+                null
+            } else {
+                classifyAttachmentFailure(error)
+            }
+            val userError = when {
+                error is AttachmentValidationException -> error.userError
+                classification == AttachmentFailureClass.Unsupported ->
+                    UserFacingAttachmentError(AttachmentErrorKind.UnsupportedGateway)
+                classification == AttachmentFailureClass.AuthRequired ->
+                    UserFacingAttachmentError(AttachmentErrorKind.AuthenticationRequired)
+                classification == AttachmentFailureClass.Unknown ->
+                    UserFacingAttachmentError(AttachmentErrorKind.UploadStatusUnknown)
+                else -> UserFacingAttachmentError(AttachmentErrorKind.UploadFailed)
+            }
+            val transfer = if (classification == AttachmentFailureClass.Unknown) {
+                AttachmentTransferState.Unknown
+            } else {
+                AttachmentTransferState.Failed
+            }
+            val capability = when (classification) {
+                AttachmentFailureClass.Unsupported -> AttachmentCapabilityState.Unsupported
+                AttachmentFailureClass.AuthRequired -> AttachmentCapabilityState.AuthRequired
+                AttachmentFailureClass.Unknown -> AttachmentCapabilityState.TransientFailure
+                else -> current.attachmentCapability
+            }
+            mutableState.value = current.copy(
+                messages = current.messages.filterNot { it.id == localMessageId },
+                attachments = current.attachments.map { attachment ->
+                    if (attachment.id == failedAttachmentId) {
+                        attachment.copy(transfer = transfer, error = userError)
+                    } else {
+                        attachment
+                    }
+                },
+                turnState = TurnState.Idle,
+                attachmentCapability = capability,
+                attachmentNotice = userError.message,
+                errorMessage = null,
+            )
+            return
+        }
+
+        // prompt.submit has no idempotency key. Reconcile once, but never resend.
+        mutableState.value = current.copy(
+            messages = current.messages.filterNot { it.id == localMessageId },
+            turnState = TurnState.Reconnecting,
+            attachmentNotice = "Send status unknown — reconnect and check history before retrying.",
+            errorMessage = null,
+        )
+        val storedSessionId = currentStoredSessionId ?: return
+        if (gateway !== activeGateway) return
+        val reconciled = runCatching { reconcile(activeGateway, storedSessionId) }
+        if (reconciled.isFailure) {
+            mutableState.value = mutableState.value.copy(
+                turnState = TurnState.Reconnecting,
+                attachmentNotice = "Send status unknown — reconnect and check history before retrying.",
+            )
+            return
+        }
+        val after = mutableState.value
+        val authoritativeMessagePresent = after.messages.any {
+            it.role == "user" && it.text.trim() == text
+        }
+        if (authoritativeMessagePresent) {
+            clearSubmittedDraftIfCurrent(owner, generation, text, attachmentIds)
+        } else if (isCurrentAttachmentContext(after, owner, generation)) {
+            mutableState.value = after.copy(turnState = TurnState.Idle)
         }
     }
 
@@ -1139,6 +1757,9 @@ internal class CelesteViewModel(
     override fun onCleared() {
         connectionJob?.cancel()
         connectionJob = null
+        attachmentTransactionJob?.cancel()
+        attachmentJobs.values.forEach { it.cancel() }
+        attachmentJobs.clear()
         closeGateway()
         dashboard.clearAuthentication()
         super.onCleared()

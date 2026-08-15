@@ -1,5 +1,8 @@
 package dev.hazydreams.hermesceleste.network
 
+import dev.hazydreams.hermesceleste.attachments.MessageAttachment
+import dev.hazydreams.hermesceleste.attachments.messageAttachmentFromReference
+import dev.hazydreams.hermesceleste.attachments.normalizeImageReferences
 import java.io.IOException
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
@@ -81,6 +84,8 @@ data class ConversationMessage(
     val id: String? = null,
     val pending: Boolean = false,
     val interim: Boolean = false,
+    val rawText: String = text,
+    val attachments: List<MessageAttachment> = emptyList(),
 )
 
 data class ResumedSession(
@@ -131,6 +136,18 @@ interface DashboardService {
         baseUrl: String,
         credential: GatewayCredential,
     ): List<DashboardProfile>
+
+    /**
+     * Profile-scoped preview seam. The current Hermes source exposes no
+     * authenticated media route for @image refs, so callers get a safe
+     * unavailable result instead of being handed a raw filesystem URL.
+     */
+    suspend fun readImageMedia(
+        baseUrl: String,
+        credential: GatewayCredential,
+        profileId: String,
+        serverReference: String,
+    ): ByteArray = throw AttachmentMediaUnavailable()
 
     suspend fun logout(baseUrl: String) = Unit
 

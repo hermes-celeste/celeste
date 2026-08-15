@@ -84,6 +84,9 @@ internal fun CelesteRoutes(ui: CelesteUiState, viewModel: CelesteViewModel) {
                     messages = ui.messages,
                     streamingText = ui.streamingText,
                     draft = ui.draft,
+                    attachments = ui.attachments,
+                    attachmentCapability = ui.attachmentCapability,
+                    attachmentNotice = ui.attachmentNotice,
                     turnState = ui.turnState,
                     loadingMessage = ui.loadingMessage,
                     errorMessage = ui.errorMessage,
@@ -92,6 +95,12 @@ internal fun CelesteRoutes(ui: CelesteUiState, viewModel: CelesteViewModel) {
                     onInterrupt = viewModel::interrupt,
                     onReconnect = viewModel::reconnectNow,
                     onBack = viewModel::leaveConversation,
+                    onBeginAttachmentPicker = viewModel::beginAttachmentPicker,
+                    onAttachmentPickerResult = { resolver, uris ->
+                        viewModel.onAttachmentPickerResult(resolver, uris)
+                    },
+                    onRemoveAttachment = viewModel::removeAttachment,
+                    onRetryAttachment = viewModel::retryAttachment,
                 )
             }
 
