@@ -15,6 +15,10 @@ import dev.hazydreams.hermesceleste.network.GatewayConnectionState
 import dev.hazydreams.hermesceleste.network.GatewayCredential
 import dev.hazydreams.hermesceleste.network.GatewayEvent
 import dev.hazydreams.hermesceleste.network.StoredSession
+import dev.hazydreams.hermesceleste.presentation.AssistantNameKey
+import dev.hazydreams.hermesceleste.presentation.AssistantNameStore
+import dev.hazydreams.hermesceleste.presentation.InMemoryAssistantNameStore
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -231,6 +235,7 @@ class CelesteViewModelTest {
         val createParams = gateway.requests.first { it.first == "session.create" }.second
         assertEquals("work", createParams["profile"]?.jsonPrimitive?.content)
         assertEquals("android", createParams["source"]?.jsonPrimitive?.content)
+        assertFalse(createParams.containsKey("assistant_name"))
 
         gateway.disconnect("blank session socket died")
         advanceUntilIdle()
@@ -254,6 +259,8 @@ class CelesteViewModelTest {
         assertEquals(2, gateway.methods.count { it == "session.create" })
         assertEquals(1, gateway.methods.count { it == "session.resume" })
         assertEquals(1, gateway.methods.count { it == "prompt.submit" })
+        val resumeParams = gateway.requests.last { it.first == "session.resume" }.second
+        assertFalse(resumeParams.containsKey("assistant_name"))
         viewModel.leaveConversation()
     }
 
@@ -267,6 +274,131 @@ class CelesteViewModelTest {
         assertEquals("and still arriving", suffix)
     }
 
+    @Test
+    fun assistantNameLoadsForTheActiveProfileAndSavesWithoutGatewayMutation() = runTest {
+        val gateway = FakeGateway()
+        val dashboard = FakeDashboard(gateway)
+        val assistantNames = InMemoryAssistantNameStore()
+        assistantNames.write("http://hermes.test:9119", "default", "Juno")
+        val viewModel = CelesteViewModel(
+            dashboard = dashboard,
+            assistantNameStore = assistantNames,
+            reconnectDelayMillis = { _, _ -> 0L },
+        )
+
+        viewModel.updateDashboardUrl("http://hermes.test:9119")
+        viewModel.findDashboard()
+        viewModel.loadSessions()
+        advanceUntilIdle()
+
+        assertEquals("Juno", viewModel.state.value.assistantDisplayName)
+        assertEquals(
+            AssistantNameKey("http://hermes.test:9119", "default"),
+            viewModel.state.value.assistantNameKey,
+        )
+        val gatewayMethodsBeforeSave = gateway.methods.toList()
+
+        viewModel.openAssistantNameEditor()
+        viewModel.updateAssistantNameDraft("Nova")
+        viewModel.saveAssistantName()
+        advanceUntilIdle()
+
+        assertEquals("Nova", viewModel.state.value.assistantDisplayName)
+        assertFalse(viewModel.state.value.assistantNameEditor.isOpen)
+        assertEquals(gatewayMethodsBeforeSave, gateway.methods)
+        assertEquals("Nova", assistantNames.read("http://hermes.test:9119", "default"))
+        viewModel.leaveConversation()
+    }
+
+    @Test
+    fun profileSwitchPublishesHermesAndRejectsAStaleRead() = runTest {
+        val gateway = FakeGateway()
+        val dashboard = FakeDashboard(gateway)
+        val assistantNames = DelayedAssistantNameStore(
+            values = mapOf("default" to "Juno", "work" to "Nova"),
+            blockedProfile = "work",
+        )
+        val viewModel = CelesteViewModel(
+            dashboard = dashboard,
+            assistantNameStore = assistantNames,
+            reconnectDelayMillis = { _, _ -> 0L },
+        )
+
+        viewModel.updateDashboardUrl("http://hermes.test:9119")
+        viewModel.findDashboard()
+        viewModel.loadSessions()
+        advanceUntilIdle()
+        assertEquals("Juno", viewModel.state.value.assistantDisplayName)
+
+        viewModel.selectProfile("work")
+        assertEquals("Hermes", viewModel.state.value.assistantDisplayName)
+        viewModel.selectProfile("default")
+        advanceUntilIdle()
+        assertEquals("Juno", viewModel.state.value.assistantDisplayName)
+
+        assistantNames.releaseBlockedRead()
+        advanceUntilIdle()
+        assertEquals("Juno", viewModel.state.value.assistantDisplayName)
+        viewModel.leaveConversation()
+    }
+
+    @Test
+    fun failedAssistantNameSaveRetainsTheEffectiveValueAndAllowsRetry() = runTest {
+        val gateway = FakeGateway()
+        val dashboard = FakeDashboard(gateway)
+        val assistantNames = FailingAssistantNameStore("Juno")
+        val viewModel = CelesteViewModel(
+            dashboard = dashboard,
+            assistantNameStore = assistantNames,
+            reconnectDelayMillis = { _, _ -> 0L },
+        )
+
+        viewModel.updateDashboardUrl("http://hermes.test:9119")
+        viewModel.findDashboard()
+        viewModel.loadSessions()
+        advanceUntilIdle()
+        viewModel.openAssistantNameEditor()
+        viewModel.updateAssistantNameDraft("Nova")
+        viewModel.saveAssistantName()
+        advanceUntilIdle()
+
+        assertEquals("Juno", viewModel.state.value.assistantDisplayName)
+        assertTrue(viewModel.state.value.assistantNameEditor.isOpen)
+        assertEquals(
+            "Couldn’t save assistant name on this device. Try again.",
+            viewModel.state.value.assistantNameEditor.errorMessage,
+        )
+        viewModel.leaveConversation()
+    }
+
+    @Test
+    fun signOutRetainsAliasesButForgetClearsOnlyTheCurrentOrigin() = runTest {
+        val gateway = FakeGateway()
+        val dashboard = FakeDashboard(gateway)
+        val assistantNames = InMemoryAssistantNameStore()
+        assistantNames.write("http://hermes.test:9119", "default", "Juno")
+        assistantNames.write("https://other.example", "default", "Atlas")
+        val viewModel = CelesteViewModel(
+            dashboard = dashboard,
+            assistantNameStore = assistantNames,
+            reconnectDelayMillis = { _, _ -> 0L },
+        )
+
+        viewModel.updateDashboardUrl("http://hermes.test:9119")
+        viewModel.findDashboard()
+        viewModel.loadSessions()
+        advanceUntilIdle()
+        viewModel.signOut()
+        advanceUntilIdle()
+
+        assertEquals("Juno", assistantNames.read("http://hermes.test:9119", "default"))
+        viewModel.forgetConnection()
+        advanceUntilIdle()
+
+        assertNull(assistantNames.read("http://hermes.test:9119", "default"))
+        assertEquals("Atlas", assistantNames.read("https://other.example", "default"))
+    }
+
     private suspend fun openConversation(gateway: FakeGateway): CelesteViewModel {
         val dashboard = FakeDashboard(gateway)
         val viewModel = CelesteViewModel(
@@ -278,6 +410,38 @@ class CelesteViewModelTest {
         viewModel.loadSessions()
         viewModel.openSession(dashboard.session)
         return viewModel
+    }
+
+    private class DelayedAssistantNameStore(
+        private val values: Map<String, String>,
+        private val blockedProfile: String,
+    ) : AssistantNameStore {
+        private val release = CompletableDeferred<Unit>()
+
+        override suspend fun read(origin: String, profile: String): String? {
+            if (profile == blockedProfile) release.await()
+            return values[profile]
+        }
+
+        override suspend fun write(origin: String, profile: String, name: String?) = Unit
+
+        override suspend fun clearOrigin(origin: String) = Unit
+
+        fun releaseBlockedRead() {
+            release.complete(Unit)
+        }
+    }
+
+    private class FailingAssistantNameStore(
+        private val value: String,
+    ) : AssistantNameStore {
+        override suspend fun read(origin: String, profile: String): String? = value
+
+        override suspend fun write(origin: String, profile: String, name: String?) {
+            throw IOException("synthetic local write failure")
+        }
+
+        override suspend fun clearOrigin(origin: String) = Unit
     }
 
     private class FakeDashboard(

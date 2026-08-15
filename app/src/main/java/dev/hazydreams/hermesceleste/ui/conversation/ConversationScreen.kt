@@ -50,6 +50,7 @@ import androidx.compose.ui.unit.sp
 import dev.hazydreams.hermesceleste.TurnState
 import dev.hazydreams.hermesceleste.network.ConversationMessage
 import dev.hazydreams.hermesceleste.network.StoredSession
+import dev.hazydreams.hermesceleste.presentation.DEFAULT_ASSISTANT_NAME
 import dev.hazydreams.hermesceleste.ui.CelesteBackdrop
 import dev.hazydreams.hermesceleste.ui.CelesteBlue
 import dev.hazydreams.hermesceleste.ui.CelesteCoral
@@ -69,6 +70,7 @@ internal fun ConversationScreen(
     messages: List<ConversationMessage>,
     streamingText: String,
     draft: String,
+    assistantDisplayName: String = DEFAULT_ASSISTANT_NAME,
     turnState: TurnState,
     loadingMessage: String?,
     errorMessage: String?,
@@ -80,6 +82,7 @@ internal fun ConversationScreen(
 ) {
     val listState = rememberLazyListState()
     val focusManager = LocalFocusManager.current
+    val effectiveAssistantDisplayName = assistantDisplayName.ifBlank { DEFAULT_ASSISTANT_NAME }
     val transcriptKeys = remember(messages) { transcriptItemKeys(messages) }
     val visibleMessageCount = messages.size + if (streamingText.isNotBlank()) 1 else 0
     val safeDrawingInsets = WindowInsets.safeDrawing
@@ -163,12 +166,13 @@ internal fun ConversationScreen(
                     items = messages,
                     key = { index, _ -> transcriptKeys[index] },
                 ) { _, message ->
-                    MessageBubble(message)
+                    MessageBubble(message, effectiveAssistantDisplayName)
                 }
                 if (streamingText.isNotBlank()) {
                     item(key = STREAMING_TRANSCRIPT_KEY) {
                         MessageBubble(
                             ConversationMessage(role = "assistant", text = streamingText, pending = true),
+                            effectiveAssistantDisplayName,
                         )
                     }
                 }
@@ -191,8 +195,8 @@ internal fun ConversationScreen(
                     placeholder = {
                         Text(
                             when (turnState) {
-                                TurnState.Idle -> "Message Hermes"
-                                TurnState.Running -> "Hermes is responding…"
+                                TurnState.Idle -> "Message $effectiveAssistantDisplayName"
+                                TurnState.Running -> "$effectiveAssistantDisplayName is responding…"
                                 TurnState.Synchronizing -> "Synchronizing…"
                                 TurnState.Reconnecting -> "Keep drafting while Celeste reconnects…"
                             },

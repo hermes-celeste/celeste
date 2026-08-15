@@ -26,6 +26,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import dev.hazydreams.hermesceleste.network.ConversationMessage
+import dev.hazydreams.hermesceleste.presentation.DEFAULT_ASSISTANT_NAME
 import dev.hazydreams.hermesceleste.ui.CelesteBlue
 import dev.hazydreams.hermesceleste.ui.CelesteCoral
 import dev.hazydreams.hermesceleste.ui.CelesteGoldText
@@ -50,10 +51,14 @@ internal fun transcriptItemKeys(messages: List<ConversationMessage>): List<Strin
 }
 
 @Composable
-internal fun MessageBubble(message: ConversationMessage) {
+internal fun MessageBubble(
+    message: ConversationMessage,
+    assistantDisplayName: String = DEFAULT_ASSISTANT_NAME,
+) {
+    val effectiveAssistantDisplayName = assistantDisplayName.ifBlank { DEFAULT_ASSISTANT_NAME }
     when (message.role) {
         "user" -> UserMessage(message)
-        "assistant" -> AssistantMessage(message)
+        "assistant" -> AssistantMessage(message, effectiveAssistantDisplayName)
         else -> ToolMessage(message)
     }
 }
@@ -84,7 +89,7 @@ private fun UserMessage(message: ConversationMessage) {
 }
 
 @Composable
-private fun AssistantMessage(message: ConversationMessage) {
+private fun AssistantMessage(message: ConversationMessage, assistantDisplayName: String) {
     val accent = CelesteCoral
     Column(
         modifier = Modifier
@@ -99,7 +104,7 @@ private fun AssistantMessage(message: ConversationMessage) {
             }
             .padding(start = 17.dp, end = 8.dp, top = 3.dp, bottom = 3.dp),
     ) {
-        MessageLabel("Hermes", accent, message.pending)
+        MessageLabel(assistantDisplayName, accent, message.pending)
         if (message.text.isNotBlank()) {
             Spacer(Modifier.height(8.dp))
             Text(

@@ -53,12 +53,25 @@ internal fun CelesteRoutes(ui: CelesteUiState, viewModel: CelesteViewModel) {
 
     when (destination) {
         CelesteDestination.Settings -> {
-            BackHandler { destination = CelesteDestination.Content }
+            BackHandler {
+                if (ui.assistantNameEditor.isOpen) {
+                    viewModel.cancelAssistantNameEdit()
+                } else {
+                    destination = CelesteDestination.Content
+                }
+            }
             SettingsScreen(
                 dashboardUrl = ui.dashboardUrl,
                 connectionPhase = ui.connectionPhase,
+                assistantDisplayName = ui.assistantDisplayName,
+                assistantNameScope = ui.assistantNameKey,
+                assistantNameEditor = ui.assistantNameEditor,
                 onBack = { destination = CelesteDestination.Content },
                 onGateway = { destination = CelesteDestination.Gateway },
+                onOpenAssistantName = viewModel::openAssistantNameEditor,
+                onAssistantNameDraftChange = viewModel::updateAssistantNameDraft,
+                onSaveAssistantName = viewModel::saveAssistantName,
+                onCancelAssistantName = viewModel::cancelAssistantNameEdit,
             )
         }
 
@@ -84,6 +97,7 @@ internal fun CelesteRoutes(ui: CelesteUiState, viewModel: CelesteViewModel) {
                     messages = ui.messages,
                     streamingText = ui.streamingText,
                     draft = ui.draft,
+                    assistantDisplayName = ui.assistantDisplayName,
                     turnState = ui.turnState,
                     loadingMessage = ui.loadingMessage,
                     errorMessage = ui.errorMessage,

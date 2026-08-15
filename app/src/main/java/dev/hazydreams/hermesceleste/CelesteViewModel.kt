@@ -29,6 +29,11 @@ import dev.hazydreams.hermesceleste.network.interruptSession
 import dev.hazydreams.hermesceleste.network.resumeStoredSession
 import dev.hazydreams.hermesceleste.network.string
 import dev.hazydreams.hermesceleste.network.submitPrompt
+import dev.hazydreams.hermesceleste.presentation.AssistantNameKey
+import dev.hazydreams.hermesceleste.presentation.AssistantNamePolicy
+import dev.hazydreams.hermesceleste.presentation.AssistantNameStore
+import dev.hazydreams.hermesceleste.presentation.DEFAULT_ASSISTANT_NAME
+import dev.hazydreams.hermesceleste.presentation.InMemoryAssistantNameStore
 import java.io.IOException
 import java.util.concurrent.atomic.AtomicLong
 import kotlin.math.min
@@ -61,6 +66,15 @@ internal enum class ConnectionPhase {
     Connected,
 }
 
+internal data class AssistantNameEditState(
+    val isOpen: Boolean = false,
+    val draft: String = "",
+    val errorMessage: String? = null,
+    val isSaving: Boolean = false,
+) {
+    val canSave: Boolean get() = !isSaving && errorMessage == null
+}
+
 internal data class CelesteUiState(
     val connectionPhase: ConnectionPhase = ConnectionPhase.CheckingSavedConnection,
     val dashboardUrl: String = "",
@@ -72,6 +86,9 @@ internal data class CelesteUiState(
     val sessions: List<StoredSession>? = null,
     val profiles: List<DashboardProfile> = listOf(DashboardProfile(name = "default", isDefault = true)),
     val selectedProfile: String = "default",
+    val assistantDisplayName: String = DEFAULT_ASSISTANT_NAME,
+    val assistantNameKey: AssistantNameKey? = null,
+    val assistantNameEditor: AssistantNameEditState = AssistantNameEditState(),
     val activeSummary: StoredSession? = null,
     val messages: List<ConversationMessage> = emptyList(),
     val streamingText: String = "",
@@ -96,6 +113,7 @@ private data class RememberedDashboard(
 internal class CelesteViewModel(
     private val dashboard: DashboardService = DashboardClient(),
     private val connectionStore: ConnectionStore = InMemoryConnectionStore(),
+    private val assistantNameStore: AssistantNameStore = InMemoryAssistantNameStore(),
     private val reconnectDelayMillis: (attempt: Int, wasRunning: Boolean) -> Long = { attempt, wasRunning ->
         if (wasRunning && attempt == 0) 100L else min(5_000L, 1_000L shl attempt.coerceAtMost(2))
     },
@@ -113,6 +131,10 @@ internal class CelesteViewModel(
     private var connectionJob: Job? = null
     private var connectionAttempt = 0L
     private val connectionStoreMutex = Mutex()
+    private val assistantNameStoreMutex = Mutex()
+    private var assistantNameContextGeneration = 0L
+    private var assistantNameReadJob: Job? = null
+    private var assistantNameSaveJob: Job? = null
     private var currentDescriptor: SavedConnectionDescriptor? = null
     private var reconnectAttempts = 0
     private var reconciling = false
@@ -149,13 +171,141 @@ internal class CelesteViewModel(
 
     fun selectProfile(name: String) {
         if (mutableState.value.profiles.none { it.name == name }) return
-        mutableState.value = mutableState.value.copy(selectedProfile = name)
+        resolveAssistantNameContext(mutableState.value.copy(selectedProfile = name))
     }
+
+    fun openAssistantNameEditor() {
+        val snapshot = mutableState.value
+        if (snapshot.assistantNameKey == null) return
+        mutableState.value = snapshot.copy(
+            assistantNameEditor = AssistantNameEditState(
+                isOpen = true,
+                draft = snapshot.assistantDisplayName,
+            ),
+        )
+    }
+
+    fun updateAssistantNameDraft(value: String) {
+        val editor = mutableState.value.assistantNameEditor
+        if (!editor.isOpen || editor.isSaving) return
+        val validation = AssistantNamePolicy.validate(value)
+        mutableState.value = mutableState.value.copy(
+            assistantNameEditor = editor.copy(
+                draft = value,
+                errorMessage = validation.errorMessage,
+            ),
+        )
+    }
+
+    fun cancelAssistantNameEdit() {
+        if (!mutableState.value.assistantNameEditor.isSaving) {
+            mutableState.value = mutableState.value.copy(
+                assistantNameEditor = AssistantNameEditState(),
+            )
+        }
+    }
+
+    fun saveAssistantName() {
+        val snapshot = mutableState.value
+        val editor = snapshot.assistantNameEditor
+        val key = snapshot.assistantNameKey
+        if (!editor.isOpen || editor.isSaving || key == null) return
+        val validation = AssistantNamePolicy.validate(editor.draft)
+        if (validation.errorMessage != null) {
+            mutableState.value = snapshot.copy(
+                assistantNameEditor = editor.copy(errorMessage = validation.errorMessage),
+            )
+            return
+        }
+
+        val generation = assistantNameContextGeneration
+        mutableState.value = snapshot.copy(
+            assistantNameEditor = editor.copy(isSaving = true, errorMessage = null),
+        )
+        assistantNameSaveJob?.cancel()
+        assistantNameSaveJob = viewModelScope.launch {
+            try {
+                assistantNameStoreMutex.withLock {
+                    assistantNameStore.write(key.origin, key.profile, validation.normalized)
+                }
+                if (!isCurrentAssistantNameContext(generation, key)) return@launch
+                mutableState.value = mutableState.value.copy(
+                    assistantDisplayName = validation.normalized ?: DEFAULT_ASSISTANT_NAME,
+                    assistantNameEditor = AssistantNameEditState(),
+                )
+            } catch (error: CancellationException) {
+                throw error
+            } catch (_: Throwable) {
+                if (!isCurrentAssistantNameContext(generation, key)) return@launch
+                mutableState.value = mutableState.value.copy(
+                    assistantNameEditor = mutableState.value.assistantNameEditor.copy(
+                        isSaving = false,
+                        errorMessage = "Couldn’t save assistant name on this device. Try again.",
+                    ),
+                )
+            }
+        }
+    }
+
+    private fun resolveAssistantNameContext(baseState: CelesteUiState = mutableState.value) {
+        val key = AssistantNameKey.from(baseState.probe?.baseUrl, baseState.selectedProfile)
+        publishAssistantNameContext(key, baseState)
+    }
+
+    private fun reloadAssistantNameContext() {
+        val key = mutableState.value.assistantNameKey ?: return
+        publishAssistantNameContext(key)
+    }
+
+    private fun publishAssistantNameContext(
+        key: AssistantNameKey?,
+        baseState: CelesteUiState = mutableState.value,
+    ) {
+        assistantNameContextGeneration += 1
+        val generation = assistantNameContextGeneration
+        assistantNameReadJob?.cancel()
+        assistantNameSaveJob?.cancel()
+        assistantNameReadJob = null
+        assistantNameSaveJob = null
+        mutableState.value = baseState.copy(
+            assistantDisplayName = DEFAULT_ASSISTANT_NAME,
+            assistantNameKey = key,
+            assistantNameEditor = AssistantNameEditState(),
+        )
+        if (key == null) return
+
+        assistantNameReadJob = viewModelScope.launch {
+            val storedName = runCatching {
+                assistantNameStoreMutex.withLock {
+                    assistantNameStore.read(key.origin, key.profile)
+                }
+            }.getOrNull()?.let { value ->
+                AssistantNamePolicy.validate(value)
+                    .takeIf { it.errorMessage == null && it.normalized != null }
+                    ?.normalized
+            }
+            if (!isCurrentAssistantNameContext(generation, key)) return@launch
+            mutableState.value = mutableState.value.copy(
+                assistantDisplayName = storedName ?: DEFAULT_ASSISTANT_NAME,
+            )
+        }
+    }
+
+    private fun resetAssistantNameContext() {
+        publishAssistantNameContext(null)
+    }
+
+    private fun isCurrentAssistantNameContext(
+        generation: Long,
+        key: AssistantNameKey,
+    ): Boolean =
+        assistantNameContextGeneration == generation && mutableState.value.assistantNameKey == key
 
     fun findDashboard() {
         val rawUrl = mutableState.value.dashboardUrl
         if (rawUrl.isBlank()) return
         val attempt = beginConnectionAttempt()
+        resetAssistantNameContext()
         closeGateway()
         credential = null
         currentDescriptor = null
@@ -282,6 +432,7 @@ internal class CelesteViewModel(
 
     fun leaveSessionList() {
         beginConnectionAttempt()
+        resetAssistantNameContext()
         closeGateway()
         credential = null
         mutableState.value = mutableState.value.copy(
@@ -301,6 +452,7 @@ internal class CelesteViewModel(
 
     fun useAnotherConnection() {
         beginConnectionAttempt()
+        resetAssistantNameContext()
         closeGateway()
         credential = null
         currentDescriptor = null
@@ -312,10 +464,11 @@ internal class CelesteViewModel(
         val snapshot = mutableState.value
         val activeCredential = credential
         val attempt = beginConnectionAttempt()
+        resetAssistantNameContext()
         closeGateway()
         credential = null
         currentDescriptor = null
-        mutableState.value = snapshot.copy(
+        mutableState.value = mutableState.value.copy(
             connectionPhase = ConnectionPhase.ManualSetup,
             sessions = null,
             activeSummary = null,
@@ -349,8 +502,14 @@ internal class CelesteViewModel(
 
     fun forgetConnection() {
         val snapshot = mutableState.value
+        val forgottenOrigin = snapshot.assistantNameKey?.origin
+            ?: AssistantNameKey.from(
+                snapshot.probe?.baseUrl ?: currentDescriptor?.baseUrl ?: snapshot.dashboardUrl,
+                "default",
+            )?.origin
         val activeCredential = credential
         val attempt = beginConnectionAttempt()
+        resetAssistantNameContext()
         closeGateway()
         credential = null
         currentDescriptor = null
@@ -362,6 +521,11 @@ internal class CelesteViewModel(
             val error = connectionStoreMutex.withLock {
                 runCatching { connectionStore.forget() }.exceptionOrNull()
             }
+            val assistantNameError = forgottenOrigin?.let { origin ->
+                assistantNameStoreMutex.withLock {
+                    runCatching { assistantNameStore.clearOrigin(origin) }.exceptionOrNull()
+                }
+            }
             if (activeCredential == GatewayCredential.CookieSession && snapshot.probe != null) {
                 runCatching { dashboard.logout(snapshot.probe.baseUrl) }
             }
@@ -369,8 +533,12 @@ internal class CelesteViewModel(
             if (!isCurrentConnectionAttempt(attempt)) return@launch
             mutableState.value = CelesteUiState(
                 connectionPhase = ConnectionPhase.ManualSetup,
-                errorMessage = if (error == null) null else {
-                    "Celeste could not remove the saved connection. Try again."
+                errorMessage = when {
+                    assistantNameError != null -> {
+                        "Celeste could not remove the local assistant name. Try again."
+                    }
+                    error != null -> "Celeste could not remove the saved connection. Try again."
+                    else -> null
                 },
             )
         }
@@ -378,6 +546,7 @@ internal class CelesteViewModel(
 
     private fun restoreSavedConnection() {
         val attempt = beginConnectionAttempt()
+        resetAssistantNameContext()
         closeGateway()
         credential = null
         mutableState.value = CelesteUiState(
@@ -520,6 +689,7 @@ internal class CelesteViewModel(
     ) {
         credential = null
         currentDescriptor = null
+        resetAssistantNameContext()
         dashboard.clearAuthentication()
         connectionStoreMutex.withLock {
             runCatching { connectionStore.clearSecret() }
@@ -543,7 +713,7 @@ internal class CelesteViewModel(
             ?: loaded.profiles.firstOrNull(DashboardProfile::isDefault)?.name
             ?: loaded.profiles.firstOrNull()?.name
             ?: "default"
-        mutableState.value = mutableState.value.copy(
+        val connectedState = mutableState.value.copy(
             connectionPhase = ConnectionPhase.Connected,
             savedAuthMode = currentDescriptor?.authMode,
             sessions = loaded.sessions,
@@ -556,6 +726,7 @@ internal class CelesteViewModel(
             loadingMessage = null,
             errorMessage = errorMessage,
         )
+        resolveAssistantNameContext(connectedState)
     }
 
     private fun manualState(
@@ -786,6 +957,7 @@ internal class CelesteViewModel(
     }
 
     fun onForeground() {
+        reloadAssistantNameContext()
         val activeGateway = gateway ?: return
         val storedSessionId = currentStoredSessionId ?: return
         if (foregroundCheckJob?.isActive == true || reconciling) return
@@ -1139,6 +1311,10 @@ internal class CelesteViewModel(
     override fun onCleared() {
         connectionJob?.cancel()
         connectionJob = null
+        assistantNameReadJob?.cancel()
+        assistantNameReadJob = null
+        assistantNameSaveJob?.cancel()
+        assistantNameSaveJob = null
         closeGateway()
         dashboard.clearAuthentication()
         super.onCleared()

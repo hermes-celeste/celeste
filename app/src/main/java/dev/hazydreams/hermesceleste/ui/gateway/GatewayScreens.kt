@@ -20,6 +20,8 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -48,14 +50,18 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import dev.hazydreams.hermesceleste.ConnectionPhase
+import dev.hazydreams.hermesceleste.AssistantNameEditState
 import dev.hazydreams.hermesceleste.connection.SavedAuthMode
 import dev.hazydreams.hermesceleste.network.DashboardProbeResult
+import dev.hazydreams.hermesceleste.presentation.AssistantNameKey
+import dev.hazydreams.hermesceleste.presentation.DEFAULT_ASSISTANT_NAME
 import dev.hazydreams.hermesceleste.ui.CelesteBackdrop
 import dev.hazydreams.hermesceleste.ui.CelesteBlue
 import dev.hazydreams.hermesceleste.ui.CelesteCoral
@@ -173,8 +179,15 @@ internal fun ConnectionUnavailableScreen(
 internal fun SettingsScreen(
     dashboardUrl: String,
     connectionPhase: ConnectionPhase,
+    assistantDisplayName: String = DEFAULT_ASSISTANT_NAME,
+    assistantNameScope: AssistantNameKey? = null,
+    assistantNameEditor: AssistantNameEditState = AssistantNameEditState(),
     onBack: () -> Unit,
     onGateway: () -> Unit,
+    onOpenAssistantName: () -> Unit = {},
+    onAssistantNameDraftChange: (String) -> Unit = {},
+    onSaveAssistantName: () -> Unit = {},
+    onCancelAssistantName: () -> Unit = {},
 ) {
     CelesteBackdrop {
         Column(
@@ -182,43 +195,180 @@ internal fun SettingsScreen(
                 .fillMaxSize()
                 .padding(horizontal = 28.dp, vertical = 38.dp),
         ) {
-            EditorialHeader(title = "Settings", onBack = onBack)
+            EditorialHeader(
+                title = "Settings",
+                onBack = if (assistantNameEditor.isOpen) onCancelAssistantName else onBack,
+            )
             Spacer(Modifier.height(44.dp))
-            CelesteSectionLabel("Connection")
-            Spacer(Modifier.height(12.dp))
-            EditorialDivider()
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clickable(onClick = onGateway)
-                    .padding(vertical = 20.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Column(Modifier.weight(1f)) {
-                    Text("Gateway", style = MaterialTheme.typography.titleLarge)
-                    Spacer(Modifier.height(5.dp))
+            if (assistantNameEditor.isOpen) {
+                AssistantNameEditor(
+                    state = assistantNameEditor,
+                    scope = assistantNameScope,
+                    onDraftChange = onAssistantNameDraftChange,
+                    onSave = onSaveAssistantName,
+                    onCancel = onCancelAssistantName,
+                )
+            } else {
+                CelesteSectionLabel("Connection")
+                Spacer(Modifier.height(12.dp))
+                EditorialDivider()
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable(onClick = onGateway)
+                        .padding(vertical = 20.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column(Modifier.weight(1f)) {
+                        Text("Gateway", style = MaterialTheme.typography.titleLarge)
+                        Spacer(Modifier.height(5.dp))
+                        Text(
+                            dashboardUrl.ifBlank { "Not configured" },
+                            color = CelesteMuted,
+                            style = MaterialTheme.typography.bodyMedium,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                    StatusDot(connectionPhase)
+                    Spacer(Modifier.size(8.dp))
                     Text(
-                        dashboardUrl.ifBlank { "Not configured" },
+                        connectionStatusLabel(connectionPhase),
                         color = CelesteMuted,
                         style = MaterialTheme.typography.bodyMedium,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
                     )
+                    Spacer(Modifier.size(10.dp))
+                    Text("→", color = CelesteInk, fontSize = 18.sp)
                 }
-                StatusDot(connectionPhase)
-                Spacer(Modifier.size(8.dp))
-                Text(
-                    connectionStatusLabel(connectionPhase),
-                    color = CelesteMuted,
-                    style = MaterialTheme.typography.bodyMedium,
-                )
-                Spacer(Modifier.size(10.dp))
-                Text("→", color = CelesteInk, fontSize = 18.sp)
+                EditorialDivider()
+                Spacer(Modifier.height(30.dp))
+                CelesteSectionLabel("On this device")
+                Spacer(Modifier.height(12.dp))
+                EditorialDivider()
+                val canEditAssistantName = assistantNameScope != null
+                val effectiveAssistantName = assistantDisplayName.ifBlank { DEFAULT_ASSISTANT_NAME }
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable(
+                            enabled = canEditAssistantName,
+                            onClick = onOpenAssistantName,
+                        )
+                        .semantics {
+                            contentDescription = if (canEditAssistantName) {
+                                "Assistant name, $effectiveAssistantName"
+                            } else {
+                                "Assistant name unavailable until a connection and profile are selected"
+                            }
+                        }
+                        .padding(vertical = 20.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column(Modifier.weight(1f)) {
+                        Text(
+                            "Assistant name",
+                            style = MaterialTheme.typography.titleLarge,
+                            color = if (canEditAssistantName) CelesteInk else CelesteMuted,
+                        )
+                        Spacer(Modifier.height(5.dp))
+                        if (canEditAssistantName) {
+                            Text(
+                                effectiveAssistantName,
+                                color = CelesteInk,
+                                style = MaterialTheme.typography.bodyMedium,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                            Text(
+                                assistantNameScope?.scopeLabel().orEmpty(),
+                                color = CelesteMuted,
+                                style = MaterialTheme.typography.bodySmall,
+                                maxLines = 2,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        } else {
+                            Text(
+                                "Connect to a gateway and select a profile to set a local name.",
+                                color = CelesteMuted,
+                                style = MaterialTheme.typography.bodyMedium,
+                            )
+                        }
+                    }
+                    if (canEditAssistantName) {
+                        Spacer(Modifier.size(10.dp))
+                        Text("→", color = CelesteInk, fontSize = 18.sp)
+                    }
+                }
+                EditorialDivider()
             }
-            EditorialDivider()
         }
     }
 }
+
+@Composable
+private fun AssistantNameEditor(
+    state: AssistantNameEditState,
+    scope: AssistantNameKey?,
+    onDraftChange: (String) -> Unit,
+    onSave: () -> Unit,
+    onCancel: () -> Unit,
+) {
+    Text("Assistant name", style = MaterialTheme.typography.displaySmall)
+    Spacer(Modifier.height(12.dp))
+    Text(
+        text = scope?.scopeLabel().orEmpty(),
+        color = CelesteMuted,
+        style = MaterialTheme.typography.bodyMedium,
+        maxLines = 2,
+        overflow = TextOverflow.Ellipsis,
+    )
+    Spacer(Modifier.height(24.dp))
+    OutlinedTextField(
+        value = state.draft,
+        onValueChange = onDraftChange,
+        modifier = Modifier
+            .fillMaxWidth()
+            .semantics { contentDescription = "Assistant name" },
+        label = { Text("Assistant name") },
+        singleLine = true,
+        isError = state.errorMessage != null,
+        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+        keyboardActions = KeyboardActions(onDone = { if (state.canSave) onSave() }),
+        shape = RoundedCornerShape(15.dp),
+        textStyle = MaterialTheme.typography.bodyLarge,
+        colors = OutlinedTextFieldDefaults.colors(
+            focusedBorderColor = CelesteBlue,
+            unfocusedBorderColor = CelesteHairline,
+            focusedContainerColor = CelestePanel,
+            unfocusedContainerColor = CelestePanel,
+            cursorColor = CelesteBlue,
+        ),
+        supportingText = {
+            state.errorMessage?.let { error -> Text(error, color = CelesteError) }
+        },
+    )
+    Spacer(Modifier.height(18.dp))
+    Text(
+        "Only changes how Celeste labels the assistant on this device. It does not rename the Hermes profile or change how Hermes responds.",
+        color = CelesteMuted,
+        style = MaterialTheme.typography.bodyMedium,
+    )
+    Spacer(Modifier.height(28.dp))
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.End,
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        TextButton(onClick = onCancel, enabled = !state.isSaving) {
+            Text("Cancel", color = CelesteBlue)
+        }
+        TextButton(onClick = onSave, enabled = state.canSave) {
+            Text("Save", color = if (state.canSave) CelesteBlue else CelesteMuted)
+        }
+    }
+}
+
+private fun AssistantNameKey.scopeLabel(): String = "$origin · profile: $profile"
 
 @Composable
 internal fun GatewaySettingsScreen(

@@ -9,6 +9,7 @@ import dev.hazydreams.hermesceleste.network.ConversationMessage
 import dev.hazydreams.hermesceleste.network.DashboardProbeResult
 import dev.hazydreams.hermesceleste.network.DashboardProfile
 import dev.hazydreams.hermesceleste.network.StoredSession
+import dev.hazydreams.hermesceleste.presentation.AssistantNameKey
 import dev.hazydreams.hermesceleste.ui.HermesCelesteTheme
 import dev.hazydreams.hermesceleste.ui.conversation.ConversationScreen
 import dev.hazydreams.hermesceleste.ui.gateway.ConnectionLoadingScreen
@@ -187,6 +188,74 @@ fun SessionTokenGatewayPreviewScreenshot() {
 }
 
 @PreviewTest
+@Preview(name = "14 · Assistant name editor", widthDp = 390, heightDp = 844, showBackground = true)
+@Composable
+fun AssistantNameEditorPreviewScreenshot() {
+    HermesCelesteTheme {
+        SettingsScreen(
+            dashboardUrl = "https://hermes.example.net/hermes",
+            connectionPhase = ConnectionPhase.Connected,
+            assistantDisplayName = "Juno",
+            assistantNameScope = AssistantNameKey("https://hermes.example.net/hermes", "default"),
+            assistantNameEditor = AssistantNameEditState(
+                isOpen = true,
+                draft = "Juno",
+            ),
+            onBack = {},
+            onGateway = {},
+            onOpenAssistantName = {},
+            onAssistantNameDraftChange = {},
+            onSaveAssistantName = {},
+            onCancelAssistantName = {},
+        )
+    }
+}
+
+@PreviewTest
+@Preview(name = "15 · Assistant name invalid", widthDp = 390, heightDp = 844, showBackground = true)
+@Composable
+fun InvalidAssistantNamePreviewScreenshot() {
+    HermesCelesteTheme {
+        SettingsScreen(
+            dashboardUrl = "https://hermes.example.net/hermes",
+            connectionPhase = ConnectionPhase.Connected,
+            assistantDisplayName = "Hermes",
+            assistantNameScope = AssistantNameKey("https://hermes.example.net/hermes", "work"),
+            assistantNameEditor = AssistantNameEditState(
+                isOpen = true,
+                draft = "Juno\n",
+                errorMessage = "Use a single line without control characters.",
+            ),
+            onBack = {},
+            onGateway = {},
+            onOpenAssistantName = {},
+            onAssistantNameDraftChange = {},
+            onSaveAssistantName = {},
+            onCancelAssistantName = {},
+        )
+    }
+}
+
+@PreviewTest
+@Preview(name = "16 · Custom assistant transcript", widthDp = 390, heightDp = 844, showBackground = true)
+@Composable
+fun CustomAssistantConversationPreviewScreenshot() {
+    HermesCelesteTheme {
+        PreviewConversation(
+            assistantDisplayName = "Juno",
+            messages = listOf(
+                ConversationMessage(
+                    role = "assistant",
+                    text = "The local presentation name updates without changing the Hermes session.",
+                    id = "preview-assistant-name",
+                ),
+            ),
+            turnState = TurnState.Idle,
+        )
+    }
+}
+
+@PreviewTest
 @Preview(name = "09 · Settings", widthDp = 390, heightDp = 844, showBackground = true)
 @Composable
 fun SettingsPreviewScreenshot() {
@@ -350,6 +419,7 @@ private fun PreviewConversation(
     messages: List<ConversationMessage> = previewMessages,
     streamingText: String = "",
     draft: String = "",
+    assistantDisplayName: String = "Hermes",
     turnState: TurnState,
     errorMessage: String? = null,
 ) {
@@ -358,6 +428,7 @@ private fun PreviewConversation(
         messages = messages,
         streamingText = streamingText,
         draft = draft,
+        assistantDisplayName = assistantDisplayName,
         turnState = turnState,
         loadingMessage = null,
         errorMessage = errorMessage,
