@@ -19,10 +19,12 @@ import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.verticalScroll
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
@@ -30,11 +32,13 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.remember
@@ -42,11 +46,19 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import dev.hazydreams.hermesceleste.RuntimeControlsLifecycle
+import dev.hazydreams.hermesceleste.RuntimeControlsOperation
+import dev.hazydreams.hermesceleste.RuntimeControlsUiState
 import dev.hazydreams.hermesceleste.TurnState
 import dev.hazydreams.hermesceleste.network.ConversationMessage
 import dev.hazydreams.hermesceleste.network.StoredSession
@@ -70,12 +82,18 @@ internal fun ConversationScreen(
     streamingText: String,
     draft: String,
     turnState: TurnState,
+    runtimeControls: RuntimeControlsUiState,
     loadingMessage: String?,
     errorMessage: String?,
     onDraftChange: (String) -> Unit,
     onSend: () -> Unit,
     onInterrupt: () -> Unit,
     onReconnect: () -> Unit,
+    onRuntimeControlsOpen: () -> Unit,
+    onRuntimeModelSelected: (String, String) -> Unit,
+    onRuntimeReasoningSelected: (String) -> Unit,
+    onRuntimeControlsApply: () -> Unit,
+    onRuntimeControlsCancel: () -> Unit,
     onBack: () -> Unit,
 ) {
     val listState = rememberLazyListState()
@@ -183,6 +201,26 @@ internal fun ConversationScreen(
                     .imePadding()
                     .padding(horizontal = 16.dp, vertical = 14.dp),
             ) {
+                RuntimeControlsPill(
+                    state = runtimeControls,
+                    onClick = onRuntimeControlsOpen,
+                )
+                runtimeControls.message?.let { message ->
+                    Text(
+                        text = message,
+                        color = if (runtimeControls.operation == RuntimeControlsOperation.Idle) {
+                            CelesteMuted
+                        } else {
+                            CelesteGoldText
+                        },
+                        fontSize = 11.sp,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(top = 6.dp)
+                            .semantics { stateDescription = message },
+                    )
+                }
+                Spacer(Modifier.height(8.dp))
                 OutlinedTextField(
                     value = draft,
                     onValueChange = onDraftChange,
@@ -271,6 +309,224 @@ internal fun ConversationScreen(
                             ),
                         ) { Text("Send  →", fontWeight = FontWeight.Bold) }
                     }
+                }
+            }
+        }
+        if (runtimeControls.pickerOpen) {
+            ModalBottomSheet(
+                onDismissRequest = onRuntimeControlsCancel,
+                sheetState = rememberModalBottomSheetState(),
+            ) {
+                RuntimeControlsSheet(
+                    state = runtimeControls,
+                    onModelSelected = onRuntimeModelSelected,
+                    onReasoningSelected = onRuntimeReasoningSelected,
+                    onApply = onRuntimeControlsApply,
+                    onCancel = onRuntimeControlsCancel,
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun RuntimeControlsPill(
+    state: RuntimeControlsUiState,
+    onClick: () -> Unit,
+) {
+    val enabled = state.snapshot != null &&
+        state.lifecycle == RuntimeControlsLifecycle.Available &&
+        state.operation == RuntimeControlsOperation.Idle
+    OutlinedButton(
+        onClick = onClick,
+        enabled = enabled,
+        modifier = Modifier
+            .fillMaxWidth()
+            .semantics {
+                contentDescription = state.accessibilityLabel
+                stateDescription = when {
+                    state.lifecycle == RuntimeControlsLifecycle.Reconnecting -> "Reconnecting"
+                    state.lifecycle == RuntimeControlsLifecycle.Synchronizing -> "Synchronizing"
+                    state.operation == RuntimeControlsOperation.Applying -> "Applying"
+                    state.operation == RuntimeControlsOperation.Queued -> "Queued for next response"
+                    state.operation == RuntimeControlsOperation.Checking -> "Checking current setting"
+                    state.snapshot?.capabilities?.available != true -> "Unavailable"
+                    else -> "Available"
+                }
+            },
+        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 9.dp),
+        shape = RoundedCornerShape(18.dp),
+        border = androidx.compose.foundation.BorderStroke(1.dp, CelesteHairline),
+        colors = ButtonDefaults.outlinedButtonColors(
+            contentColor = CelesteInk,
+            disabledContentColor = CelesteMuted,
+        ),
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                text = "${state.modelLabel}  ·  ${state.reasoningLabel}",
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+                fontSize = 12.sp,
+                fontWeight = FontWeight.SemiBold,
+            )
+            Text("Change", color = CelesteBlue, fontSize = 11.sp)
+        }
+    }
+}
+
+@Composable
+private fun RuntimeControlsSheet(
+    state: RuntimeControlsUiState,
+    onModelSelected: (String, String) -> Unit,
+    onReasoningSelected: (String) -> Unit,
+    onApply: () -> Unit,
+    onCancel: () -> Unit,
+) {
+    val scrollState = rememberScrollState()
+    val snapshot = state.snapshot
+    val draft = state.draft
+    val inputsEnabled = state.operation == RuntimeControlsOperation.Idle &&
+        state.lifecycle == RuntimeControlsLifecycle.Available &&
+        !state.optionsLoading
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .verticalScroll(scrollState)
+            .padding(horizontal = 24.dp, vertical = 10.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        Text("Conversation settings", style = MaterialTheme.typography.headlineSmall)
+        Text(
+            "Effective now",
+            color = CelesteMuted,
+            fontSize = 12.sp,
+        )
+        Text(
+            text = "${state.modelLabel}  ·  ${state.reasoningLabel}",
+            style = MaterialTheme.typography.titleMedium,
+            modifier = Modifier.semantics {
+                contentDescription = "Effective ${state.accessibilityLabel}"
+            },
+        )
+        if (state.optionsLoading) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(16.dp),
+                    strokeWidth = 1.7.dp,
+                    color = CelesteBlue,
+                )
+                Spacer(Modifier.size(8.dp))
+                Text("Checking supported settings…", color = CelesteMuted, fontSize = 12.sp)
+            }
+        }
+        state.message?.let { message ->
+            Text(
+                text = message,
+                color = CelesteGoldText,
+                modifier = Modifier.semantics { stateDescription = message },
+            )
+        }
+        Text("Model", style = MaterialTheme.typography.titleSmall)
+        val modelOptions = snapshot?.capabilities?.modelOptions.orEmpty()
+        if (modelOptions.isEmpty()) {
+            Text(
+                "Unavailable on this gateway. The current effective value remains readable above.",
+                color = CelesteMuted,
+                fontSize = 12.sp,
+            )
+        } else {
+            modelOptions.forEach { option ->
+                val selected = draft?.let {
+                    it.provider == option.provider && it.model == option.model
+                } == true
+                TextButton(
+                    onClick = { onModelSelected(option.provider, option.model) },
+                    enabled = inputsEnabled,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .semantics {
+                            role = Role.RadioButton
+                            stateDescription = if (selected) "Selected" else "Not selected"
+                            contentDescription = "${option.provider} ${option.model}"
+                        },
+                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 8.dp),
+                ) {
+                    Text(
+                        text = if (selected) "✓ ${option.provider} / ${option.model}" else {
+                            "${option.provider} / ${option.model}"
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                        color = if (selected) CelesteInk else CelesteMuted,
+                    )
+                }
+            }
+        }
+        Text("Reasoning", style = MaterialTheme.typography.titleSmall)
+        val efforts = snapshot?.capabilities?.reasoningEfforts.orEmpty()
+        if (efforts.isEmpty() || snapshot?.capabilities?.available != true) {
+            Text(
+                "Unavailable on this gateway.",
+                color = CelesteMuted,
+                fontSize = 12.sp,
+            )
+        } else {
+            efforts.forEach { effort ->
+                val selected = draft?.reasoningEffort.equals(effort, ignoreCase = true)
+                TextButton(
+                    onClick = { onReasoningSelected(effort) },
+                    enabled = inputsEnabled,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .semantics {
+                            role = Role.RadioButton
+                            stateDescription = if (selected) "Selected" else "Not selected"
+                            contentDescription = "Reasoning $effort"
+                        },
+                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 8.dp),
+                ) {
+                    Text(
+                        text = if (selected) "✓ ${effort.replaceFirstChar(Char::uppercase)}" else {
+                            effort.replaceFirstChar(Char::uppercase)
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                        color = if (selected) CelesteInk else CelesteMuted,
+                    )
+                }
+            }
+        }
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(top = 8.dp, bottom = 18.dp),
+            horizontalArrangement = Arrangement.End,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            TextButton(
+                onClick = onCancel,
+                enabled = true,
+            ) { Text("Cancel") }
+            Spacer(Modifier.size(8.dp))
+            Button(
+                onClick = onApply,
+                enabled = state.canApply && state.operation == RuntimeControlsOperation.Idle,
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = CelesteInk,
+                    contentColor = CelestePaper,
+                    disabledContainerColor = CelesteHairline,
+                    disabledContentColor = CelesteMuted,
+                ),
+            ) {
+                if (state.operation == RuntimeControlsOperation.Applying) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(16.dp),
+                        strokeWidth = 1.7.dp,
+                        color = CelestePaper,
+                    )
+                } else {
+                    Text("Apply")
                 }
             }
         }

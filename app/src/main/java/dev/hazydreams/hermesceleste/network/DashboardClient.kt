@@ -91,6 +91,7 @@ data class ResumedSession(
     val status: String? = null,
     val inflightAssistantText: String = "",
     val hasLiveProjection: Boolean = false,
+    val runtimeControls: RuntimeControlsInfo = RuntimeControlsInfo(),
 )
 
 sealed interface GatewayCredential {
@@ -549,6 +550,9 @@ class DashboardClient(
                     ?: result["session_key"]?.jsonPrimitive?.contentOrNull
                     ?: storedSessionId,
                 messages = decodeGatewayMessages(result["messages"]?.jsonArray.orEmpty()),
+                running = result["running"]?.jsonPrimitive?.booleanOrNull,
+                status = result["status"]?.jsonPrimitive?.contentOrNull,
+                runtimeControls = decodeRuntimeControlsInfo(result, authoritative = true),
             )
         }
     }

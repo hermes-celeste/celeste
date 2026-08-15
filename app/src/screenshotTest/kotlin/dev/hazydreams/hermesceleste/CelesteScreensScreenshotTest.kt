@@ -351,6 +351,7 @@ private fun PreviewConversation(
     streamingText: String = "",
     draft: String = "",
     turnState: TurnState,
+    runtimeControls: RuntimeControlsUiState = RuntimeControlsUiState(),
     errorMessage: String? = null,
 ) {
     ConversationScreen(
@@ -359,12 +360,18 @@ private fun PreviewConversation(
         streamingText = streamingText,
         draft = draft,
         turnState = turnState,
+        runtimeControls = runtimeControls,
         loadingMessage = null,
         errorMessage = errorMessage,
         onDraftChange = {},
         onSend = {},
         onInterrupt = {},
         onReconnect = {},
+        onRuntimeControlsOpen = {},
+        onRuntimeModelSelected = { _, _ -> },
+        onRuntimeReasoningSelected = {},
+        onRuntimeControlsApply = {},
+        onRuntimeControlsCancel = {},
         onBack = {},
     )
 }

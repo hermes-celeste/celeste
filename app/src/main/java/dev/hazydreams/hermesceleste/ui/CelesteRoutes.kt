@@ -85,12 +85,18 @@ internal fun CelesteRoutes(ui: CelesteUiState, viewModel: CelesteViewModel) {
                     streamingText = ui.streamingText,
                     draft = ui.draft,
                     turnState = ui.turnState,
+                    runtimeControls = ui.runtimeControls,
                     loadingMessage = ui.loadingMessage,
                     errorMessage = ui.errorMessage,
                     onDraftChange = viewModel::updateDraft,
                     onSend = viewModel::sendMessage,
                     onInterrupt = viewModel::interrupt,
                     onReconnect = viewModel::reconnectNow,
+                    onRuntimeControlsOpen = viewModel::openRuntimeControls,
+                    onRuntimeModelSelected = viewModel::selectRuntimeModel,
+                    onRuntimeReasoningSelected = viewModel::selectRuntimeReasoning,
+                    onRuntimeControlsApply = viewModel::applyRuntimeControls,
+                    onRuntimeControlsCancel = viewModel::cancelRuntimeControls,
                     onBack = viewModel::leaveConversation,
                 )
             }

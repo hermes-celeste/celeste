@@ -18,7 +18,378 @@ data class CreatedSession(
     val runtimeSessionId: String,
     val storedSessionId: String,
     val profile: String?,
+    val runtimeControls: RuntimeControlsInfo = RuntimeControlsInfo(),
 )
+
+enum class RuntimeControlsSource {
+    ResumedSnapshot,
+    SessionInfo,
+    ApplyAcknowledgement,
+}
+
+data class RuntimeModelOption(
+    val provider: String,
+    val model: String,
+    val supportsReasoning: Boolean = true,
+    val supportsFast: Boolean = false,
+)
+
+private val DEFAULT_REASONING_EFFORTS = listOf(
+    "none",
+    "minimal",
+    "low",
+    "medium",
+    "high",
+    "xhigh",
+    "max",
+    "ultra",
+)
+
+data class RuntimeControlsCapabilities(
+    val available: Boolean,
+    val modelOptions: List<RuntimeModelOption> = emptyList(),
+    val reasoningEfforts: List<String> = DEFAULT_REASONING_EFFORTS,
+    val canApplyWhileRunning: Boolean = true,
+) {
+    companion object {
+        val Unavailable = RuntimeControlsCapabilities(
+            available = false,
+            reasoningEfforts = DEFAULT_REASONING_EFFORTS,
+            canApplyWhileRunning = false,
+        )
+    }
+}
+
+data class RuntimeControlsInfo(
+    val runtimeSessionId: String? = null,
+    val storedSessionId: String? = null,
+    val profile: String? = null,
+    val provider: String? = null,
+    val model: String? = null,
+    val reasoningEffort: String? = null,
+    val reasoningEnabled: Boolean? = null,
+    val running: Boolean? = null,
+    val authoritative: Boolean = false,
+)
+
+data class RuntimeControlsSnapshot(
+    val origin: String,
+    val profile: String,
+    val storedSessionId: String,
+    val runtimeSessionId: String,
+    val provider: String? = null,
+    val model: String? = null,
+    val reasoningEffort: String? = null,
+    val reasoningEnabled: Boolean? = null,
+    val running: Boolean? = null,
+    val capabilities: RuntimeControlsCapabilities = RuntimeControlsCapabilities.Unavailable,
+    val source: RuntimeControlsSource = RuntimeControlsSource.ResumedSnapshot,
+)
+
+data class RuntimeControlsDraft(
+    val origin: String,
+    val profile: String,
+    val storedSessionId: String,
+    val runtimeSessionId: String,
+    val provider: String?,
+    val model: String?,
+    val reasoningEffort: String?,
+)
+
+data class RuntimeControlsApplyResult(
+    val deferred: Boolean = false,
+    val acknowledged: Boolean = true,
+    val authoritativeInfo: RuntimeControlsInfo? = null,
+)
+
+class RuntimeControlsPartialApplyException(
+    val completed: RuntimeControlsApplyResult,
+    cause: Throwable,
+) : IOException("Hermes applied only part of the conversation control change.", cause)
+
+internal fun decodeRuntimeControlsCapabilities(element: JsonElement): RuntimeControlsCapabilities {
+    val root = element as? JsonObject ?: return RuntimeControlsCapabilities.Unavailable
+    val providers = root["providers"] as? JsonArray ?: return RuntimeControlsCapabilities.Unavailable
+    val options = providers.flatMap { providerElement ->
+        val provider = providerElement as? JsonObject
+            ?: return@flatMap emptyList<RuntimeModelOption>()
+        val providerId = provider.safeString("slug")
+            ?: provider.safeString("id")
+            ?: provider.safeString("name")
+            ?: return@flatMap emptyList<RuntimeModelOption>()
+        val models = provider["models"] as? JsonArray ?: return@flatMap emptyList<RuntimeModelOption>()
+        val providerCapabilities = provider["capabilities"] as? JsonObject
+        models.mapNotNull { modelElement ->
+            val modelObject = modelElement as? JsonObject
+            val model = (modelElement as? JsonPrimitive)
+                ?.takeIf(JsonPrimitive::isString)
+                ?.contentOrNull
+                ?.takeIf(String::isNotBlank)
+                ?: modelObject?.safeString("slug")
+                ?: modelObject?.safeString("id")
+                ?: modelObject?.safeString("name")
+                ?: return@mapNotNull null
+            val capability = (modelObject?.get("capabilities") as? JsonObject)
+                ?: (providerCapabilities?.get(model) as? JsonObject)
+            RuntimeModelOption(
+                provider = providerId,
+                model = model,
+                supportsReasoning = capability?.safeBoolean("reasoning")
+                    ?: modelObject?.safeBoolean("reasoning")
+                    ?: provider.safeBoolean("reasoning")
+                    ?: true,
+                supportsFast = capability?.safeBoolean("fast")
+                    ?: modelObject?.safeBoolean("fast")
+                    ?: provider.safeBoolean("fast")
+                    ?: false,
+            )
+        }
+    }.distinctBy { it.provider to it.model }
+    if (options.isEmpty()) return RuntimeControlsCapabilities.Unavailable
+
+    val reasoningObject = root["reasoning"] as? JsonObject
+    val efforts = sequenceOf(
+        root["reasoning_efforts"],
+        root["efforts"],
+        reasoningObject?.get("efforts"),
+    ).filterIsInstance<JsonArray>().firstOrNull()
+        ?.mapNotNull { value ->
+            (value as? JsonPrimitive)
+                ?.takeIf(JsonPrimitive::isString)
+                ?.contentOrNull
+                ?.trim()
+                ?.takeIf(String::isNotEmpty)
+                ?.lowercase()
+        }
+        ?.distinct()
+        ?.takeIf(List<String>::isNotEmpty)
+        ?: DEFAULT_REASONING_EFFORTS
+    return RuntimeControlsCapabilities(
+        available = true,
+        modelOptions = options,
+        reasoningEfforts = efforts,
+        canApplyWhileRunning = root.safeBoolean("can_apply_while_running")
+            ?: root.safeBoolean("supports_deferred_apply")
+            ?: true,
+    )
+}
+
+internal fun decodeRuntimeControlsInfo(
+    result: JsonObject,
+    authoritative: Boolean = false,
+): RuntimeControlsInfo {
+    val info = result["info"] as? JsonObject ?: result["snapshot"] as? JsonObject
+    val reasoning = result["reasoning"] as? JsonObject ?: info?.get("reasoning") as? JsonObject
+    fun pickString(vararg keys: String): String? = keys.asSequence()
+        .mapNotNull { key -> result.safeString(key) ?: info?.safeString(key) }
+        .firstOrNull(String::isNotBlank)
+    fun pickBoolean(vararg keys: String): Boolean? = keys.asSequence()
+        .mapNotNull { key -> result.safeBoolean(key) ?: info?.safeBoolean(key) }
+        .firstOrNull()
+    return RuntimeControlsInfo(
+        runtimeSessionId = pickString("session_id", "runtime_session_id"),
+        storedSessionId = pickString("resumed", "stored_session_id", "session_key"),
+        profile = pickString("profile", "profile_id", "profile_name"),
+        provider = pickString("provider", "model_provider")
+            ?: reasoning?.safeString("provider"),
+        model = pickString("model", "model_id"),
+        reasoningEffort = pickString("reasoning_effort", "effort")
+            ?: reasoning?.safeString("effort")
+            ?: reasoning?.safeString("reasoning_effort"),
+        reasoningEnabled = pickBoolean("reasoning_enabled", "reasoning_present")
+            ?: reasoning?.safeBoolean("enabled"),
+        running = pickBoolean("running", "busy"),
+        authoritative = authoritative,
+    )
+}
+
+private fun JsonObject.safeString(key: String): String? =
+    (this[key] as? JsonPrimitive)
+        ?.takeIf(JsonPrimitive::isString)
+        ?.contentOrNull
+        ?.trim()
+        ?.takeIf(String::isNotEmpty)
+
+private fun JsonObject.safeBoolean(key: String): Boolean? =
+    (this[key] as? JsonPrimitive)?.booleanOrNull
+
+private fun decodeConfigModel(value: String): Pair<String?, String?> {
+    val provider = Regex("--provider\\s+([^\\s]+)").find(value)?.groupValues?.getOrNull(1)
+    val model = value.substringBefore(" --").trim().takeIf(String::isNotBlank)
+    return model to provider
+}
+
+internal fun decodeRuntimeControlsConfig(
+    element: JsonElement,
+    runtimeSessionId: String,
+): RuntimeControlsInfo {
+    val root = element as? JsonObject ?: return RuntimeControlsInfo()
+    val metadata = root["meta"] as? JsonObject
+    val scope = root.safeString("scope") ?: metadata?.safeString("scope")
+    val responseRuntimeId = root.safeString("session_id")
+        ?: root.safeString("runtime_session_id")
+        ?: metadata?.safeString("session_id")
+    val sessionScoped = responseRuntimeId == runtimeSessionId ||
+        scope?.lowercase() in setOf("session", "runtime", "conversation")
+    if (!sessionScoped) return RuntimeControlsInfo()
+
+    val key = root.safeString("key") ?: metadata?.safeString("key")
+    val value = root["value"]
+    val valueObject = value as? JsonObject
+    val valueText = (value as? JsonPrimitive)
+        ?.takeIf(JsonPrimitive::isString)
+        ?.contentOrNull
+    val modelFromValue = valueText?.let(::decodeConfigModel)
+    val model = valueObject?.safeString("model")
+        ?: root.safeString("model")
+        ?: modelFromValue?.first
+    val provider = valueObject?.safeString("provider")
+        ?: root.safeString("provider")
+        ?: modelFromValue?.second
+    val reasoning = valueObject?.safeString("reasoning_effort")
+        ?: valueObject?.safeString("effort")
+        ?: root.safeString("reasoning_effort")
+        ?: root.safeString("effort")
+        ?: valueText?.takeIf { key.equals("reasoning", ignoreCase = true) }
+    val enabled = valueObject?.safeBoolean("enabled") ?: root.safeBoolean("reasoning_enabled")
+    return RuntimeControlsInfo(
+        runtimeSessionId = responseRuntimeId ?: runtimeSessionId,
+        storedSessionId = root.safeString("stored_session_id") ?: metadata?.safeString("stored_session_id"),
+        profile = root.safeString("profile") ?: metadata?.safeString("profile"),
+        provider = provider,
+        model = model,
+        reasoningEffort = reasoning,
+        reasoningEnabled = enabled,
+        authoritative = model != null || provider != null || reasoning != null || enabled != null,
+    )
+}
+
+private fun mergeRuntimeControlsInfo(
+    first: RuntimeControlsInfo,
+    second: RuntimeControlsInfo,
+): RuntimeControlsInfo = RuntimeControlsInfo(
+    runtimeSessionId = second.runtimeSessionId ?: first.runtimeSessionId,
+    storedSessionId = second.storedSessionId ?: first.storedSessionId,
+    profile = second.profile ?: first.profile,
+    provider = second.provider ?: first.provider,
+    model = second.model ?: first.model,
+    reasoningEffort = second.reasoningEffort ?: first.reasoningEffort,
+    reasoningEnabled = second.reasoningEnabled ?: first.reasoningEnabled,
+    running = second.running ?: first.running,
+    authoritative = first.authoritative || second.authoritative,
+)
+
+suspend fun GatewayConnection.readRuntimeControlsConfig(
+    runtimeSessionId: String,
+): RuntimeControlsInfo {
+    require(runtimeSessionId.isNotBlank()) { "No Hermes conversation is open." }
+    var result = RuntimeControlsInfo(runtimeSessionId = runtimeSessionId)
+    for (key in listOf("model", "reasoning")) {
+        val response = runCatching {
+            request(
+                method = "config.get",
+                params = buildJsonObject {
+                    put("key", key)
+                    put("session_id", runtimeSessionId)
+                },
+            )
+        }.getOrNull() ?: continue
+        result = mergeRuntimeControlsInfo(
+            result,
+            decodeRuntimeControlsConfig(response, runtimeSessionId),
+        )
+    }
+    return result
+}
+
+private fun decodeRuntimeControlsApplyResult(element: JsonElement): RuntimeControlsApplyResult {
+    val result = element as? JsonObject
+        ?: throw IOException("Hermes returned no control acknowledgement.")
+    val info = if (
+        result["info"] is JsonObject ||
+        result["snapshot"] is JsonObject ||
+        listOf("model", "provider", "reasoning_effort", "running").any(result::containsKey)
+    ) {
+        decodeRuntimeControlsInfo(result, authoritative = true)
+    } else {
+        null
+    }
+    return RuntimeControlsApplyResult(
+        deferred = result.safeBoolean("deferred") == true ||
+            result.safeString("status")?.equals("deferred", ignoreCase = true) == true,
+        acknowledged = result.safeBoolean("accepted") != false && result.safeBoolean("ok") != false,
+        authoritativeInfo = info,
+    )
+}
+
+suspend fun GatewayConnection.readRuntimeControlsOptions(
+    runtimeSessionId: String,
+): RuntimeControlsCapabilities {
+    require(runtimeSessionId.isNotBlank()) { "No Hermes conversation is open." }
+    return decodeRuntimeControlsCapabilities(
+        request(
+            method = "model.options",
+            params = buildJsonObject { put("session_id", runtimeSessionId) },
+        ),
+    )
+}
+
+suspend fun GatewayConnection.applyRuntimeControls(
+    runtimeSessionId: String,
+    provider: String?,
+    model: String?,
+    reasoningEffort: String?,
+    applyModel: Boolean,
+    applyReasoning: Boolean,
+): RuntimeControlsApplyResult {
+    require(runtimeSessionId.isNotBlank()) { "No Hermes conversation is open." }
+    var result = RuntimeControlsApplyResult()
+    if (applyModel) {
+        val selectedModel = model?.trim()?.takeIf(String::isNotBlank)
+            ?: throw IllegalArgumentException("Choose a supported model.")
+        val selectedProvider = provider?.trim().orEmpty()
+        val value = buildString {
+            append(selectedModel)
+            if (selectedProvider.isNotBlank()) append(" --provider ").append(selectedProvider)
+            append(" --session")
+        }
+        result = decodeRuntimeControlsApplyResult(
+            request(
+                method = "config.set",
+                params = buildJsonObject {
+                    put("key", "model")
+                    put("value", value)
+                    put("session_id", runtimeSessionId)
+                },
+            ),
+        )
+    }
+    if (applyReasoning) {
+        val selectedEffort = reasoningEffort?.trim()?.lowercase()
+            ?.takeIf(String::isNotBlank)
+            ?: throw IllegalArgumentException("Choose a supported reasoning setting.")
+        try {
+            val reasoningResult = decodeRuntimeControlsApplyResult(
+                request(
+                    method = "config.set",
+                    params = buildJsonObject {
+                        put("key", "reasoning")
+                        put("value", selectedEffort)
+                        put("session_id", runtimeSessionId)
+                    },
+                ),
+            )
+            result = RuntimeControlsApplyResult(
+                deferred = result.deferred || reasoningResult.deferred,
+                acknowledged = result.acknowledged && reasoningResult.acknowledged,
+                authoritativeInfo = reasoningResult.authoritativeInfo ?: result.authoritativeInfo,
+            )
+        } catch (error: Throwable) {
+            throw RuntimeControlsPartialApplyException(result, error)
+        }
+    }
+    return result
+}
 
 suspend fun GatewayConnection.createSession(profile: String): CreatedSession {
     val selectedProfile = profile.trim().ifEmpty { "default" }
@@ -43,6 +414,7 @@ suspend fun GatewayConnection.createSession(profile: String): CreatedSession {
         profile = result.string("profile")
             ?: result.string("profile_id")
             ?: info?.string("profile_name"),
+        runtimeControls = decodeRuntimeControlsInfo(result, authoritative = true),
     )
 }
 
@@ -78,6 +450,7 @@ suspend fun GatewayConnection.resumeStoredSession(storedSessionId: String): Resu
         status = status,
         inflightAssistantText = inflightAssistantText(inflight),
         hasLiveProjection = inflight.isTruthy() || queued.isTruthy(),
+        runtimeControls = decodeRuntimeControlsInfo(result, authoritative = true),
     )
 }
 
