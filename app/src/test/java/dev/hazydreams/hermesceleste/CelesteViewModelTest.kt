@@ -291,8 +291,8 @@ class CelesteViewModelTest {
 
         dashboard.sessionPage = dashboard.sessionPage?.copy(
             sessions = listOf(
-                session.copy(id = "other", lastActive = 200.0),
-                session.copy(lastActive = 300.0),
+                dashboard.session.copy(id = "other", lastActive = 200.0),
+                dashboard.session.copy(lastActive = 300.0),
             ),
         )
         viewModel.leaveConversation()
