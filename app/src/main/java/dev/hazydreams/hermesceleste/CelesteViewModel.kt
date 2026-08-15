@@ -82,7 +82,24 @@ private enum class ForegroundRecovery {
     LoadSessions,
     OpenSession,
     CreateSession,
+    ConnectionCleanup,
 }
+
+private enum class ConnectionCleanupKind {
+    SignOut,
+    Forget,
+    AuthenticationInvalidation,
+}
+
+private data class PendingConnectionCleanup(
+    val origin: String,
+    val kind: ConnectionCleanupKind,
+    val descriptor: SavedConnectionDescriptor?,
+    val probe: DashboardProbeResult?,
+    val logoutRequired: Boolean,
+    var localComplete: Boolean = false,
+    var logoutComplete: Boolean = !logoutRequired,
+)
 
 /**
  * Application ownership is stricter than a gateway object check. A token
@@ -120,6 +137,7 @@ internal data class CelesteUiState(
     val turnState: TurnState = TurnState.Idle,
     val loadingMessage: String? = null,
     val notice: UiNotice? = null,
+    val localCleanupNotice: UiNotice? = null,
 )
 
 private data class LoadedDashboard(
@@ -176,6 +194,8 @@ internal class CelesteViewModel(
     private var stoppedTurnGeneration: Long? = null
     private val bufferedEvents = mutableListOf<GatewayEvent>()
     private var pendingForegroundRecovery: ForegroundRecovery? = null
+    private val pendingConnectionCleanups = mutableMapOf<String, PendingConnectionCleanup>()
+    private var pendingConnectionCleanup: PendingConnectionCleanup? = null
 
     init {
         restoreSavedConnection()
@@ -339,7 +359,7 @@ internal class CelesteViewModel(
     }
 
     private fun recordFailure(
-        token: OperationToken,
+        token: OperationToken?,
         error: Throwable,
         operation: String,
         scope: UiNoticeScope,
@@ -351,9 +371,9 @@ internal class CelesteViewModel(
                 reasonCode = diagnosticReason(error),
                 operation = operation,
                 exceptionClass = error::class.simpleName,
-                operationGeneration = token.operationGeneration,
-                gatewayGeneration = token.gatewayGeneration,
-                lifecycleGeneration = token.lifecycleGeneration,
+                operationGeneration = token?.operationGeneration,
+                gatewayGeneration = token?.gatewayGeneration,
+                lifecycleGeneration = token?.lifecycleGeneration,
                 retryCount = retryCount,
             ),
         )
@@ -375,11 +395,220 @@ internal class CelesteViewModel(
         return error is AuthenticationRejected || code == 401 || code == 403
     }
 
+    private fun cleanupOrigin(
+        descriptor: SavedConnectionDescriptor?,
+        probe: DashboardProbeResult?,
+    ): String = normalizedOrigin(
+        descriptor?.baseUrl ?: probe?.baseUrl ?: currentOrigin,
+    ).orEmpty()
+
+    private fun pendingCleanupForCurrentContext(): PendingConnectionCleanup? {
+        val origin = normalizedOrigin(mutableState.value.dashboardUrl) ?: currentOrigin ?: return null
+        return pendingConnectionCleanups[origin]
+    }
+
+    private fun isCurrentForCleanup(
+        pending: PendingConnectionCleanup,
+        token: OperationToken,
+    ): Boolean {
+        if (pending.origin.isNotBlank() && token.origin != pending.origin) return false
+        return if (pending.kind == ConnectionCleanupKind.AuthenticationInvalidation) {
+            isCurrentForAuthenticationInvalidation(token)
+        } else {
+            isCurrent(token)
+        }
+    }
+
+    private suspend fun <T> awaitCleanupCurrent(
+        pending: PendingConnectionCleanup,
+        token: OperationToken,
+        block: suspend () -> T,
+    ): T {
+        val result = block()
+        if (!isCurrentForCleanup(pending, token)) throw SupersededOperationCancellation()
+        return result
+    }
+
+    private fun sameConnectionScope(
+        first: SavedConnectionDescriptor,
+        second: SavedConnectionDescriptor,
+    ): Boolean = normalizedOrigin(first.baseUrl) == normalizedOrigin(second.baseUrl) &&
+        first.authMode == second.authMode &&
+        first.provider == second.provider &&
+        first.username == second.username
+
+    private fun cleanupTargetsStoredConnection(
+        pending: PendingConnectionCleanup,
+        stored: SavedConnectionDescriptor,
+    ): Boolean {
+        if (normalizedOrigin(stored.baseUrl) != pending.origin) return false
+        val target = pending.descriptor ?: return true
+        return sameConnectionScope(target, stored)
+    }
+
+    private fun cleanupLoadingMessage(kind: ConnectionCleanupKind): String = when (kind) {
+        ConnectionCleanupKind.SignOut -> "Signing out…"
+        ConnectionCleanupKind.Forget -> "Forgetting this connection…"
+        ConnectionCleanupKind.AuthenticationInvalidation -> "Clearing saved sign-in…"
+    }
+
+    private fun publishPendingCleanupState(
+        pending: PendingConnectionCleanup,
+        failed: Boolean,
+    ) {
+        val cleanupNotice = if (failed) UiNotice.localCleanup() else null
+        when (pending.kind) {
+            ConnectionCleanupKind.SignOut -> {
+                mutableState.value = manualState(
+                    descriptor = pending.descriptor,
+                ).copy(localCleanupNotice = cleanupNotice)
+            }
+            ConnectionCleanupKind.Forget -> {
+                mutableState.value = CelesteUiState(
+                    connectionPhase = ConnectionPhase.ManualSetup,
+                    localCleanupNotice = cleanupNotice,
+                )
+            }
+            ConnectionCleanupKind.AuthenticationInvalidation -> {
+                val snapshot = mutableState.value
+                val safeBaseUrl = pending.descriptor?.baseUrl
+                    ?: pending.probe?.baseUrl
+                    ?: snapshot.dashboardUrl
+                val safeUsername = pending.descriptor?.username ?: snapshot.username
+                mutableState.value = manualState(
+                    descriptor = pending.descriptor,
+                    phase = ConnectionPhase.AuthenticationRequired,
+                    probe = pending.probe ?: snapshot.probe,
+                    notice = UiNotice.authentication(),
+                ).copy(
+                    dashboardUrl = safeBaseUrl,
+                    savedAuthMode = pending.descriptor?.authMode ?: snapshot.savedAuthMode,
+                    username = safeUsername,
+                    localCleanupNotice = cleanupNotice,
+                )
+            }
+        }
+    }
+
+    private fun resumePendingConnectionCleanup() {
+        val pending = pendingCleanupForCurrentContext() ?: return
+        pendingConnectionCleanup = pending
+        if (ownedJobs[CelesteOperation.Connection]?.isActive == true) return
+        val token = captureToken(
+            operation = CelesteOperation.Connection,
+            gateway = null,
+            storedSessionId = null,
+            runtimeSessionId = null,
+        )
+        mutableState.value = mutableState.value.copy(
+            loadingMessage = cleanupLoadingMessage(pending.kind),
+            localCleanupNotice = null,
+        )
+        connectionJob = launchOwned(CelesteOperation.Connection, token) {
+            runPendingConnectionCleanup(pending, token)
+        }
+    }
+
+    private suspend fun runPendingConnectionCleanup(
+        pending: PendingConnectionCleanup,
+        token: OperationToken,
+    ) {
+        if (pendingConnectionCleanups[pending.origin] !== pending ||
+            pendingConnectionCleanup !== pending ||
+            !isCurrentForCleanup(pending, token)
+        ) return
+        dashboard.clearAuthentication()
+        if (!pending.localComplete) {
+            try {
+                awaitCleanupCurrent(pending, token) {
+                    connectionStoreMutex.withLock {
+                        if (pendingConnectionCleanup !== pending || !isCurrentForCleanup(pending, token)) {
+                            throw SupersededOperationCancellation()
+                        }
+                        val stored = connectionStore.load()
+                        if (stored == null || cleanupTargetsStoredConnection(pending, stored.descriptor)) {
+                            when (pending.kind) {
+                                ConnectionCleanupKind.SignOut,
+                                ConnectionCleanupKind.AuthenticationInvalidation -> connectionStore.clearSecret()
+                                ConnectionCleanupKind.Forget -> connectionStore.forget()
+                            }
+                        }
+                    }
+                }
+                pending.localComplete = true
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: Throwable) {
+                if (isCurrentForCleanup(pending, token) && pendingConnectionCleanup === pending) {
+                    recordFailure(token, error, "local_connection_cleanup", UiNoticeScope.Connection)
+                }
+            }
+        }
+        if (pending.logoutRequired && !pending.logoutComplete) {
+            val probe = pending.probe
+            if (probe == null) {
+                pending.logoutComplete = true
+            } else {
+                try {
+                    awaitCleanupCurrent(pending, token) { dashboard.logout(probe.baseUrl) }
+                    pending.logoutComplete = true
+                } catch (error: CancellationException) {
+                    throw error
+                } catch (error: Throwable) {
+                    if (isCurrentForCleanup(pending, token) && pendingConnectionCleanup === pending) {
+                        recordFailure(token, error, "remote_logout", UiNoticeScope.Connection)
+                    }
+                }
+            }
+        }
+        if (!isCurrentForCleanup(pending, token) || pendingConnectionCleanup !== pending) return
+        if (pending.localComplete && pending.logoutComplete) {
+            if (pendingConnectionCleanups[pending.origin] === pending) {
+                pendingConnectionCleanups.remove(pending.origin)
+            }
+            pendingConnectionCleanup = null
+            publishPendingCleanupState(pending, failed = false)
+        } else {
+            publishPendingCleanupState(pending, failed = true)
+        }
+    }
+
+    private fun beginPendingConnectionCleanup(
+        kind: ConnectionCleanupKind,
+        descriptor: SavedConnectionDescriptor?,
+        probe: DashboardProbeResult?,
+        logoutRequired: Boolean,
+    ): PendingConnectionCleanup {
+        val origin = cleanupOrigin(descriptor, probe)
+        val pending = pendingConnectionCleanups[origin]
+            ?.takeIf { it.kind == kind }
+            ?: PendingConnectionCleanup(
+                origin = origin,
+                kind = kind,
+                descriptor = descriptor,
+                probe = probe,
+                logoutRequired = logoutRequired,
+            )
+        pendingConnectionCleanups[origin] = pending
+        pendingConnectionCleanup = pending
+        return pending
+    }
+
+    /** A successful explicit connection supersedes cleanup for that origin. */
+    private fun supersedePendingConnectionCleanup(origin: String?) {
+        val normalized = normalizedOrigin(origin) ?: return
+        val pending = pendingConnectionCleanups.remove(normalized) ?: return
+        if (pendingConnectionCleanup === pending) {
+            pendingConnectionCleanup = null
+        }
+    }
+
     fun updateDashboardUrl(value: String) {
         mutableState.value = mutableState.value.copy(
             dashboardUrl = value,
             probe = null,
             notice = null,
+            localCleanupNotice = null,
         )
     }
 
@@ -422,6 +651,7 @@ internal class CelesteViewModel(
                 null
             },
             notice = null,
+            localCleanupNotice = null,
         )
 
         if (connection == null || activeCredential == null) return
@@ -478,6 +708,7 @@ internal class CelesteViewModel(
             draft = "",
             loadingMessage = "Finding Hermes…",
             notice = null,
+            localCleanupNotice = null,
         )
         val token = captureToken(
             operation = CelesteOperation.Connection,
@@ -528,6 +759,7 @@ internal class CelesteViewModel(
             turnState = TurnState.Idle,
             loadingMessage = "Loading your conversations…",
             notice = null,
+            localCleanupNotice = null,
         )
         val token = captureToken(
             operation = CelesteOperation.Connection,
@@ -617,33 +849,13 @@ internal class CelesteViewModel(
             } catch (error: Throwable) {
                 if (!isCurrentConnectionAttempt(attempt) || !isCurrent(token)) return@launchOwned
                 if (isAuthenticationFailure(error)) {
-                    val clearError = try {
-                        awaitCurrent(token) {
-                            connectionStoreMutex.withLock {
-                                if (!isCurrent(token)) throw SupersededOperationCancellation()
-                                connectionStore.clearSecret()
-                            }
-                        }
-                        null
-                    } catch (clearError: CancellationException) {
-                        throw clearError
-                    } catch (clearError: Throwable) {
-                        clearError
-                    }
-                    if (!isCurrentConnectionAttempt(attempt) || !isCurrent(token)) return@launchOwned
-                    dashboard.clearAuthentication()
-                    credential = null
-                    currentAuthMode = null
-                    clearError?.let {
-                        recordFailure(token, it, "clear_rejected_auth", UiNoticeScope.Connection)
-                    }
-                    if (!isCurrentConnectionAttempt(attempt) || !isCurrent(token)) return@launchOwned
-                    mutableState.value = mutableState.value.copy(
-                        connectionPhase = ConnectionPhase.AuthenticationRequired,
-                        notice = UiNotice.authentication(),
-                        password = "",
-                        sessionToken = "",
+                    invalidateReusableAuthentication(
+                        descriptor = null,
+                        probe = connection,
+                        token = token,
                     )
+                    if (!isCurrentConnectionAttempt(attempt)) return@launchOwned
+                    mutableState.value = mutableState.value.copy(password = "", sessionToken = "")
                 } else {
                     dashboard.clearAuthentication()
                     credential = null
@@ -679,6 +891,12 @@ internal class CelesteViewModel(
     }
 
     fun retrySavedConnection() {
+        if (pendingConnectionCleanups.isNotEmpty()) {
+            if (pendingCleanupForCurrentContext() != null) {
+                resumePendingConnectionCleanup()
+            }
+            return
+        }
         restoreSavedConnection()
     }
 
@@ -693,14 +911,37 @@ internal class CelesteViewModel(
         mutableState.value = CelesteUiState(connectionPhase = ConnectionPhase.ManualSetup)
     }
 
+    private fun descriptorForCleanup(state: CelesteUiState): SavedConnectionDescriptor? {
+        currentDescriptor?.let { return it }
+        val authMode = state.savedAuthMode ?: return null
+        if (state.dashboardUrl.isBlank()) return null
+        return runCatching {
+            SavedConnectionDescriptor(
+                baseUrl = state.dashboardUrl,
+                authMode = authMode,
+                provider = state.probe?.providers?.firstOrNull { it.supportsPassword }?.name,
+                username = state.username.takeIf(String::isNotBlank),
+                expectsSecret = authMode != SavedAuthMode.Open,
+            )
+        }.getOrNull()
+    }
+
     fun signOut() {
         val snapshot = mutableState.value
         val activeCredential = credential
-        val attempt = beginConnectionAttempt()
+        val descriptor = descriptorForCleanup(snapshot)
+        val pending = beginPendingConnectionCleanup(
+            kind = ConnectionCleanupKind.SignOut,
+            descriptor = descriptor,
+            probe = snapshot.probe,
+            logoutRequired = activeCredential == GatewayCredential.CookieSession && snapshot.probe != null,
+        )
+        beginConnectionAttempt()
         closeGateway()
         credential = null
         currentDescriptor = null
         currentAuthMode = null
+        if (pending.origin.isNotBlank()) currentOrigin = pending.origin
         mutableState.value = snapshot.copy(
             connectionPhase = ConnectionPhase.ManualSetup,
             sessions = null,
@@ -712,101 +953,34 @@ internal class CelesteViewModel(
             sessionToken = "",
             loadingMessage = "Signing out…",
             notice = null,
+            localCleanupNotice = null,
         )
-        val token = captureToken(
-            operation = CelesteOperation.Connection,
-            gateway = null,
-            storedSessionId = null,
-            runtimeSessionId = null,
-        )
-        connectionJob = launchOwned(CelesteOperation.Connection, token) {
-            val clearError = try {
-                awaitCurrent(token) {
-                    connectionStoreMutex.withLock {
-                        if (!isCurrent(token)) throw SupersededOperationCancellation()
-                        connectionStore.clearSecret()
-                    }
-                }
-                null
-            } catch (error: CancellationException) {
-                throw error
-            } catch (error: Throwable) {
-                error
-            }
-            val saved = try {
-                awaitCurrent(token) { connectionStoreMutex.withLock { connectionStore.load() } }
-            } catch (error: CancellationException) {
-                throw error
-            } catch (_: Throwable) {
-                null
-            }
-            if (activeCredential == GatewayCredential.CookieSession && snapshot.probe != null) {
-                try {
-                    awaitCurrent(token) { dashboard.logout(snapshot.probe.baseUrl) }
-                } catch (error: CancellationException) {
-                    throw error
-                } catch (error: Throwable) {
-                    recordFailure(token, error, "sign_out", UiNoticeScope.Connection)
-                }
-            }
-            dashboard.clearAuthentication()
-            if (!isCurrentConnectionAttempt(attempt) || !isCurrent(token)) return@launchOwned
-            currentDescriptor = saved?.descriptor
-            mutableState.value = manualState(
-                descriptor = saved?.descriptor,
-                notice = if (clearError == null) null else UiNotice.persistence(),
-            )
-        }
+        dashboard.clearAuthentication()
+        resumePendingConnectionCleanup()
     }
 
     fun forgetConnection() {
         val snapshot = mutableState.value
         val activeCredential = credential
-        val attempt = beginConnectionAttempt()
+        val descriptor = descriptorForCleanup(snapshot)
+        val pending = beginPendingConnectionCleanup(
+            kind = ConnectionCleanupKind.Forget,
+            descriptor = descriptor,
+            probe = snapshot.probe,
+            logoutRequired = activeCredential == GatewayCredential.CookieSession && snapshot.probe != null,
+        )
+        beginConnectionAttempt()
         closeGateway()
         credential = null
         currentDescriptor = null
         currentAuthMode = null
+        if (pending.origin.isNotBlank()) currentOrigin = pending.origin
         mutableState.value = CelesteUiState(
             connectionPhase = ConnectionPhase.ManualSetup,
             loadingMessage = "Forgetting this connection…",
         )
-        val token = captureToken(
-            operation = CelesteOperation.Connection,
-            gateway = null,
-            storedSessionId = null,
-            runtimeSessionId = null,
-        )
-        connectionJob = launchOwned(CelesteOperation.Connection, token) {
-            val error = try {
-                awaitCurrent(token) {
-                    connectionStoreMutex.withLock {
-                        if (!isCurrent(token)) throw SupersededOperationCancellation()
-                        connectionStore.forget()
-                    }
-                }
-                null
-            } catch (error: CancellationException) {
-                throw error
-            } catch (error: Throwable) {
-                error
-            }
-            if (activeCredential == GatewayCredential.CookieSession && snapshot.probe != null) {
-                try {
-                    awaitCurrent(token) { dashboard.logout(snapshot.probe.baseUrl) }
-                } catch (error: CancellationException) {
-                    throw error
-                } catch (logoutError: Throwable) {
-                    recordFailure(token, logoutError, "forget_connection", UiNoticeScope.Connection)
-                }
-            }
-            dashboard.clearAuthentication()
-            if (!isCurrentConnectionAttempt(attempt) || !isCurrent(token)) return@launchOwned
-            mutableState.value = CelesteUiState(
-                connectionPhase = ConnectionPhase.ManualSetup,
-                notice = if (error == null) null else UiNotice.persistence(),
-            )
-        }
+        dashboard.clearAuthentication()
+        resumePendingConnectionCleanup()
     }
 
     private fun restoreSavedConnection() {
@@ -957,23 +1131,10 @@ internal class CelesteViewModel(
         } catch (error: Throwable) {
             if (!isCurrentConnectionAttempt(attempt) || !isCurrent(token)) return
             if (isAuthenticationFailure(error)) {
-                awaitCurrent(token) {
-                    connectionStoreMutex.withLock {
-                        if (!isCurrent(token)) throw SupersededOperationCancellation()
-                        connectionStore.clearSecret()
-                    }
-                }
-                if (!isCurrentConnectionAttempt(attempt) || !isCurrent(token)) return
-                credential = null
-                currentDescriptor = null
-                dashboard.clearAuthentication()
-                currentAuthMode = null
-                if (!isCurrentConnectionAttempt(attempt) || !isCurrent(token)) return
-                mutableState.value = manualState(
+                invalidateReusableAuthentication(
                     descriptor = descriptor,
-                    phase = ConnectionPhase.AuthenticationRequired,
                     probe = restoredProbe,
-                    notice = UiNotice.authentication(),
+                    token = token,
                 )
             } else {
                 dashboard.clearAuthentication()
@@ -1010,36 +1171,45 @@ internal class CelesteViewModel(
         token: OperationToken? = null,
     ) {
         val snapshot = mutableState.value
-        val safeBaseUrl = descriptor?.baseUrl ?: probe?.baseUrl ?: snapshot.dashboardUrl
-        val safeUsername = descriptor?.username ?: snapshot.username
-        val safeProbe = probe ?: snapshot.probe
-        if (token == null) {
-            connectionStoreMutex.withLock { connectionStore.clearSecret() }
-        } else {
-            if (!isCurrent(token)) return
-            awaitCurrent(token) {
-                connectionStoreMutex.withLock {
-                    if (!isCurrent(token)) throw SupersededOperationCancellation()
-                    connectionStore.clearSecret()
-                }
-            }
-            if (!isCurrent(token)) return
-        }
+        val pending = beginPendingConnectionCleanup(
+            kind = ConnectionCleanupKind.AuthenticationInvalidation,
+            descriptor = descriptor,
+            probe = probe ?: snapshot.probe,
+            logoutRequired = false,
+        )
+        if (pending.origin.isNotBlank()) currentOrigin = pending.origin
         credential = null
         currentDescriptor = null
         dashboard.clearAuthentication()
         currentAuthMode = null
-        if (token != null && !isCurrentForAuthenticationInvalidation(token)) return
-        mutableState.value = manualState(
-            descriptor = descriptor,
-            phase = ConnectionPhase.AuthenticationRequired,
-            probe = safeProbe,
-            notice = UiNotice.authentication(),
-        ).copy(
-            dashboardUrl = safeBaseUrl,
-            savedAuthMode = descriptor?.authMode ?: snapshot.savedAuthMode,
-            username = safeUsername,
-        )
+        if (token != null) {
+            if (!isCurrentForCleanup(pending, token)) return
+            runPendingConnectionCleanup(pending, token)
+            return
+        }
+
+        try {
+            connectionStoreMutex.withLock {
+                val stored = connectionStore.load()
+                if (stored == null || cleanupTargetsStoredConnection(pending, stored.descriptor)) {
+                    connectionStore.clearSecret()
+                }
+            }
+            pending.localComplete = true
+        } catch (error: CancellationException) {
+            throw error
+        } catch (error: Throwable) {
+            recordFailure(null, error, "local_connection_cleanup", UiNoticeScope.Connection)
+        }
+        if (pending.localComplete) {
+            if (pendingConnectionCleanups[pending.origin] === pending) {
+                pendingConnectionCleanups.remove(pending.origin)
+            }
+            pendingConnectionCleanup = null
+            publishPendingCleanupState(pending, failed = false)
+        } else {
+            publishPendingCleanupState(pending, failed = true)
+        }
     }
 
     private fun publishConnectedDashboard(
@@ -1048,6 +1218,7 @@ internal class CelesteViewModel(
         sessionToken: String = "",
         notice: UiNotice? = null,
     ) {
+        supersedePendingConnectionCleanup(currentOrigin)
         val selectedProfile = mutableState.value.selectedProfile
             .takeIf { selected -> loaded.profiles.any { it.name == selected } }
             ?: loaded.profiles.firstOrNull(DashboardProfile::isDefault)?.name
@@ -1065,6 +1236,7 @@ internal class CelesteViewModel(
             sessionToken = sessionToken,
             loadingMessage = null,
             notice = notice,
+            localCleanupNotice = null,
         )
     }
 
@@ -1491,6 +1663,9 @@ internal class CelesteViewModel(
     }
 
     private fun foregroundRecoveryFor(state: CelesteUiState): ForegroundRecovery? {
+        if (pendingCleanupForCurrentContext() != null) {
+            return ForegroundRecovery.ConnectionCleanup
+        }
         if (activeOperations[CelesteOperation.Connection] != null) {
             when {
                 state.connectionPhase == ConnectionPhase.CheckingSavedConnection ||
@@ -1531,6 +1706,7 @@ internal class CelesteViewModel(
             ForegroundRecovery.CreateSession -> {
                 if (mutableState.value.probe != null && credential != null) createNewConversation()
             }
+            ForegroundRecovery.ConnectionCleanup -> resumePendingConnectionCleanup()
         }
     }
 
@@ -1554,7 +1730,10 @@ internal class CelesteViewModel(
         foregroundCheckJob?.cancel()
         foregroundCheckJob = null
         invalidateReconciliation()
-        if (recovery == ForegroundRecovery.OpenSession || recovery == ForegroundRecovery.CreateSession) {
+        if (recovery == ForegroundRecovery.OpenSession ||
+            recovery == ForegroundRecovery.CreateSession ||
+            recovery == ForegroundRecovery.ConnectionCleanup
+        ) {
             closeGateway()
         }
         val descriptor = currentDescriptor ?: return
@@ -1591,6 +1770,12 @@ internal class CelesteViewModel(
     fun onForeground() {
         val recovery = pendingForegroundRecovery ?: foregroundRecoveryFor(mutableState.value)
         val activeGateway = gateway
+        if (recovery == ForegroundRecovery.ConnectionCleanup) {
+            pendingForegroundRecovery = null
+            if (activeGateway != null) closeGateway()
+            resumePendingConnectionCleanup()
+            return
+        }
         if (activeGateway == null) {
             pendingForegroundRecovery = null
             recovery?.let(::recoverWithoutGateway)

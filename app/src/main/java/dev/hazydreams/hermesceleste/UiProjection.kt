@@ -106,6 +106,13 @@ internal data class UiNotice(
             recovery = UiRecoveryAction.None,
             scope = UiNoticeScope.Connection,
         )
+
+        fun localCleanup() = UiNotice(
+            category = UiNoticeCategory.Persistence,
+            copyKey = "local_cleanup_pending",
+            recovery = UiRecoveryAction.Retry,
+            scope = UiNoticeScope.Connection,
+        )
     }
 }
 
@@ -118,6 +125,7 @@ private fun copyFor(copyKey: String): String = when (copyKey) {
     "server_turn_failure" -> "Hermes couldn’t finish that response."
     "generic_turn_failure" -> "Hermes reported an error. Try again."
     "persistence_warning" -> "Connected, but Celeste could not remember this connection."
+    "local_cleanup_pending" -> "Celeste could not finish clearing this saved sign-in. Try again."
     else -> "Hermes could not complete that action. Try again."
 }
 

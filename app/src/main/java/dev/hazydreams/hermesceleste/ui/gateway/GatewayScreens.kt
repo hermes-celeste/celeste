@@ -85,6 +85,7 @@ internal data class GatewaySettingsUiState(
     val connectionPhase: ConnectionPhase,
     val loadingMessage: String?,
     val notice: UiNotice?,
+    val localCleanupNotice: UiNotice? = null,
 )
 
 internal data class GatewaySettingsActions(
@@ -235,6 +236,7 @@ internal fun GatewaySettingsScreen(
     val connectionPhase = state.connectionPhase
     val loadingMessage = state.loadingMessage
     val notice = state.notice
+    val localCleanupNotice = state.localCleanupNotice
     val onBack = actions.onBack
     var address by rememberSaveable(dashboardUrl) { mutableStateOf(dashboardUrl) }
     var confirmForgetConnection by remember { mutableStateOf(false) }
@@ -368,11 +370,20 @@ internal fun GatewaySettingsScreen(
             }
 
             val visibleNotice = notice
-            AnimatedVisibility(visibleNotice != null || loadingMessage != null) {
+            AnimatedVisibility(visibleNotice != null || localCleanupNotice != null || loadingMessage != null) {
                 Column(modifier = Modifier.padding(vertical = 22.dp)) {
                     loadingMessage?.let { StatusMessage(it, CelesteBlue, showSpinner = true) }
                     if (loadingMessage != null && visibleNotice != null) Spacer(Modifier.height(10.dp))
                     visibleNotice?.let { StatusMessage(it.message, CelesteError) }
+                    localCleanupNotice?.let { cleanupNotice ->
+                        if (visibleNotice != null) Spacer(Modifier.height(10.dp))
+                        StatusMessage(cleanupNotice.message, CelesteError)
+                        cleanupNotice.recoveryLabel?.let { label ->
+                            TextButton(onClick = actions.onRetry) {
+                                Text(label, color = CelesteBlue)
+                            }
+                        }
+                    }
                 }
             }
 
@@ -384,7 +395,15 @@ internal fun GatewaySettingsScreen(
             }
             val showPrimaryAction = !isConnected || addressChanged
             if (showPrimaryAction) {
-                Spacer(Modifier.height(if (visibleNotice == null && loadingMessage == null) 28.dp else 4.dp))
+                Spacer(
+                    Modifier.height(
+                        if (visibleNotice == null && localCleanupNotice == null && loadingMessage == null) {
+                            28.dp
+                        } else {
+                            4.dp
+                        },
+                    ),
+                )
                 CelestePrimaryButton(
                     text = when {
                         effectiveProbe == null -> "Find my Hermes"

@@ -1,5 +1,6 @@
 package dev.hazydreams.hermesceleste
 
+import dev.hazydreams.hermesceleste.connection.ConnectionStore
 import dev.hazydreams.hermesceleste.connection.InMemoryConnectionStore
 import dev.hazydreams.hermesceleste.connection.ReusableSecret
 import dev.hazydreams.hermesceleste.connection.SavedAuthMode
@@ -19,6 +20,7 @@ import dev.hazydreams.hermesceleste.network.GatewayRpcException
 import dev.hazydreams.hermesceleste.network.InvalidDashboardResponse
 import dev.hazydreams.hermesceleste.network.StoredSession
 import dev.hazydreams.hermesceleste.network.TransportUnavailable
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -28,6 +30,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.resetMain
+import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
 import kotlinx.serialization.json.JsonElement
@@ -284,6 +287,165 @@ class CelesteViewModelAutoLoginTest {
     }
 
     @Test
+    fun backgroundDuringSignOutResumesIdempotentSecretCleanupOnForeground() = runTest {
+        val descriptor = SavedConnectionDescriptor(
+            baseUrl = "https://hermes.example.net",
+            authMode = SavedAuthMode.ProviderSession,
+            provider = "password",
+            username = "celeste",
+            expectsSecret = true,
+        )
+        val clearGate = CompletableDeferred<Unit>()
+        val store = BackgroundCleanupStore(
+            initial = StoredConnection(descriptor, ReusableSecret("synthetic-session-cookies")),
+            clearGate = clearGate,
+        )
+        val dashboard = AutoLoginDashboard(passwordProbe)
+        val viewModel = CelesteViewModel(dashboard = dashboard, connectionStore = store)
+        advanceUntilIdle()
+        dashboard.onLogout = { assertNull(store.load()?.secret) }
+
+        viewModel.signOut()
+        store.clearEntered.await()
+        viewModel.onBackground()
+        runCurrent()
+
+        assertEquals("Signing out…", viewModel.state.value.loadingMessage)
+        assertTrue(store.load()?.secret != null)
+        assertEquals(0, dashboard.logoutCalls)
+
+        clearGate.complete(Unit)
+        viewModel.onForeground()
+        advanceUntilIdle()
+
+        assertEquals(ConnectionPhase.ManualSetup, viewModel.state.value.connectionPhase)
+        assertNull(store.load()?.secret)
+        assertFalse(store.load()?.descriptor?.autoLoginEnabled ?: true)
+        assertEquals(2, store.clearCalls)
+        assertEquals(1, dashboard.logoutCalls)
+        assertNull(viewModel.state.value.notice)
+    }
+
+    @Test
+    fun backgroundDuringForgetResumesIdempotentLogoutOnForeground() = runTest {
+        val descriptor = SavedConnectionDescriptor(
+            baseUrl = "https://hermes.example.net",
+            authMode = SavedAuthMode.ProviderSession,
+            provider = "password",
+            username = "celeste",
+            expectsSecret = true,
+        )
+        val store = BackgroundCleanupStore(
+            initial = StoredConnection(descriptor, ReusableSecret("synthetic-session-cookies")),
+        )
+        val logoutGate = CompletableDeferred<Unit>()
+        val dashboard = AutoLoginDashboard(passwordProbe).apply {
+            this.logoutGate = logoutGate
+            logoutEntered = CompletableDeferred()
+        }
+        val viewModel = CelesteViewModel(dashboard = dashboard, connectionStore = store)
+        advanceUntilIdle()
+        dashboard.onLogout = { assertNull(store.load()) }
+
+        viewModel.forgetConnection()
+        dashboard.logoutEntered?.await()
+        viewModel.onBackground()
+        runCurrent()
+
+        assertNull(store.load())
+        assertEquals("Forgetting this connection…", viewModel.state.value.loadingMessage)
+        assertEquals(1, dashboard.logoutCalls)
+
+        logoutGate.complete(Unit)
+        viewModel.onForeground()
+        advanceUntilIdle()
+
+        assertEquals(ConnectionPhase.ManualSetup, viewModel.state.value.connectionPhase)
+        assertNull(store.load())
+        assertEquals(2, dashboard.logoutCalls)
+        assertNull(viewModel.state.value.notice)
+    }
+
+    @Test
+    fun failedSecretClearStillPublishesAuthenticationRequiredWithRetryableLocalCleanup() = runTest {
+        val descriptor = SavedConnectionDescriptor(
+            baseUrl = "https://hermes.example.net",
+            authMode = SavedAuthMode.ProviderSession,
+            provider = "password",
+            username = "celeste",
+            expectsSecret = true,
+        )
+        val store = RetryingClearConnectionStore(
+            StoredConnection(descriptor, ReusableSecret("synthetic-session-cookies")),
+        )
+        val dashboard = AutoLoginDashboard(passwordProbe).apply {
+            sessionFailure = GatewayRpcException(
+                code = 401,
+                message = "raw auth detail https://private.example/path",
+            )
+        }
+        val viewModel = CelesteViewModel(dashboard = dashboard, connectionStore = store)
+        advanceUntilIdle()
+
+        val failedState = viewModel.state.value
+        assertEquals(ConnectionPhase.AuthenticationRequired, failedState.connectionPhase)
+        assertEquals(UiNoticeCategory.AuthenticationRequired, failedState.notice?.category)
+        assertEquals(UiRecoveryAction.SignIn, failedState.notice?.recovery)
+        assertEquals(UiNoticeCategory.Persistence, failedState.localCleanupNotice?.category)
+        assertEquals(UiRecoveryAction.Retry, failedState.localCleanupNotice?.recovery)
+        assertEquals("Your Hermes sign-in has expired. Sign in again.", failedState.notice?.message)
+        assertTrue(dashboard.clearAuthenticationCalls > 0)
+        assertFalse(failedState.localCleanupNotice?.message.orEmpty().contains("synthetic-session-cookies"))
+
+        viewModel.retrySavedConnection()
+        advanceUntilIdle()
+
+        assertNull(store.load()?.secret)
+        assertEquals(ConnectionPhase.AuthenticationRequired, viewModel.state.value.connectionPhase)
+        assertEquals(UiNoticeCategory.AuthenticationRequired, viewModel.state.value.notice?.category)
+        assertNull(viewModel.state.value.localCleanupNotice)
+    }
+
+    @Test
+    fun failedCleanupCannotRetryAgainstAReplacementOrigin() = runTest {
+        val originalDescriptor = SavedConnectionDescriptor(
+            baseUrl = "https://old-hermes.example.net",
+            authMode = SavedAuthMode.ProviderSession,
+            provider = "password",
+            username = "celeste",
+            expectsSecret = true,
+        )
+        val store = RetryingClearConnectionStore(
+            StoredConnection(originalDescriptor, ReusableSecret("old-session-cookies")),
+        )
+        val dashboard = AutoLoginDashboard(passwordProbe)
+        val viewModel = CelesteViewModel(dashboard = dashboard, connectionStore = store)
+        advanceUntilIdle()
+
+        viewModel.signOut()
+        advanceUntilIdle()
+        assertEquals(UiNoticeCategory.Persistence, viewModel.state.value.localCleanupNotice?.category)
+
+        viewModel.useAnotherConnection()
+        viewModel.updateDashboardUrl("https://new-hermes.example.net")
+        viewModel.findDashboard()
+        advanceUntilIdle()
+        viewModel.updateUsername("celeste")
+        viewModel.updatePassword("synthetic-password")
+        viewModel.loadSessions()
+        advanceUntilIdle()
+
+        assertEquals("https://new-hermes.example.net", store.load()?.descriptor?.baseUrl)
+        assertEquals("synthetic-session-cookies", store.load()?.secret?.value)
+
+        viewModel.retrySavedConnection()
+        advanceUntilIdle()
+
+        assertEquals("https://new-hermes.example.net", store.load()?.descriptor?.baseUrl)
+        assertEquals("synthetic-session-cookies", store.load()?.secret?.value)
+    }
+
+    @Test
     fun signOutRetainsSafePrefillWhileForgetRemovesEverything() = runTest {
         val descriptor = SavedConnectionDescriptor(
             baseUrl = "https://hermes.example.net",
@@ -332,6 +494,69 @@ class CelesteViewModelAutoLoginTest {
         assertEquals(1, forgetDashboard.logoutCalls)
     }
 
+    private class BackgroundCleanupStore(
+        private var saved: StoredConnection?,
+        private val clearGate: CompletableDeferred<Unit>? = null,
+    ) : ConnectionStore {
+        var clearCalls = 0
+        val clearEntered = CompletableDeferred<Unit>()
+
+        override suspend fun load(): StoredConnection? = saved
+
+        override suspend fun replace(
+            descriptor: SavedConnectionDescriptor,
+            secret: ReusableSecret?,
+        ) {
+            saved = StoredConnection(descriptor, secret)
+        }
+
+        override suspend fun clearSecret() {
+            clearCalls += 1
+            if (clearCalls == 1) {
+                clearEntered.complete(Unit)
+                clearGate?.await()
+            }
+            saved = saved?.copy(
+                descriptor = saved!!.descriptor.copy(autoLoginEnabled = false),
+                secret = null,
+            )
+        }
+
+        override suspend fun forget() {
+            saved = null
+        }
+    }
+
+    private class RetryingClearConnectionStore(
+        private var saved: StoredConnection?,
+    ) : ConnectionStore {
+        private var failuresRemaining = 1
+
+        override suspend fun load(): StoredConnection? = saved
+
+        override suspend fun replace(
+            descriptor: SavedConnectionDescriptor,
+            secret: ReusableSecret?,
+        ) {
+            saved = StoredConnection(descriptor, secret)
+        }
+
+        override suspend fun clearSecret() {
+            if (failuresRemaining > 0) {
+                failuresRemaining -= 1
+                throw IllegalStateException("synthetic local cleanup failure")
+            }
+            saved = saved?.copy(
+                descriptor = saved!!.descriptor.copy(autoLoginEnabled = false),
+                secret = null,
+            )
+        }
+
+        override suspend fun forget() {
+            saved = null
+        }
+    }
+
     private class AutoLoginDashboard(
         private val probeResult: DashboardProbeResult,
     ) : DashboardService {
@@ -345,6 +570,8 @@ class CelesteViewModelAutoLoginTest {
         var restoreAuthenticationCalls = 0
         var logoutCalls = 0
         var clearAuthenticationCalls = 0
+        var logoutGate: CompletableDeferred<Unit>? = null
+        var logoutEntered: CompletableDeferred<Unit>? = null
         var onLogout: (suspend () -> Unit)? = null
 
         override suspend fun probe(rawBaseUrl: String): DashboardProbeResult {
@@ -398,8 +625,10 @@ class CelesteViewModelAutoLoginTest {
         }
 
         override suspend fun logout(baseUrl: String) {
-            onLogout?.invoke()
             logoutCalls += 1
+            logoutEntered?.complete(Unit)
+            logoutGate?.await()
+            onLogout?.invoke()
         }
 
         override fun clearAuthentication() {

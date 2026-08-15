@@ -162,6 +162,7 @@ private fun GatewaySettingsRoute(
             connectionPhase = ui.connectionPhase,
             loadingMessage = ui.loadingMessage,
             notice = ui.notice,
+            localCleanupNotice = ui.localCleanupNotice,
         ),
         actions = GatewaySettingsActions(
             onUsernameChange = viewModel::updateUsername,
