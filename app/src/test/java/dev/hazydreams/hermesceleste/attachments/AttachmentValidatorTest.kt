@@ -14,11 +14,7 @@ import org.junit.Test
 class AttachmentValidatorTest {
     @Test
     fun usesTheImageSignatureWhenPickerMetadataIsMissingOrGeneric() {
-        val validated = AttachmentValidator.validate(
-            bytes = pngBytes,
-            declaredMimeType = "application/octet-stream",
-            displayName = "camera export",
-        )
+        val validated = AttachmentValidator.validate(pngBytes)
 
         assertEquals("image/png", validated.mimeType)
         assertEquals(".png", validated.extension)
@@ -28,10 +24,10 @@ class AttachmentValidatorTest {
     @Test
     fun rejectsEmptyMalformedAndUnsupportedImagesWithRedactedMessages() {
         val empty = assertThrows(AttachmentValidationException::class.java) {
-            AttachmentValidator.validate(ByteArray(0), "image/png", "content://private/empty.png")
+            AttachmentValidator.validate(ByteArray(0))
         }
         val malformed = assertThrows(AttachmentValidationException::class.java) {
-            AttachmentValidator.validate("not an image".encodeToByteArray(), "image/png", "/private/secret.png")
+            AttachmentValidator.validate("not an image".encodeToByteArray())
         }
 
         assertEquals("Couldn't read this image", empty.userError.message)
@@ -54,7 +50,7 @@ class AttachmentValidatorTest {
         oversized[7] = 0x0a
 
         val failure = assertThrows(AttachmentValidationException::class.java) {
-            AttachmentValidator.validate(oversized, "image/png", "large.png")
+            AttachmentValidator.validate(oversized)
         }
 
         assertEquals("Image is too large (24 MiB maximum)", failure.userError.message)
@@ -86,7 +82,7 @@ class AttachmentValidatorTest {
         assertTrue(first.file.parentFile == root)
         assertEquals(pngBytes.toList(), store.readBytes(first.attachment.localFileId).toList())
 
-        store.delete(first.attachment.localFileId)
+        assertTrue(store.delete(first.attachment.localFileId))
         assertFalse(first.file.exists())
         assertTrue(second.file.exists())
     }

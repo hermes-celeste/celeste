@@ -30,7 +30,6 @@ class AttachmentGatewayTest {
             bytes = bytes,
             filename = "photo.png",
             mimeType = "image/png",
-            clientAttachmentId = "client-only-id",
         )
 
         assertEquals("/hermes/images/upload.png", result.serverReference)

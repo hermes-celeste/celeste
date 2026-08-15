@@ -16,11 +16,7 @@ object AttachmentValidator {
     private const val COPY_BUFFER_SIZE = 16 * 1024
     private const val MAX_DECODED_IMAGE_BYTES = 64L * 1024L * 1024L
 
-    fun validate(
-        bytes: ByteArray,
-        declaredMimeType: String? = null,
-        displayName: String? = null,
-    ): ValidatedImage {
+    fun validate(bytes: ByteArray): ValidatedImage {
         if (bytes.isEmpty()) throw AttachmentValidationException(
             UserFacingAttachmentError(AttachmentErrorKind.ReadFailed),
         )
@@ -38,11 +34,7 @@ object AttachmentValidator {
         )
     }
 
-    fun validate(
-        input: InputStream,
-        declaredMimeType: String? = null,
-        displayName: String? = null,
-    ): ValidatedImage {
+    fun validate(input: InputStream): ValidatedImage {
         val bytes = ByteArrayOutputStream()
         val buffer = ByteArray(COPY_BUFFER_SIZE)
         var total = 0L
@@ -56,7 +48,7 @@ object AttachmentValidator {
             )
             bytes.write(buffer, 0, count)
         }
-        return validate(bytes.toByteArray(), declaredMimeType, displayName)
+        return validate(bytes.toByteArray())
     }
 
     private fun detect(bytes: ByteArray): DetectedImage? = when {

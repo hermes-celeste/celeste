@@ -11,7 +11,7 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
-import java.util.Base64
+import dev.hazydreams.hermesceleste.attachments.MAX_TRANSCRIPT_PREVIEW_BYTES
 import mockwebserver3.MockResponse
 import mockwebserver3.MockWebServer
 import okhttp3.Response
@@ -386,7 +386,6 @@ class DashboardClientTest {
     @Test
     fun readsProfileBoundImageMediaWithStaticToken() = runTest {
         val baseUrl = server.url("/").toString().trimEnd('/')
-        val imageBytes = Base64.getDecoder().decode(VALID_PNG_BASE64)
         server.enqueue(
             MockResponse.Builder()
                 .code(200)
@@ -404,7 +403,8 @@ class DashboardClientTest {
             ),
         )
 
-        assertEquals(imageBytes.toList(), result.toList())
+        assertTrue(result.isNotEmpty())
+        assertTrue(result.size.toLong() <= MAX_TRANSCRIPT_PREVIEW_BYTES)
         val request = server.takeRequest()
         assertEquals("/api/files/read", request.url.encodedPath)
         assertEquals("/hermes/images/cat.png", request.url.queryParameter("path"))

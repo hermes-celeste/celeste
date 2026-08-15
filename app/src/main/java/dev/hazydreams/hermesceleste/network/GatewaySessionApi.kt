@@ -17,7 +17,6 @@ import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonArray
-import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.longOrNull
 import kotlinx.serialization.json.put
@@ -151,7 +150,6 @@ suspend fun GatewayConnection.attachImageBytes(
     bytes: ByteArray,
     filename: String?,
     mimeType: String,
-    clientAttachmentId: String? = null,
 ): AttachedImage {
     require(bytes.isNotEmpty()) { "Image is empty." }
     require(bytes.size.toLong() <= MAX_ATTACHMENT_BYTES) { "Image is too large." }
@@ -161,7 +159,6 @@ suspend fun GatewayConnection.attachImageBytes(
             put("session_id", owner.requestSessionId())
             put("content_base64", Base64.getEncoder().encodeToString(bytes))
             if (safeName != null) put("filename", safeName)
-            // The current Hermes method has no idempotency/client-id field.
         }
     }
     val result = request(

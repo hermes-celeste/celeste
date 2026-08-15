@@ -10,8 +10,10 @@ import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonElement
@@ -216,18 +218,19 @@ class HermesGateway(
         currentCoroutineContext().ensureActive()
         val deferred = CompletableDeferred<JsonElement>()
         pending[id] = deferred
-        val frame = buildJsonObject {
-            put("jsonrpc", "2.0")
-            put("id", id)
-            put("method", method)
-            put("params", params)
-        }
-        if (!activeSocket.send(frame.toString())) {
-            pending.remove(id)
-            throw IOException("Hermes rejected the $method request.")
-        }
-
         return try {
+            val frame = withContext(Dispatchers.IO) {
+                buildJsonObject {
+                    put("jsonrpc", "2.0")
+                    put("id", id)
+                    put("method", method)
+                    put("params", params)
+                }.toString()
+            }
+            currentCoroutineContext().ensureActive()
+            if (!activeSocket.send(frame)) {
+                throw IOException("Hermes rejected the $method request.")
+            }
             withTimeout(timeoutMillis) { deferred.await() }
         } catch (error: kotlinx.coroutines.TimeoutCancellationException) {
             throw GatewayRequestTimeout(method, error)

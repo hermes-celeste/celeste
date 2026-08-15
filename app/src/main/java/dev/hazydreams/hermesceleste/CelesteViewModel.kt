@@ -16,7 +16,6 @@ import dev.hazydreams.hermesceleste.attachments.AttachmentDraft
 import dev.hazydreams.hermesceleste.attachments.AttachmentErrorKind
 import dev.hazydreams.hermesceleste.attachments.AttachmentOperationOwner
 import dev.hazydreams.hermesceleste.attachments.AttachmentPreviewState
-import dev.hazydreams.hermesceleste.attachments.AttachmentReducer
 import dev.hazydreams.hermesceleste.attachments.AttachmentSource
 import dev.hazydreams.hermesceleste.attachments.AttachmentStagingStore
 import dev.hazydreams.hermesceleste.attachments.AttachmentValidator
@@ -27,8 +26,10 @@ import dev.hazydreams.hermesceleste.attachments.ImageOnlyCapabilityState
 import dev.hazydreams.hermesceleste.attachments.MessageAttachment
 import dev.hazydreams.hermesceleste.attachments.MAX_ATTACHMENT_RETRIES
 import dev.hazydreams.hermesceleste.attachments.MAX_PENDING_ATTACHMENTS
+import dev.hazydreams.hermesceleste.attachments.MAX_SUBMIT_RETRIES
 import dev.hazydreams.hermesceleste.attachments.UserFacingAttachmentError
 import dev.hazydreams.hermesceleste.attachments.UnavailableAttachmentStagingStore
+import dev.hazydreams.hermesceleste.attachments.accepts
 import dev.hazydreams.hermesceleste.attachments.buildImagePrompt
 import dev.hazydreams.hermesceleste.network.AuthenticationRejected
 import dev.hazydreams.hermesceleste.network.AttachmentCapabilityAdvertisement
@@ -75,7 +76,6 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
-import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 
@@ -84,6 +84,12 @@ internal enum class TurnState {
     Idle,
     Running,
     Reconnecting,
+}
+
+internal enum class AttachmentTransactionPhase {
+    PreSubmit,
+    PostSubmit,
+    UncertainSubmit,
 }
 
 internal enum class ConnectionPhase {
@@ -166,6 +172,7 @@ internal class CelesteViewModel(
     private var transcriptPreviewJob: Job? = null
     private val attachmentRetryCounts = mutableMapOf<UUID, Int>()
     private val orphanedAttachmentReferences = mutableMapOf<DraftOwner, MutableSet<String>>()
+    private val localCleanupFailures = mutableMapOf<DraftOwner, MutableSet<String>>()
 
 
     private data class AttachmentPickerToken(
@@ -189,6 +196,8 @@ internal class CelesteViewModel(
         val attachmentIds: List<UUID>,
         val localMessageId: String,
         val previousMessageIds: Set<String>,
+        val submitRetryCount: Int = 0,
+        var phase: AttachmentTransactionPhase = AttachmentTransactionPhase.PreSubmit,
         var activeAttachmentId: UUID? = null,
         var cancelledByUser: Boolean = false,
         val stagedReferences: MutableList<String> = mutableListOf(),
@@ -202,6 +211,8 @@ internal class CelesteViewModel(
         val text: String,
         val attachmentIds: List<UUID>,
         val previousMessageIds: Set<String>,
+        val retryCount: Int,
+        val reconciled: Boolean = false,
     )
 
     private class StaleAttachmentTransaction : CancellationException()
@@ -330,7 +341,7 @@ internal class CelesteViewModel(
                         )
                     }
                     if (!accepted) {
-                        runCatching { attachmentStagingStore.delete(staged.attachment.localFileId) }
+                        scheduleLocalCleanup(token.owner, listOf(staged.attachment.localFileId))
                     }
                 }.onFailure { error ->
                     updateAttachmentIfCurrent(
@@ -359,11 +370,20 @@ internal class CelesteViewModel(
         if (snapshot.turnState != TurnState.Idle && snapshot.turnState != TurnState.Reconnecting) return
         val attachment = snapshot.attachments.firstOrNull { it.id == attachmentId } ?: return
         if (attachment.owner != currentAttachmentOwner(snapshot)) return
-        // A connection loss can expose the composer as Reconnecting while a send
-        // transaction is still awaiting an upload response. Removing an item must
-        // invalidate that whole transaction before any late completion can mutate state.
         val transaction = attachmentTransaction?.takeIf {
             it.owner == attachment.owner && attachmentId in it.attachmentIds
+        }
+        val pendingUnknown = unknownSubmit?.takeIf {
+            it.owner == attachment.owner && attachmentId in it.attachmentIds
+        }
+        if (
+            (transaction != null && transaction.phase != AttachmentTransactionPhase.PreSubmit) ||
+                (pendingUnknown != null && !pendingUnknown.reconciled)
+        ) {
+            mutableState.value = snapshot.copy(
+                attachmentNotice = "Reconcile the send status before removing this image.",
+            )
+            return
         }
         val owner = attachment.owner
         val referencesToDetach = if (transaction != null) {
@@ -379,6 +399,10 @@ internal class CelesteViewModel(
         if (transaction != null) {
             transaction.cancelledByUser = true
             attachmentTransactionJob?.cancel()
+            unknownSubmit = null
+        } else if (pendingUnknown != null) {
+            // An absent uncertain submission has been reconciled; this explicit
+            // removal can now detach only the selected staged reference.
             unknownSubmit = null
         }
         attachmentJobs.remove(attachmentId)?.cancel()
@@ -412,9 +436,7 @@ internal class CelesteViewModel(
             attachmentNotice = null,
             turnState = if (transaction != null) TurnState.Idle else snapshot.turnState,
         )
-        if (attachment.localFileId.isNotBlank()) {
-            viewModelScope.launch { runCatching { attachmentStagingStore.delete(attachment.localFileId) } }
-        }
+        scheduleLocalCleanup(owner, listOf(attachment.localFileId))
         if (referencesToDetach.isNotEmpty()) {
             // Keep references until detach succeeds; reconnect/context changes can defer cleanup.
             rememberOrphanedReferences(owner, referencesToDetach)
@@ -493,7 +515,7 @@ internal class CelesteViewModel(
                 runCatching {
                     withContext(Dispatchers.IO) {
                         val bytes = attachmentStagingStore.readBytes(current.localFileId)
-                        AttachmentValidator.validate(bytes, current.mimeType, current.displayName)
+                        AttachmentValidator.validate(bytes)
                     }
                 }.onSuccess {
                     updateAttachmentIfCurrent(
@@ -1018,8 +1040,7 @@ internal class CelesteViewModel(
             attachmentGeneration = expectedAttachmentGeneration,
         )
         if (
-            !AttachmentReducer.accepts(
-                operation = operation,
+            !operation.accepts(
                 owner = owner,
                 runtimeSessionId = currentRuntimeSessionId,
                 editorGeneration = editorGeneration,
@@ -1070,6 +1091,7 @@ internal class CelesteViewModel(
         val owner = currentAttachmentOwner(state)
         val runtimeSessionId = currentRuntimeSessionId ?: return
         if (gateway !== activeGateway || owner.storedSessionIdOrNewConversationId == "new-conversation") return
+        retryLocalCleanup(owner)
         val references = orphanedAttachmentReferences[owner]?.toList().orEmpty()
         if (references.isNotEmpty()) {
             detachReferences(activeGateway, owner, runtimeSessionId, references)
@@ -1083,29 +1105,73 @@ internal class CelesteViewModel(
         (error as? AttachmentValidationException)?.userError
             ?: UserFacingAttachmentError(fallback)
 
+    private suspend fun cleanupLocalFiles(owner: DraftOwner, localFileIds: List<String>) {
+        val ids = localFileIds.filter(String::isNotBlank).distinct()
+        if (ids.isEmpty()) return
+        val failed = ids.filter { localFileId ->
+            runCatching { attachmentStagingStore.delete(localFileId) }.getOrDefault(false).not()
+        }
+        localCleanupFailures[owner]?.removeAll(ids)
+        if (failed.isNotEmpty()) {
+            localCleanupFailures.getOrPut(owner) { mutableSetOf() }.addAll(failed)
+            if (currentAttachmentOwner(mutableState.value) == owner) {
+                mutableState.value = mutableState.value.copy(
+                    attachmentNotice = "Celeste could not remove a staged image from this device. Cleanup will retry.",
+                )
+            }
+        }
+        if (localCleanupFailures[owner].isNullOrEmpty()) {
+            localCleanupFailures.remove(owner)
+        }
+    }
+
+    private fun scheduleLocalCleanup(owner: DraftOwner, localFileIds: List<String>) {
+        if (localFileIds.none(String::isNotBlank)) return
+        viewModelScope.launch { cleanupLocalFiles(owner, localFileIds) }
+    }
+
+    private suspend fun retryLocalCleanup(owner: DraftOwner) {
+        val pending = localCleanupFailures[owner]?.toList().orEmpty()
+        if (pending.isNotEmpty()) cleanupLocalFiles(owner, pending)
+    }
+
     private fun discardComposerForContextSwitch() {
         attachmentPickerToken = null
         attachmentTransactionJob?.cancel()
         attachmentTransactionJob = null
         val current = mutableState.value
         val currentOwner = currentAttachmentOwner(current)
-        attachmentTransaction?.let { transaction ->
-            transaction.cancelledByUser = true
-            rememberOrphanedReferences(
-                transaction.owner,
-                (
-                    transaction.stagedReferences +
-                        current.attachments
-                            .filter { it.owner == transaction.owner }
-                            .mapNotNull { it.serverReference?.takeIf(String::isNotBlank) }
-                ).distinct(),
-            )
+        val transaction = attachmentTransaction
+        transaction?.let {
+            it.cancelledByUser = true
+            if (it.phase == AttachmentTransactionPhase.PreSubmit) {
+                rememberOrphanedReferences(
+                    it.owner,
+                    (
+                        it.stagedReferences +
+                            current.attachments
+                                .filter { attachment -> attachment.owner == it.owner }
+                                .mapNotNull { attachment -> attachment.serverReference?.takeIf(String::isNotBlank) }
+                    ).distinct(),
+                )
+            }
+        }
+        val currentReferences = current.attachments
+            .filter { it.owner == currentOwner }
+            .mapNotNull { it.serverReference?.takeIf(String::isNotBlank) }
+        val protectedReferences = if (transaction != null && transaction.phase != AttachmentTransactionPhase.PreSubmit) {
+            (
+                transaction.stagedReferences +
+                    current.attachments
+                        .filter { it.id in transaction.attachmentIds }
+                        .mapNotNull { it.serverReference?.takeIf(String::isNotBlank) }
+            ).toSet()
+        } else {
+            emptySet()
         }
         rememberOrphanedReferences(
             currentOwner,
-            current.attachments
-                .filter { it.owner == currentOwner }
-                .mapNotNull { it.serverReference?.takeIf(String::isNotBlank) },
+            currentReferences.filterNot(protectedReferences::contains),
         )
         attachmentTransaction = null
         unknownSubmit = null
@@ -1117,6 +1183,9 @@ internal class CelesteViewModel(
         val localFileIds = current.attachments
             .mapNotNull { it.localFileId.takeIf(String::isNotBlank) }
         mutableState.value = current.copy(
+            messages = transaction?.localMessageId?.let { localMessageId ->
+                current.messages.filterNot { it.id == localMessageId }
+            } ?: current.messages,
             draft = "",
             attachments = emptyList(),
             editorGeneration = current.editorGeneration + 1,
@@ -1124,9 +1193,7 @@ internal class CelesteViewModel(
             imageOnlyCapability = ImageOnlyCapabilityState.Unknown,
             attachmentNotice = null,
         )
-        localFileIds.forEach { localFileId ->
-            viewModelScope.launch { runCatching { attachmentStagingStore.delete(localFileId) } }
-        }
+        scheduleLocalCleanup(currentOwner, localFileIds)
     }
 
     fun openSession(summary: StoredSession) {
@@ -1281,6 +1348,27 @@ internal class CelesteViewModel(
             )
             return
         }
+        val attachmentIds = attachments.map(AttachmentDraft::id)
+        val retryingUnknown = unknownSubmit?.takeIf {
+            it.owner == owner &&
+                it.generation == snapshot.editorGeneration &&
+                it.text == text &&
+                it.attachmentIds == attachmentIds
+        }
+        if (unknownSubmit != null && retryingUnknown == null) unknownSubmit = null
+        if (retryingUnknown != null && !retryingUnknown.reconciled) {
+            mutableState.value = snapshot.copy(
+                attachmentNotice = "Reconcile the send status before retrying this draft.",
+            )
+            return
+        }
+        if (retryingUnknown != null && retryingUnknown.retryCount >= MAX_SUBMIT_RETRIES) {
+            mutableState.value = snapshot.copy(
+                attachmentNotice = "Retry limit reached — select the images again before resending.",
+            )
+            return
+        }
+        val submitRetryCount = retryingUnknown?.retryCount?.plus(1) ?: 0
         if (attachments.isNotEmpty() && snapshot.attachmentCapability == AttachmentCapabilityState.Unsupported) {
             mutableState.value = snapshot.copy(
                 attachmentNotice = "This gateway does not support image attachments.",
@@ -1331,9 +1419,10 @@ internal class CelesteViewModel(
             generation = submittedGeneration,
             runtimeSessionId = runtimeId,
             text = text,
-            attachmentIds = attachments.map(AttachmentDraft::id),
+            attachmentIds = attachmentIds,
             localMessageId = localId,
             previousMessageIds = snapshot.messages.mapNotNull { it.id }.toSet(),
+            submitRetryCount = submitRetryCount,
         )
         attachmentTransaction = transactionState
         // prompt.submit creates the durable row before work begins. From this point on,
@@ -1375,11 +1464,7 @@ internal class CelesteViewModel(
                     if (!uploadStateAccepted) throw StaleAttachmentTransaction()
                     val bytes = attachmentStagingStore.readBytes(attachment.localFileId)
                     val validated = withContext(Dispatchers.Default) {
-                        AttachmentValidator.validate(
-                            bytes,
-                            attachment.mimeType,
-                            attachment.displayName,
-                        )
+                        AttachmentValidator.validate(bytes)
                     }
                     ensureCurrentAttachmentTransaction(
                         activeGateway = activeGateway,
@@ -1394,7 +1479,6 @@ internal class CelesteViewModel(
                         bytes = bytes,
                         filename = attachment.displayName,
                         mimeType = validated.mimeType,
-                        clientAttachmentId = attachment.id.toString(),
                     )
                     references += attached.serverReference
                     transactionState.stagedReferences += attached.serverReference
@@ -1436,6 +1520,9 @@ internal class CelesteViewModel(
                 )
                 val submittedText = buildImagePrompt(text, references)
                 transactionState.activeAttachmentId = null
+                // The server may accept prompt.submit before returning a response.
+                // Mark this boundary first so reconnecting/removal cannot detach refs.
+                transactionState.phase = AttachmentTransactionPhase.PostSubmit
                 activeGateway.submitPrompt(
                     runtimeSessionId = runtimeId,
                     text = submittedText,
@@ -1469,6 +1556,9 @@ internal class CelesteViewModel(
                     error !is TimeoutCancellationException &&
                     transactionState.cancelledByUser
                 ) return@launch
+                if (transactionState.phase == AttachmentTransactionPhase.PostSubmit) {
+                    transactionState.phase = AttachmentTransactionPhase.UncertainSubmit
+                }
                 handleAttachmentTransactionFailure(
                     activeGateway = activeGateway,
                     owner = owner,
@@ -1479,10 +1569,14 @@ internal class CelesteViewModel(
                     localMessageId = localId,
                     failedAttachmentId = transactionState.activeAttachmentId,
                     previousMessageIds = transactionState.previousMessageIds,
+                    submitRetryCount = transactionState.submitRetryCount,
                     error = error,
                 )
             } finally {
-                if (transactionState.cancelledByUser) {
+                if (
+                    transactionState.cancelledByUser &&
+                    transactionState.phase == AttachmentTransactionPhase.PreSubmit
+                ) {
                     rememberOrphanedReferences(transactionState.owner, transactionState.stagedReferences)
                 }
                 if (attachmentTransaction === transactionState) attachmentTransaction = null
@@ -1540,9 +1634,7 @@ internal class CelesteViewModel(
             editorGeneration = current.editorGeneration + 1,
             attachmentNotice = null,
         )
-        localFileIds.forEach { localFileId ->
-            runCatching { attachmentStagingStore.delete(localFileId) }
-        }
+        cleanupLocalFiles(owner, localFileIds)
     }
 
     private suspend fun handleAttachmentTransactionFailure(
@@ -1555,15 +1647,27 @@ internal class CelesteViewModel(
         localMessageId: String,
         failedAttachmentId: UUID?,
         previousMessageIds: Set<String>,
+        submitRetryCount: Int,
         error: Throwable,
     ) {
+        val initial = mutableState.value
+        if (
+            gateway === activeGateway &&
+            currentAttachmentOwner(initial) == owner &&
+            initial.messages.any { it.id == localMessageId }
+        ) {
+            // Failure cleanup is independent of the draft generation. A newer edit
+            // must not inherit the old transaction's optimistic pending row.
+            mutableState.value = initial.copy(
+                messages = initial.messages.filterNot { it.id == localMessageId },
+            )
+        }
         val current = mutableState.value
         if (
             gateway !== activeGateway ||
             !isCurrentAttachmentContext(current, owner, generation) ||
             currentStoredSessionId != owner.storedSessionIdOrNewConversationId ||
-            currentRuntimeSessionId != runtimeId &&
-                !(currentAttachmentOwner(current) == owner) ||
+            (currentRuntimeSessionId != runtimeId && currentAttachmentOwner(current) != owner) ||
             current.draft.trim() != text ||
             current.attachments.map(AttachmentDraft::id) != attachmentIds
         ) return
@@ -1623,6 +1727,7 @@ internal class CelesteViewModel(
             text = text,
             attachmentIds = attachmentIds,
             previousMessageIds = previousMessageIds,
+            retryCount = submitRetryCount,
         )
         mutableState.value = current.copy(
             messages = current.messages.filterNot { it.id == localMessageId },
@@ -1679,6 +1784,7 @@ internal class CelesteViewModel(
                 allowRuntimeChangeAfterStoredOwnerCheck = true,
             )
         } else {
+            unknownSubmit = pending.copy(reconciled = true)
             mutableState.value = current.copy(
                 turnState = TurnState.Idle,
                 attachmentNotice = "Send not found — review the draft and retry explicitly.",

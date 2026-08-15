@@ -1,10 +1,14 @@
 package dev.hazydreams.hermesceleste.network
 
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import dev.hazydreams.hermesceleste.attachments.MessageAttachment
 import dev.hazydreams.hermesceleste.attachments.AttachmentValidator
 import dev.hazydreams.hermesceleste.attachments.MAX_ATTACHMENT_BYTES
+import dev.hazydreams.hermesceleste.attachments.MAX_TRANSCRIPT_PREVIEW_BYTES
 import dev.hazydreams.hermesceleste.attachments.messageAttachmentFromReference
 import dev.hazydreams.hermesceleste.attachments.normalizeImageReferences
+import java.io.ByteArrayOutputStream
 import java.io.IOException
 import java.util.Base64
 import java.util.concurrent.TimeUnit
@@ -423,7 +427,7 @@ class DashboardClient(
                 }
                 .get()
                 .build()
-            val root = executeJson(request, "Hermes image preview") as? JsonObject
+            val root = executeBoundedJson(request, "Hermes image preview", MAX_MEDIA_RESPONSE_BYTES) as? JsonObject
                 ?: throw InvalidDashboardResponse("Hermes image preview returned an unexpected response.")
             val dataUrl = root["data_url"]?.jsonPrimitive?.contentOrNull
                 ?.takeIf { it.startsWith("data:image/", ignoreCase = true) && ";base64," in it }
@@ -436,9 +440,9 @@ class DashboardClient(
             if (bytes.isEmpty() || bytes.size.toLong() > MAX_ATTACHMENT_BYTES) {
                 throw InvalidDashboardResponse("Hermes image preview exceeded the client image limit.")
             }
-            runCatching { AttachmentValidator.validate(bytes, displayName = "transcript-image") }
+            runCatching { AttachmentValidator.validate(bytes) }
                 .getOrElse { throw AttachmentMediaUnavailable() }
-            bytes
+            createBoundedPreview(bytes) ?: throw AttachmentMediaUnavailable()
         }
     }
 
@@ -549,6 +553,73 @@ class DashboardClient(
         return root["ticket"]?.jsonPrimitive?.contentOrNull
             ?.takeIf(String::isNotBlank)
             ?: throw IOException("Hermes did not return a WebSocket ticket.")
+    }
+
+    private fun executeBoundedJson(
+        request: Request,
+        operation: String,
+        maximumBytes: Long,
+    ): JsonElement = try {
+        httpClient.newCall(request).execute().use { response ->
+            if (!response.isSuccessful) throw failureFor(response.code, operation)
+            val body = response.body
+            if (body.contentLength() > maximumBytes) {
+                throw InvalidDashboardResponse("$operation returned an oversized response.")
+            }
+            val bytes = ByteArrayOutputStream(minOf(maximumBytes.toInt(), 64 * 1024)).use { output ->
+                body.byteStream().use { input ->
+                    val buffer = ByteArray(16 * 1024)
+                    var total = 0L
+                    while (true) {
+                        val count = input.read(buffer)
+                        if (count < 0) break
+                        if (count == 0) continue
+                        total += count
+                        if (total > maximumBytes) {
+                            throw InvalidDashboardResponse("$operation returned an oversized response.")
+                        }
+                        output.write(buffer, 0, count)
+                    }
+                }
+                output.toByteArray()
+            }
+            runCatching { json.parseToJsonElement(bytes.decodeToString()) }
+                .getOrElse { throw InvalidDashboardResponse("$operation returned an unreadable response.", it) }
+        }
+    } catch (error: DashboardFailure) {
+        throw error
+    } catch (error: IOException) {
+        throw TransportUnavailable("Could not reach Hermes for $operation.", error)
+    }
+
+    private fun createBoundedPreview(bytes: ByteArray): ByteArray? {
+        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
+        if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
+        var sampleSize = 1
+        while (bounds.outWidth / sampleSize > 192 || bounds.outHeight / sampleSize > 192) {
+            sampleSize = (sampleSize * 2).coerceAtMost(1 shl 16)
+            if (sampleSize == 1 shl 16) break
+        }
+        val bitmap = BitmapFactory.decodeByteArray(
+            bytes,
+            0,
+            bytes.size,
+            BitmapFactory.Options().apply {
+                inSampleSize = sampleSize
+                inPreferredConfig = Bitmap.Config.ARGB_8888
+            },
+        ) ?: return null
+        return try {
+            ByteArrayOutputStream().use { output ->
+                if (!bitmap.compress(Bitmap.CompressFormat.PNG, 100, output)) return null
+                output.toByteArray().takeIf {
+                    it.isNotEmpty() && it.size.toLong() <= MAX_TRANSCRIPT_PREVIEW_BYTES
+                }
+            }
+        } finally {
+            bitmap.recycle()
+        }
     }
 
     private fun executeJson(request: Request, operation: String) = try {
@@ -770,6 +841,7 @@ class DashboardClient(
     private companion object {
         const val SESSION_LIST_REQUEST_ID = "session-list"
         const val SESSION_RESUME_REQUEST_ID = "session-resume"
+        const val MAX_MEDIA_RESPONSE_BYTES = (MAX_ATTACHMENT_BYTES * 4L / 3L) + 8_192L
         val JSON_MEDIA_TYPE = "application/json; charset=utf-8".toMediaType()
     }
 }

@@ -4,7 +4,9 @@ import java.util.UUID
 
 const val MAX_PENDING_ATTACHMENTS = 4
 const val MAX_ATTACHMENT_BYTES = 24L * 1024L * 1024L
+const val MAX_TRANSCRIPT_PREVIEW_BYTES = 256L * 1024L
 const val MAX_ATTACHMENT_RETRIES = 3
+const val MAX_SUBMIT_RETRIES = 3
 
 enum class AttachmentSource {
     PhotoPicker,
@@ -107,13 +109,6 @@ data class MessageAttachment(
     val previewBytes: ByteArray? = null,
 )
 
-data class ComposerDraft(
-    val key: DraftOwner,
-    val text: String,
-    val attachments: List<AttachmentDraft>,
-    val generation: Long,
-)
-
 data class AttachmentOperationOwner(
     val draftOwner: DraftOwner,
     val runtimeSessionIdAtStart: String?,
@@ -122,46 +117,16 @@ data class AttachmentOperationOwner(
     val attachmentGeneration: Long,
 )
 
-data class PickerSelection(
-    val accepted: List<AttachmentDraft>,
-    val droppedCount: Int,
-)
-
-object AttachmentReducer {
-    fun capPickerSelection(
-        attachments: List<AttachmentDraft>,
-        maximum: Int = MAX_PENDING_ATTACHMENTS,
-    ): PickerSelection {
-        val accepted = attachments.take(maximum.coerceAtLeast(0))
-        return PickerSelection(accepted = accepted, droppedCount = attachments.size - accepted.size)
-    }
-
-    fun remove(
-        draft: ComposerDraft,
-        attachmentId: UUID,
-        expectedGeneration: Long,
-    ): ComposerDraft? {
-        if (draft.generation != expectedGeneration || draft.attachments.none { it.id == attachmentId }) {
-            return null
-        }
-        return draft.copy(
-            attachments = draft.attachments.filterNot { it.id == attachmentId },
-            generation = draft.generation + 1,
-        )
-    }
-
-    fun accepts(
-        operation: AttachmentOperationOwner,
-        owner: DraftOwner,
-        runtimeSessionId: String?,
-        editorGeneration: Long,
-        attachment: AttachmentDraft,
-        allowRuntimeChangeAfterStoredOwnerCheck: Boolean = false,
-    ): Boolean =
-        operation.draftOwner == owner &&
-            (allowRuntimeChangeAfterStoredOwnerCheck || operation.runtimeSessionIdAtStart == runtimeSessionId) &&
-            operation.editorGeneration == editorGeneration &&
-            operation.attachmentId == attachment.id &&
-            operation.attachmentGeneration == attachment.generation &&
-            attachment.owner == owner
-}
+fun AttachmentOperationOwner.accepts(
+    owner: DraftOwner,
+    runtimeSessionId: String?,
+    editorGeneration: Long,
+    attachment: AttachmentDraft,
+    allowRuntimeChangeAfterStoredOwnerCheck: Boolean = false,
+): Boolean =
+    draftOwner == owner &&
+        (allowRuntimeChangeAfterStoredOwnerCheck || runtimeSessionIdAtStart == runtimeSessionId) &&
+        this.editorGeneration == editorGeneration &&
+        attachmentId == attachment.id &&
+        attachmentGeneration == attachment.generation &&
+        attachment.owner == owner

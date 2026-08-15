@@ -34,7 +34,7 @@ interface AttachmentStagingStore {
 
     suspend fun readBytes(localFileId: String): ByteArray
 
-    suspend fun delete(localFileId: String)
+    suspend fun delete(localFileId: String): Boolean
 }
 
 data class StagedAttachment(
@@ -130,11 +130,7 @@ class FileAttachmentStagingStore(
                 output.fd.sync()
             }
             val validated = FileInputStream(temporary).use {
-                AttachmentValidator.validate(
-                    input = it,
-                    declaredMimeType = declaredMimeType,
-                    displayName = displayName,
-                )
+                AttachmentValidator.validate(it)
             }
             Files.move(
                 temporary.toPath(),
@@ -180,9 +176,9 @@ class FileAttachmentStagingStore(
         file.readBytes()
     }
 
-    override suspend fun delete(localFileId: String): Unit = withContext(Dispatchers.IO) {
-        resolve(localFileId).delete()
-        Unit
+    override suspend fun delete(localFileId: String): Boolean = withContext(Dispatchers.IO) {
+        val file = resolve(localFileId)
+        !file.exists() || file.delete()
     }
 
     private fun resolve(localFileId: String): File {
@@ -201,14 +197,20 @@ class FileAttachmentStagingStore(
                 if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
                 var sampleSize = 1
                 while (bounds.outWidth / sampleSize > 192 || bounds.outHeight / sampleSize > 192) {
-                    sampleSize *= 2
+                    sampleSize = (sampleSize * 2).coerceAtMost(1 shl 16)
+                    if (sampleSize == 1 shl 16) break
                 }
                 val options = BitmapFactory.Options().apply { inSampleSize = sampleSize }
                 val bitmap = BitmapFactory.decodeFile(file.absolutePath, options) ?: return null
                 try {
                     ByteArrayOutputStream().use { output ->
-                        if (!bitmap.compress(Bitmap.CompressFormat.PNG, 100, output)) null
-                        else output.toByteArray().takeIf { it.isNotEmpty() }
+                        if (!bitmap.compress(Bitmap.CompressFormat.PNG, 100, output)) {
+                            null
+                        } else {
+                            output.toByteArray().takeIf {
+                                it.isNotEmpty() && it.size.toLong() <= MAX_TRANSCRIPT_PREVIEW_BYTES
+                            }
+                        }
                     }
                 } finally {
                     bitmap.recycle()
@@ -253,5 +255,5 @@ class UnavailableAttachmentStagingStore : AttachmentStagingStore {
         UserFacingAttachmentError(AttachmentErrorKind.ReadFailed),
     )
 
-    override suspend fun delete(localFileId: String) = Unit
+    override suspend fun delete(localFileId: String): Boolean = true
 }

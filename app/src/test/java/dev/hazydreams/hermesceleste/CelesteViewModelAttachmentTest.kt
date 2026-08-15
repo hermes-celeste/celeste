@@ -3,18 +3,15 @@ package dev.hazydreams.hermesceleste
 import android.content.ContentResolver
 import android.net.Uri
 import dev.hazydreams.hermesceleste.attachments.AttachmentCapabilityState
-import dev.hazydreams.hermesceleste.attachments.AttachmentDraft
-import dev.hazydreams.hermesceleste.attachments.AttachmentPreviewState
 import dev.hazydreams.hermesceleste.attachments.AttachmentStagingStore
 import dev.hazydreams.hermesceleste.attachments.AttachmentTransferState
 import dev.hazydreams.hermesceleste.attachments.DraftOwner
 import dev.hazydreams.hermesceleste.attachments.FileAttachment
 import dev.hazydreams.hermesceleste.attachments.MAX_PENDING_ATTACHMENTS
+import dev.hazydreams.hermesceleste.attachments.MAX_SUBMIT_RETRIES
 import dev.hazydreams.hermesceleste.attachments.StagedAttachment
 import dev.hazydreams.hermesceleste.connection.InMemoryConnectionStore
-import dev.hazydreams.hermesceleste.network.AuthProvider
 import dev.hazydreams.hermesceleste.network.AuthenticationMaterial
-import dev.hazydreams.hermesceleste.network.ConversationMessage
 import dev.hazydreams.hermesceleste.network.DashboardProfile
 import dev.hazydreams.hermesceleste.network.DashboardProbeResult
 import dev.hazydreams.hermesceleste.network.DashboardService
@@ -29,7 +26,6 @@ import java.io.File
 import java.io.InputStream
 import java.io.IOException
 import java.util.Base64
-import java.util.UUID
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -223,10 +219,111 @@ class CelesteViewModelAttachmentTest {
         assertEquals(TurnState.Idle, viewModel.state.value.turnState)
     }
 
+    @Test
+    fun removalIsBlockedAfterPromptSubmitBeginsUntilTheSendIsReconciled() = runTest {
+        val gateway = AttachmentGateway().apply {
+            blockPrompt = true
+            promptStarted = CompletableDeferred()
+        }
+        val viewModel = openConversation(
+            gateway,
+            FakeAttachmentStore(),
+            reconnectDelayMillis = { _, _ -> 60_000L },
+        )
+        viewModel.updateDraft("Keep this image")
+        viewModel.beginAttachmentPicker()
+        viewModel.onAttachmentPickerResult(listOf(Uri.parse("content://image-1")))
+        advanceUntilIdle()
+        viewModel.sendMessage()
+        gateway.promptStarted!!.await()
+
+        gateway.disconnect("lost after submit started")
+        val attachmentId = viewModel.state.value.attachments.single().id
+        viewModel.removeAttachment(attachmentId)
+
+        assertEquals("Reconcile the send status before removing this image.", viewModel.state.value.attachmentNotice)
+        assertEquals(1, viewModel.state.value.attachments.size)
+        assertEquals(0, gateway.methods.count { it == "image.detach" })
+
+        gateway.releasePrompt.complete(Unit)
+        advanceUntilIdle()
+        assertTrue(viewModel.state.value.attachments.isEmpty())
+    }
+
+    @Test
+    fun staleUploadFailureRemovesItsOptimisticRowAfterTheDraftChanges() = runTest {
+        val gateway = AttachmentGateway().apply {
+            blockSecondAttach = true
+            secondAttachStarted = CompletableDeferred()
+        }
+        val viewModel = openConversation(gateway, FakeAttachmentStore())
+        viewModel.updateDraft("Old caption")
+        viewModel.beginAttachmentPicker()
+        viewModel.onAttachmentPickerResult(
+            listOf(Uri.parse("content://image-1"), Uri.parse("content://image-2")),
+        )
+        advanceUntilIdle()
+        viewModel.sendMessage()
+        gateway.secondAttachStarted!!.await()
+
+        viewModel.updateDraft("New caption")
+        gateway.attachFailure = GatewayRpcException(4018, "image too large")
+        gateway.releaseSecondAttach.complete(Unit)
+        advanceUntilIdle()
+
+        assertEquals("New caption", viewModel.state.value.draft)
+        assertTrue(viewModel.state.value.messages.none { it.id?.startsWith("local-") == true })
+    }
+
+    @Test
+    fun explicitRetriesAfterAnAbsentUnknownSubmitAreBounded() = runTest {
+        val gateway = AttachmentGateway().apply {
+            promptFailure = GatewayRequestTimeout("prompt.submit", IOException("timed out"))
+            resumeMessages = "[]"
+        }
+        val viewModel = openConversation(gateway, FakeAttachmentStore())
+        viewModel.updateDraft("Retry this image")
+        viewModel.beginAttachmentPicker()
+        viewModel.onAttachmentPickerResult(listOf(Uri.parse("content://image-1")))
+        advanceUntilIdle()
+
+        viewModel.sendMessage()
+        advanceUntilIdle()
+        repeat(MAX_SUBMIT_RETRIES) {
+            viewModel.sendMessage()
+            advanceUntilIdle()
+        }
+        val submittedCount = gateway.methods.count { it == "prompt.submit" }
+
+        viewModel.sendMessage()
+        advanceUntilIdle()
+
+        assertEquals(1 + MAX_SUBMIT_RETRIES, submittedCount)
+        assertEquals(submittedCount, gateway.methods.count { it == "prompt.submit" })
+        assertTrue(viewModel.state.value.attachmentNotice.orEmpty().contains("Retry limit reached"))
+    }
+
+    @Test
+    fun acceptedSendReportsLocalCleanupFailureInsteadOfSilentlyDroppingIt() = runTest {
+        val gateway = AttachmentGateway()
+        val store = FakeAttachmentStore().apply { deleteResult = false }
+        val viewModel = openConversation(gateway, store)
+        viewModel.updateDraft("Report cleanup")
+        viewModel.beginAttachmentPicker()
+        viewModel.onAttachmentPickerResult(listOf(Uri.parse("content://image-1")))
+        advanceUntilIdle()
+        viewModel.sendMessage()
+        advanceUntilIdle()
+
+        assertTrue(viewModel.state.value.attachments.isEmpty())
+        assertEquals("", viewModel.state.value.draft)
+        assertTrue(viewModel.state.value.attachmentNotice.orEmpty().contains("could not remove"))
+    }
+
     private suspend fun openConversation(
         gateway: AttachmentGateway,
         store: FakeAttachmentStore,
-        reconnectDelayMillis: (Boolean, Int) -> Long = { _, _ -> 0L },
+        reconnectDelayMillis: (Int, Boolean) -> Long = { _, _ -> 0L },
     ): CelesteViewModel {
         val dashboard = FakeDashboard(gateway)
         val viewModel = CelesteViewModel(
@@ -247,6 +344,7 @@ class CelesteViewModelAttachmentTest {
         private val bytes = Base64.getDecoder().decode(
             "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
         )
+        var deleteResult = true
 
         override suspend fun stageUri(
             resolver: ContentResolver?,
@@ -275,7 +373,7 @@ class CelesteViewModelAttachmentTest {
 
         override suspend fun readBytes(localFileId: String): ByteArray = bytes
 
-        override suspend fun delete(localFileId: String) = Unit
+        override suspend fun delete(localFileId: String): Boolean = deleteResult
     }
 
     private class FakeDashboard(private val gateway: AttachmentGateway) : DashboardService {
@@ -299,6 +397,9 @@ class CelesteViewModelAttachmentTest {
         var blockSecondAttach = false
         var secondAttachStarted: CompletableDeferred<Unit>? = null
         val releaseSecondAttach = CompletableDeferred<Unit>()
+        var blockPrompt = false
+        var promptStarted: CompletableDeferred<Unit>? = null
+        val releasePrompt = CompletableDeferred<Unit>()
         val detachRequests = mutableListOf<JsonObject>()
         var disconnectOnPromptFailure = false
         var attachFailure: Throwable? = null
@@ -322,6 +423,8 @@ class CelesteViewModelAttachmentTest {
                     attachFailure?.let { throw it }
                 }
                 "prompt.submit" -> {
+                    promptStarted?.complete(Unit)
+                    if (blockPrompt) releasePrompt.await()
                     promptFailure?.let {
                         if (disconnectOnPromptFailure) {
                             mutableState.value = GatewayConnectionState.Disconnected("lost")
