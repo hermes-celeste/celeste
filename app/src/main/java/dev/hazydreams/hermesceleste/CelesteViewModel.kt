@@ -1006,13 +1006,20 @@ internal class CelesteViewModel(
                     profileGeneration == selectedProfileGeneration &&
                     mutableState.value.selectedProfile == selectedProfile
                 ) {
-                    val message = error.message ?: "Could not create a Hermes conversation."
-                    mutableState.value = snapshot.copy(
-                        sessions = snapshot.sessionCatalog.rows,
-                        sessionCatalog = SessionCatalogReducer.actionFailed(snapshot.sessionCatalog, message),
-                        loadingMessage = null,
-                        errorMessage = message,
-                    )
+                    if (error is AuthenticationRejected) {
+                        invalidateReusableAuthentication(
+                            descriptor = currentDescriptor,
+                            probe = connection,
+                        )
+                    } else {
+                        val message = error.message ?: "Could not create a Hermes conversation."
+                        mutableState.value = snapshot.copy(
+                            sessions = snapshot.sessionCatalog.rows,
+                            sessionCatalog = SessionCatalogReducer.actionFailed(snapshot.sessionCatalog, message),
+                            loadingMessage = null,
+                            errorMessage = message,
+                        )
+                    }
                 }
             } finally {
                 candidateEventsJob.cancel()

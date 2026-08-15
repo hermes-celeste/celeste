@@ -92,7 +92,7 @@ class DashboardClientTest {
     }
 
     @Test
-    fun listsTheDashboardStoredSessionsOverJsonRpc() = runBlocking {
+    fun listsTheDashboardStoredSessionsOverJsonRpcAndDropsConflictingProfileIdentity() = runBlocking {
         server.enqueue(sessionListWebSocket())
 
         val sessions = DashboardClient().listSessions(
@@ -105,6 +105,7 @@ class DashboardClientTest {
         assertEquals("desktop", sessions.first().source)
         assertEquals("work", sessions.first().profile)
         assertEquals("", sessions[1].profile)
+        assertTrue(sessions.none { it.id == "conflicting-profile" })
         val upgrade = server.takeRequest()
         assertEquals("/api/ws", upgrade.url.encodedPath)
         assertEquals("private-token", upgrade.url.queryParameter("token"))
@@ -594,7 +595,7 @@ class DashboardClientTest {
                         val request = Json.parseToJsonElement(text).jsonObject
                         assertEquals("session.list", request["method"]?.jsonPrimitive?.content)
                         webSocket.send(
-                            """{"jsonrpc":"2.0","id":"session-list","result":{"sessions":[{"id":"s1","title":"This conversation","preview":"perfect. lets build that.","started_at":123.5,"message_count":42,"source":"desktop","profile_name":"work"},{"id":"s2","title":"Older chat","preview":"hello","started_at":100,"message_count":2,"source":"cli"}]}}""",
+                            """{"jsonrpc":"2.0","id":"session-list","result":{"sessions":[{"id":"s1","title":"This conversation","preview":"perfect. lets build that.","started_at":123.5,"message_count":42,"source":"desktop","profile_name":"work"},{"id":"s2","title":"Older chat","preview":"hello","started_at":100,"message_count":2,"source":"cli"},{"id":"conflicting-profile","title":"Conflicting profile","preview":"must not be shown","started_at":90,"message_count":1,"source":"desktop","profile":"default","profile_name":"work"}]}}""",
                         )
                     }
 

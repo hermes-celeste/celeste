@@ -259,7 +259,12 @@ internal fun SessionListScreen(
                         modifier = Modifier.padding(horizontal = 28.dp, vertical = 8.dp),
                         verticalArrangement = Arrangement.spacedBy(10.dp),
                     ) {
-                        StatusMessage("Loading conversations…", CelesteBlue, showSpinner = true)
+                        StatusMessage(
+                            "Loading conversations…",
+                            CelesteBlue,
+                            showSpinner = true,
+                            announce = true,
+                        )
                         repeat(4) { ConversationSkeleton() }
                     }
                 }
@@ -270,6 +275,7 @@ internal fun SessionListScreen(
                             "Refreshing conversations…",
                             CelesteBlue,
                             showSpinner = true,
+                            announce = true,
                         )
                     }
                 }
@@ -455,12 +461,13 @@ private fun CatalogMessage(
     message: String,
     actionLabel: String,
     onAction: () -> Unit,
+    announce: Boolean = true,
 ) {
     Column(
         modifier = Modifier.padding(horizontal = 28.dp, vertical = 9.dp),
         verticalArrangement = Arrangement.spacedBy(5.dp),
     ) {
-        StatusMessage(message, CelesteError)
+        StatusMessage(message, CelesteError, announce = announce)
         TextButton(
             onClick = onAction,
             modifier = Modifier.semantics { contentDescription = actionLabel },

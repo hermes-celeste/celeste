@@ -30,6 +30,9 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.liveRegion
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -358,7 +361,12 @@ internal fun EditorialDivider(modifier: Modifier = Modifier) {
 }
 
 @Composable
-internal fun StatusMessage(message: String, color: Color, showSpinner: Boolean = false) {
+internal fun StatusMessage(
+    message: String,
+    color: Color,
+    showSpinner: Boolean = false,
+    announce: Boolean = false,
+) {
     Row(
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(9.dp),
@@ -377,6 +385,11 @@ internal fun StatusMessage(message: String, color: Color, showSpinner: Boolean =
             color = color,
             style = MaterialTheme.typography.bodyMedium,
             fontWeight = FontWeight.Medium,
+            modifier = if (announce) {
+                Modifier.semantics { liveRegion = LiveRegionMode.Polite }
+            } else {
+                Modifier
+            },
         )
     }
 }

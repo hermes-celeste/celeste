@@ -354,6 +354,41 @@ class CelesteViewModelTest {
     }
 
     @Test
+    fun newConversationAuthenticationFailureClosesGatewayAndRequiresSignIn() = runTest {
+        val gateway = FakeGateway().apply {
+            createFailure = AuthenticationRejected("Hermes rejected new conversation creation.")
+        }
+        val dashboard = FakeDashboard(gateway, authRequired = true)
+        val store = InMemoryConnectionStore()
+        val viewModel = CelesteViewModel(
+            dashboard = dashboard,
+            connectionStore = store,
+            reconnectDelayMillis = { _, _ -> 0L },
+        )
+        viewModel.updateDashboardUrl("https://hermes.test")
+        viewModel.findDashboard()
+        advanceUntilIdle()
+        viewModel.updateUsername("celeste")
+        viewModel.updatePassword("synthetic-password")
+        viewModel.loadSessions()
+        advanceUntilIdle()
+        viewModel.openSession(dashboard.session)
+        advanceUntilIdle()
+        assertTrue(store.load()?.secret != null)
+
+        viewModel.createNewConversation()
+        advanceUntilIdle()
+
+        assertEquals(ConnectionPhase.AuthenticationRequired, viewModel.state.value.connectionPhase)
+        assertNull(viewModel.state.value.sessions)
+        assertNull(viewModel.state.value.activeSummary)
+        assertEquals("Hermes needs sign-in.", viewModel.state.value.errorMessage)
+        assertNull(store.load()?.secret)
+        assertFalse(store.load()?.descriptor?.autoLoginEnabled ?: true)
+        assertEquals(GatewayConnectionState.Closed, gateway.state.value)
+    }
+
+    @Test
     fun refreshFailureRetainsTheAuthoritativeWindowAsStale() = runTest {
         val dashboard = FakeDashboard(FakeGateway())
         val viewModel = connectedViewModel(dashboard)
@@ -418,6 +453,24 @@ class CelesteViewModelTest {
         assertEquals(SessionCatalogStatus.Stale, viewModel.state.value.sessionCatalog.phase)
         assertEquals(loadedRows, viewModel.state.value.sessionCatalog.rows)
         assertEquals("new conversation unavailable", viewModel.state.value.sessionCatalog.errorMessage)
+    }
+
+    @Test
+    fun newConversationWithoutDurableIdentityNeverPromotesItsRuntimeId() = runTest {
+        val gateway = FakeGateway().apply { omitStoredIdentity = true }
+        val dashboard = FakeDashboard(gateway)
+        val viewModel = connectedViewModel(dashboard)
+
+        viewModel.createNewConversation()
+        advanceUntilIdle()
+
+        assertNull(viewModel.state.value.activeSummary)
+        assertTrue(viewModel.state.value.sessions.orEmpty().none { it.id == "runtime-new-1" })
+        assertEquals(
+            "Hermes created a conversation without a durable stored identity.",
+            viewModel.state.value.errorMessage,
+        )
+        assertEquals(SessionCatalogStatus.Stale, viewModel.state.value.sessionCatalog.phase)
     }
 
     @Test
@@ -585,6 +638,7 @@ class CelesteViewModelTest {
         var connectCount = 0
         var createCount = 0
         var createFailure: Throwable? = null
+        var omitStoredIdentity = false
         var createGate: CompletableDeferred<Unit>? = null
         var failHealthCheck = false
         var connectFailure: Throwable? = null
@@ -612,7 +666,7 @@ class CelesteViewModelTest {
                     createFailure?.let { throw it }
                     buildJsonObject {
                         put("session_id", "runtime-new-$createCount")
-                        put("stored_session_id", "stored-new-$createCount")
+                        if (!omitStoredIdentity) put("stored_session_id", "stored-new-$createCount")
                         put("profile", params["profile"]?.jsonPrimitive?.content ?: "default")
                     }
                 }

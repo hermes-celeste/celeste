@@ -34,12 +34,13 @@ suspend fun GatewayConnection.createSession(profile: String): CreatedSession {
     val runtimeId = result.string("session_id")
         ?.takeIf(String::isNotBlank)
         ?: throw IOException("Hermes created a conversation without a runtime identity.")
+    val storedId = result.string("stored_session_id")
+        ?.takeIf(String::isNotBlank)
+        ?: throw IOException("Hermes created a conversation without a durable stored identity.")
     val info = result["info"] as? JsonObject
     return CreatedSession(
         runtimeSessionId = runtimeId,
-        storedSessionId = result.string("stored_session_id")
-            ?.takeIf(String::isNotBlank)
-            ?: runtimeId,
+        storedSessionId = storedId,
         profile = result.string("profile")
             ?: result.string("profile_id")
             ?: info?.string("profile_name"),
