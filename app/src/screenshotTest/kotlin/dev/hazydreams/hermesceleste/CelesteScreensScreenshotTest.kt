@@ -502,6 +502,45 @@ fun RuntimeControlsOlderGatewayPreviewScreenshot() {
     }
 }
 
+@Preview(
+    name = "20 · Runtime controls large font",
+    widthDp = 390,
+    heightDp = 844,
+    fontScale = 1.5f,
+    showBackground = true,
+)
+@Composable
+fun RuntimeControlsLargeFontPreview() {
+    HermesCelesteTheme {
+        PreviewConversation(
+            runtimeControls = previewRuntimeControls(
+                pickerOpen = true,
+                canApply = true,
+            ),
+            turnState = TurnState.Idle,
+        )
+    }
+}
+
+@Preview(
+    name = "21 · Runtime controls landscape",
+    widthDp = 844,
+    heightDp = 390,
+    showBackground = true,
+)
+@Composable
+fun RuntimeControlsLandscapePreview() {
+    HermesCelesteTheme {
+        PreviewConversation(
+            runtimeControls = previewRuntimeControls(
+                pickerOpen = true,
+                canApply = true,
+            ),
+            turnState = TurnState.Idle,
+        )
+    }
+}
+
 @Composable
 private fun PreviewConversation(
     summary: StoredSession = previewSessions[1],
