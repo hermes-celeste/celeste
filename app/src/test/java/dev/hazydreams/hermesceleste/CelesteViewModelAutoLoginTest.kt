@@ -15,6 +15,7 @@ import dev.hazydreams.hermesceleste.network.GatewayConnection
 import dev.hazydreams.hermesceleste.network.GatewayConnectionState
 import dev.hazydreams.hermesceleste.network.GatewayCredential
 import dev.hazydreams.hermesceleste.network.GatewayEvent
+import dev.hazydreams.hermesceleste.network.GatewayRpcException
 import dev.hazydreams.hermesceleste.network.InvalidDashboardResponse
 import dev.hazydreams.hermesceleste.network.StoredSession
 import dev.hazydreams.hermesceleste.network.TransportUnavailable
@@ -168,6 +169,43 @@ class CelesteViewModelAutoLoginTest {
     }
 
     @Test
+    fun jsonRpcAuthenticationFailureDuringRestoreClearsReusableAuth() = runTest {
+        listOf(401, 403).forEach { code ->
+            val descriptor = SavedConnectionDescriptor(
+                baseUrl = "https://hermes.example.net",
+                authMode = SavedAuthMode.ProviderSession,
+                provider = "password",
+                username = "celeste",
+                expectsSecret = true,
+            )
+            val store = InMemoryConnectionStore(
+                StoredConnection(descriptor, ReusableSecret("synthetic-session-cookies")),
+            )
+            val dashboard = AutoLoginDashboard(passwordProbe).apply {
+                sessionFailure = GatewayRpcException(
+                    code = code,
+                    message = "raw JSON-RPC auth failure at https://private.example/path",
+                )
+            }
+
+            val viewModel = CelesteViewModel(dashboard = dashboard, connectionStore = store)
+            advanceUntilIdle()
+
+            val state = viewModel.state.value
+            val notice = requireNotNull(state.notice)
+            assertEquals(ConnectionPhase.AuthenticationRequired, state.connectionPhase)
+            assertEquals(UiNoticeCategory.AuthenticationRequired, notice.category)
+            assertEquals(UiRecoveryAction.SignIn, notice.recovery)
+            assertEquals("Your Hermes sign-in has expired. Sign in again.", notice.message)
+            assertEquals("https://hermes.example.net", state.dashboardUrl)
+            assertEquals("celeste", state.username)
+            assertNull(store.load()?.secret)
+            assertFalse(store.load()?.descriptor?.autoLoginEnabled ?: true)
+            assertFalse(notice.message.contains("private.example"))
+        }
+    }
+
+    @Test
     fun transientRestoreFailureKeepsTheSavedConnectionAndRetrySucceeds() = runTest {
         val descriptor = SavedConnectionDescriptor(
             baseUrl = "https://hermes.example.net",
@@ -299,6 +337,7 @@ class CelesteViewModelAutoLoginTest {
     ) : DashboardService {
         var probeFailure: Throwable? = null
         var passwordFailure: Throwable? = null
+        var sessionFailure: Throwable? = null
         var restoreAccepted = true
         var exportedMaterial = "synthetic-session-cookies"
         var probeCalls = 0
@@ -328,16 +367,19 @@ class CelesteViewModelAutoLoginTest {
             baseUrl: String,
             credential: GatewayCredential,
             limit: Int,
-        ): List<StoredSession> = listOf(
-            StoredSession(
-                id = "stored-1",
-                title = "Choose me manually",
-                preview = "",
-                startedAt = 1.0,
-                messageCount = 1,
-                source = "desktop",
-            ),
-        )
+        ): List<StoredSession> {
+            sessionFailure?.let { throw it }
+            return listOf(
+                StoredSession(
+                    id = "stored-1",
+                    title = "Choose me manually",
+                    preview = "",
+                    startedAt = 1.0,
+                    messageCount = 1,
+                    source = "desktop",
+                ),
+            )
+        }
 
         override suspend fun listProfiles(
             baseUrl: String,

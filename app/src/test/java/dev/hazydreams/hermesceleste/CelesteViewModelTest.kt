@@ -3,6 +3,10 @@ package dev.hazydreams.hermesceleste
 import java.io.IOException
 
 import dev.hazydreams.hermesceleste.connection.InMemoryConnectionStore
+import dev.hazydreams.hermesceleste.connection.ReusableSecret
+import dev.hazydreams.hermesceleste.connection.SavedAuthMode
+import dev.hazydreams.hermesceleste.connection.SavedConnectionDescriptor
+import dev.hazydreams.hermesceleste.connection.StoredConnection
 import dev.hazydreams.hermesceleste.network.AuthenticationMaterial
 import dev.hazydreams.hermesceleste.network.AuthenticationRejected
 import dev.hazydreams.hermesceleste.network.AuthProvider
@@ -200,6 +204,71 @@ class CelesteViewModelTest {
     }
 
     @Test
+    fun jsonRpcAuthenticationFailuresDuringLoadRequireSignInAndClearReusableAuth() = runTest {
+        listOf(401, 403).forEach { code ->
+            val descriptor = SavedConnectionDescriptor(
+                baseUrl = "http://hermes.test:9119",
+                authMode = SavedAuthMode.StaticToken,
+                expectsSecret = true,
+            )
+            val store = InMemoryConnectionStore(
+                StoredConnection(descriptor, ReusableSecret("synthetic-session-token")),
+            )
+            val dashboard = FakeDashboard(FakeGateway()).apply {
+                sessionFailure = GatewayRpcException(
+                    code = code,
+                    message = "raw JSON-RPC auth failure at https://private.example/path",
+                )
+            }
+            val viewModel = CelesteViewModel(dashboard = dashboard, connectionStore = store)
+            viewModel.updateDashboardUrl("http://hermes.test:9119")
+            viewModel.findDashboard()
+            advanceUntilIdle()
+            viewModel.loadSessions()
+            advanceUntilIdle()
+
+            val state = viewModel.state.value
+            val notice = requireNotNull(state.notice)
+            assertEquals(ConnectionPhase.AuthenticationRequired, state.connectionPhase)
+            assertEquals(UiNoticeCategory.AuthenticationRequired, notice.category)
+            assertEquals(UiRecoveryAction.SignIn, notice.recovery)
+            assertEquals("Your Hermes sign-in has expired. Sign in again.", notice.message)
+            assertEquals("http://hermes.test:9119", state.dashboardUrl)
+            assertEquals("", state.sessionToken)
+            assertNull(store.load()?.secret)
+            assertFalse(store.load()?.descriptor?.autoLoginEnabled ?: true)
+            assertFalse(notice.message.contains("private.example"))
+        }
+    }
+
+    @Test
+    fun jsonRpcAuthenticationFailureDuringProfileReloadRequiresSignIn() = runTest {
+        val dashboard = FakeDashboard(FakeGateway())
+        val store = InMemoryConnectionStore()
+        val viewModel = CelesteViewModel(dashboard = dashboard, connectionStore = store)
+        viewModel.updateDashboardUrl("http://hermes.test:9119")
+        viewModel.findDashboard()
+        viewModel.loadSessions()
+        advanceUntilIdle()
+
+        dashboard.profileFailure = GatewayRpcException(
+            code = 403,
+            message = "raw JSON-RPC auth failure at https://private.example/path",
+        )
+        viewModel.selectProfile("work")
+        advanceUntilIdle()
+
+        val state = viewModel.state.value
+        val notice = requireNotNull(state.notice)
+        assertEquals(ConnectionPhase.AuthenticationRequired, state.connectionPhase)
+        assertEquals(UiNoticeCategory.AuthenticationRequired, notice.category)
+        assertEquals(UiRecoveryAction.SignIn, notice.recovery)
+        assertEquals("Your Hermes sign-in has expired. Sign in again.", notice.message)
+        assertNull(state.sessions)
+        assertFalse(notice.message.contains("private.example"))
+    }
+
+    @Test
     fun foregroundHealthCheckReplacesAStaleSocketAndResumes() = runTest {
         val gateway = FakeGateway()
         val viewModel = openConversation(gateway)
@@ -261,6 +330,48 @@ class CelesteViewModelTest {
         assertTrue(gateway.methods.count { it == "session.resume" } >= 3)
         assertEquals(TurnState.Idle, viewModel.state.value.turnState)
         assertNull(viewModel.state.value.notice)
+        viewModel.leaveConversation()
+    }
+
+    @Test
+    fun newerReconciliationEpochWinsWhenAnOlderSnapshotReturnsLate() = runTest {
+        val gateway = FakeGateway()
+        val viewModel = openConversation(gateway)
+        val olderResumeGate = CompletableDeferred<Unit>()
+        val newerResumeGate = CompletableDeferred<Unit>()
+        val olderResumeEntered = CompletableDeferred<Unit>()
+        val newerResumeEntered = CompletableDeferred<Unit>()
+        gateway.promptFailure = IOException("prompt delivery became uncertain")
+        gateway.resumePayloads += resumePayload(
+            messages = listOf(ConversationMessage(role = "user", text = "stale snapshot")),
+            running = false,
+        )
+        gateway.resumePayloads += resumePayload(
+            messages = listOf(ConversationMessage(role = "user", text = "fresh snapshot")),
+            running = false,
+        )
+        gateway.resumeGates += olderResumeGate
+        gateway.resumeGates += newerResumeGate
+        gateway.resumeEnteredSignals += olderResumeEntered
+        gateway.resumeEnteredSignals += newerResumeEntered
+
+        viewModel.updateDraft("uncertain prompt")
+        viewModel.sendMessage()
+        olderResumeEntered.await()
+
+        gateway.disconnect("reconnect while the first reconciliation is pending")
+        runCurrent()
+        newerResumeEntered.await()
+
+        newerResumeGate.complete(Unit)
+        advanceUntilIdle()
+        assertEquals("fresh snapshot", viewModel.state.value.messages.single().text)
+
+        olderResumeGate.complete(Unit)
+        advanceUntilIdle()
+
+        assertEquals("fresh snapshot", viewModel.state.value.messages.single().text)
+        assertEquals(1, gateway.methods.count { it == "prompt.submit" })
         viewModel.leaveConversation()
     }
 
@@ -487,6 +598,7 @@ class CelesteViewModelTest {
         private val authRequired: Boolean = false,
     ) : DashboardService {
         var profileFailure: Throwable? = null
+        var sessionFailure: Throwable? = null
         var profileCatalog = listOf(
             DashboardProfile(name = "default", isDefault = true),
             DashboardProfile(name = "work"),
@@ -524,7 +636,10 @@ class CelesteViewModelTest {
             baseUrl: String,
             credential: GatewayCredential,
             limit: Int,
-        ): List<StoredSession> = listOf(session)
+        ): List<StoredSession> {
+            sessionFailure?.let { throw it }
+            return listOf(session)
+        }
 
         override suspend fun listProfiles(
             baseUrl: String,
@@ -555,7 +670,11 @@ class CelesteViewModelTest {
         var createCount = 0
         var failHealthCheck = false
         var connectFailure: Throwable? = null
+        var promptFailure: Throwable? = null
         var resumePayload: JsonObject = resumePayload(messages = emptyList(), running = false)
+        val resumePayloads = mutableListOf<JsonObject>()
+        val resumeGates = mutableListOf<CompletableDeferred<Unit>>()
+        val resumeEnteredSignals = mutableListOf<CompletableDeferred<Unit>>()
         var resumeFailure: Throwable? = null
         var resumeGate: CompletableDeferred<Unit>? = null
         var resumeEntered: CompletableDeferred<Unit>? = null
@@ -577,9 +696,23 @@ class CelesteViewModelTest {
             return when (method) {
                 "session.resume" -> {
                     resumeEntered?.complete(Unit)
-                    resumeGate?.await()
+                    resumeEnteredSignals.firstOrNull()?.let { entered ->
+                        entered.complete(Unit)
+                        resumeEnteredSignals.removeAt(0)
+                    }
+                    val gate = if (resumeGates.isNotEmpty()) {
+                        resumeGates.removeAt(0)
+                    } else {
+                        resumeGate
+                    }
+                    val payload = if (resumePayloads.isNotEmpty()) {
+                        resumePayloads.removeAt(0)
+                    } else {
+                        resumePayload
+                    }
+                    gate?.await()
                     resumeFailure?.let { throw it }
-                    resumePayload
+                    payload
                 }
                 "session.create" -> {
                     createCount += 1
@@ -596,7 +729,13 @@ class CelesteViewModelTest {
                     }
                     buildJsonObject { put("sessions", "healthy") }
                 }
-                "prompt.submit" -> buildJsonObject { put("status", "streaming") }
+                "prompt.submit" -> {
+                    promptFailure?.let { failure ->
+                        promptFailure = null
+                        throw failure
+                    }
+                    buildJsonObject { put("status", "streaming") }
+                }
                 "session.interrupt" -> buildJsonObject { put("status", "interrupting") }
                 else -> buildJsonObject {}
             }

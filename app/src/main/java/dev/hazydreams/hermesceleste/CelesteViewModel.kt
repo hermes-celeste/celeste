@@ -416,6 +416,14 @@ internal class CelesteViewModel(
                 throw error
             } catch (error: Throwable) {
                 if (!isCurrent(token)) return@launchOwned
+                if (isAuthenticationFailure(error)) {
+                    invalidateReusableAuthentication(
+                        descriptor = currentDescriptor,
+                        probe = connection,
+                        token = token,
+                    )
+                    return@launchOwned
+                }
                 publishFailure(token, error, "select_profile", UiNoticeScope.Connection)
                 mutableState.value = mutableState.value.copy(
                     loadingMessage = null,
@@ -582,7 +590,7 @@ internal class CelesteViewModel(
                 if (!isCurrentConnectionAttempt(attempt) || !isCurrent(token)) return@launchOwned
                 dashboard.clearAuthentication()
                 credential = null
-                if (error is AuthenticationRejected) {
+                if (isAuthenticationFailure(error)) {
                     currentAuthMode = null
                     connectionStoreMutex.withLock {
                         if (isCurrent(token)) {
@@ -904,7 +912,7 @@ internal class CelesteViewModel(
             throw error
         } catch (error: Throwable) {
             if (!isCurrentConnectionAttempt(attempt) || !isCurrent(token)) return
-            if (error is AuthenticationRejected) {
+            if (isAuthenticationFailure(error)) {
                 credential = null
                 currentDescriptor = null
                 dashboard.clearAuthentication()
@@ -952,6 +960,10 @@ internal class CelesteViewModel(
         probe: DashboardProbeResult? = null,
         token: OperationToken? = null,
     ) {
+        val snapshot = mutableState.value
+        val safeBaseUrl = descriptor?.baseUrl ?: probe?.baseUrl ?: snapshot.dashboardUrl
+        val safeUsername = descriptor?.username ?: snapshot.username
+        val safeProbe = probe ?: snapshot.probe
         credential = null
         currentDescriptor = null
         dashboard.clearAuthentication()
@@ -964,11 +976,16 @@ internal class CelesteViewModel(
                 }
             }
         }
+        currentAuthMode = null
         mutableState.value = manualState(
             descriptor = descriptor,
             phase = ConnectionPhase.AuthenticationRequired,
-            probe = probe,
+            probe = safeProbe,
             notice = UiNotice.authentication(),
+        ).copy(
+            dashboardUrl = safeBaseUrl,
+            savedAuthMode = descriptor?.authMode ?: snapshot.savedAuthMode,
+            username = safeUsername,
         )
     }
 
@@ -1076,6 +1093,16 @@ internal class CelesteViewModel(
                 throw error
             } catch (error: Throwable) {
                 if (!isCurrent(token)) return@launchOwned
+                if (isAuthenticationFailure(error)) {
+                    val descriptor = currentDescriptor
+                    invalidateReusableAuthentication(
+                        descriptor = descriptor,
+                        probe = connection,
+                        token = token,
+                    )
+                    closeGateway()
+                    return@launchOwned
+                }
                 val failureNotice = projectUiNotice(error, UiNoticeScope.Session)
                 publishFailure(token, error, "open_session", UiNoticeScope.Session)
                 mutableState.value = mutableState.value.copy(
@@ -1164,6 +1191,16 @@ internal class CelesteViewModel(
                 throw error
             } catch (error: Throwable) {
                 if (!isCurrent(token)) return@launchOwned
+                if (isAuthenticationFailure(error)) {
+                    val descriptor = currentDescriptor
+                    invalidateReusableAuthentication(
+                        descriptor = descriptor,
+                        probe = connection,
+                        token = token,
+                    )
+                    closeGateway()
+                    return@launchOwned
+                }
                 publishFailure(token, error, "create_session", UiNoticeScope.Session)
                 mutableState.value = mutableState.value.copy(
                     turnState = TurnState.Idle,
@@ -1239,18 +1276,48 @@ internal class CelesteViewModel(
                 } catch (reconcileError: CancellationException) {
                     throw reconcileError
                 } catch (reconcileError: Throwable) {
+                    if (isAuthenticationFailure(reconcileError)) {
+                        val descriptor = currentDescriptor
+                        invalidateReusableAuthentication(
+                            descriptor = descriptor,
+                            probe = mutableState.value.probe,
+                            token = token,
+                        )
+                        closeGateway()
+                        return@launchOwned
+                    }
                     publishFailure(token, reconcileError, "reconcile_after_send", UiNoticeScope.Turn)
                 }
             } catch (error: CancellationException) {
                 throw error
             } catch (error: Throwable) {
                 if (!isCurrent(token)) return@launchOwned
+                if (isAuthenticationFailure(error)) {
+                    val descriptor = currentDescriptor
+                    invalidateReusableAuthentication(
+                        descriptor = descriptor,
+                        probe = mutableState.value.probe,
+                        token = token,
+                    )
+                    closeGateway()
+                    return@launchOwned
+                }
                 publishFailure(token, error, "send_message", UiNoticeScope.Turn)
                 try {
                     reconcile(activeGateway, storedId, token)
                 } catch (reconcileError: CancellationException) {
                     throw reconcileError
                 } catch (reconcileError: Throwable) {
+                    if (isAuthenticationFailure(reconcileError)) {
+                        val descriptor = currentDescriptor
+                        invalidateReusableAuthentication(
+                            descriptor = descriptor,
+                            probe = mutableState.value.probe,
+                            token = token,
+                        )
+                        closeGateway()
+                        return@launchOwned
+                    }
                     publishFailure(token, reconcileError, "reconcile_after_send", UiNoticeScope.Turn)
                 }
             }
@@ -1291,6 +1358,16 @@ internal class CelesteViewModel(
                 throw error
             } catch (error: Throwable) {
                 if (!isCurrent(token)) return@launchOwned
+                if (isAuthenticationFailure(error)) {
+                    val descriptor = currentDescriptor
+                    invalidateReusableAuthentication(
+                        descriptor = descriptor,
+                        probe = mutableState.value.probe,
+                        token = token,
+                    )
+                    closeGateway()
+                    return@launchOwned
+                }
                 publishFailure(token, error, "interrupt", UiNoticeScope.Turn)
                 mutableState.value = mutableState.value.copy(
                     turnState = TurnState.Idle,
@@ -1396,6 +1473,16 @@ internal class CelesteViewModel(
                 throw error
             } catch (error: Throwable) {
                 if (!isCurrent(token)) return@launchOwned
+                if (isAuthenticationFailure(error)) {
+                    val descriptor = currentDescriptor
+                    invalidateReusableAuthentication(
+                        descriptor = descriptor,
+                        probe = mutableState.value.probe,
+                        token = token,
+                    )
+                    closeGateway()
+                    return@launchOwned
+                }
                 recordFailure(token, error, "foreground_health", UiNoticeScope.Session)
                 val wasRunning = mutableState.value.turnState == TurnState.Running
                 mutableState.value = mutableState.value.copy(
@@ -1476,6 +1563,9 @@ internal class CelesteViewModel(
             if (!isCurrent(owner)) throw SupersededOperationCancellation()
             if (resumed.storedSessionId != storedSessionId) {
                 throw InvalidDashboardResponse("Hermes resumed a different conversation.")
+            }
+            if (activeReconciliationEpoch != epoch || !isCurrent(owner)) {
+                throw SupersededOperationCancellation()
             }
             applyResumedSession(resumed)
             replayBufferedEvents(epoch, owner)
