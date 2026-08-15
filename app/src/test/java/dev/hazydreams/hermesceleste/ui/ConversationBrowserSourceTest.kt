@@ -62,7 +62,7 @@ class ConversationBrowserSourceTest {
         assertContains(source, "selected = selectedKey != null")
         assertContains(source, "running = activeSessionRunning")
         assertContains(source, "sessionRowSemantics(")
-        assertContains(source, "selected = semantics.selected")
+        assertContains(source, "this.selected = rowSemantics.selected")
         assertContains(source, "Open and selected")
         assertContains(source, "Open and running")
     }

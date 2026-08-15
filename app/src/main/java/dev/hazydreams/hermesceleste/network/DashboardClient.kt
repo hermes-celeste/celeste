@@ -68,6 +68,19 @@ data class StoredSession(
     val profile: String = "",
 )
 
+/**
+ * Profile-aware catalog response. The WebSocket `session.list` projection does
+ * not include ownership, while `session.resume` requires it. Current Hermes
+ * dashboards expose the authoritative REST projection under
+ * `/api/profiles/sessions`; callers must keep the ownership flag separate from
+ * the rows so an older dashboard fallback cannot be mistaken for verified
+ * profile data.
+ */
+data class ProfileSessionList(
+    val sessions: List<StoredSession>,
+    val profileOwnershipVerified: Boolean,
+)
+
 data class DashboardProfile(
     val name: String,
     val isDefault: Boolean = false,
@@ -127,6 +140,19 @@ interface DashboardService {
         credential: GatewayCredential,
         limit: Int = 200,
     ): List<StoredSession>
+
+    suspend fun listProfileSessions(
+        baseUrl: String,
+        credential: GatewayCredential,
+        profile: String = "all",
+        limit: Int = 200,
+    ): ProfileSessionList = ProfileSessionList(
+        // The legacy WebSocket projection is origin-scoped and does not prove
+        // profile ownership. Keep its rows visible, but never make them
+        // resumable by manufacturing a profile from the creation target.
+        sessions = listSessions(baseUrl, credential, limit).map { it.copy(profile = "") },
+        profileOwnershipVerified = false,
+    )
 
     suspend fun listProfiles(
         baseUrl: String,
@@ -337,6 +363,62 @@ class DashboardClient(
         val authParameter = resolveWebSocketCredential(baseUrl, credential)
         val wsUrl = buildWebSocketUrl(baseUrl, authParameter?.first, authParameter?.second)
         return withTimeout(15_000) { requestSessionList(wsUrl, limit.coerceIn(1, 500)) }
+    }
+
+    override suspend fun listProfileSessions(
+        baseUrl: String,
+        credential: GatewayCredential,
+        profile: String,
+        limit: Int,
+    ): ProfileSessionList = withContext(Dispatchers.IO) {
+        val requestedProfile = profile.trim().ifBlank { "all" }
+        val url = "$baseUrl/api/profiles/sessions".toHttpUrl().newBuilder()
+            .addQueryParameter("limit", limit.coerceIn(1, 500).toString())
+            .addQueryParameter("offset", "0")
+            .addQueryParameter("min_messages", "0")
+            .addQueryParameter("archived", "exclude")
+            .addQueryParameter("order", "recent")
+            .addQueryParameter("profile", requestedProfile)
+            .build()
+        val request = Request.Builder()
+            .url(url)
+            .header("Accept", "application/json")
+            .apply {
+                if (credential is GatewayCredential.StaticToken) {
+                    header("X-Hermes-Session-Token", credential.value.trim())
+                }
+            }
+            .get()
+            .build()
+        val root = try {
+            executeJson(request, "Hermes profile session list")
+        } catch (error: TransportUnavailable) {
+            // Older dashboards do not expose the profile-aware REST route. Keep
+            // their rows visible, but explicitly mark ownership as unknown so
+            // the browser cannot manufacture a profile for session.resume.
+            if (error.statusCode == 404) {
+                return@withContext ProfileSessionList(
+                    sessions = listSessions(baseUrl, credential, limit)
+                        .map { it.copy(profile = "") },
+                    profileOwnershipVerified = false,
+                )
+            }
+            throw error
+        } as? JsonObject ?: throw InvalidDashboardResponse(
+            "Hermes returned no profile session list.",
+        )
+        // Hermes may return a partial page together with per-profile read
+        // failures. The successful rows remain authoritative and retain their
+        // stamped ownership; a future UI can surface the partial status without
+        // dropping every readable conversation.
+        val rows = root["sessions"] as? JsonArray
+            ?: throw InvalidDashboardResponse("Hermes returned no profile session list.")
+        val sessions = rows.mapNotNull(::decodeSession)
+        ProfileSessionList(
+            sessions = sessions,
+            profileOwnershipVerified = sessions.size == rows.size &&
+                sessions.all { it.profile.isNotBlank() },
+        )
     }
 
     override suspend fun listProfiles(

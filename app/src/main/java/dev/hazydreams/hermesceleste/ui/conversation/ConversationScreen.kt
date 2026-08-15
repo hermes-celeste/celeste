@@ -48,6 +48,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import dev.hazydreams.hermesceleste.TurnState
+import dev.hazydreams.hermesceleste.UiNotice
 import dev.hazydreams.hermesceleste.network.ConversationMessage
 import dev.hazydreams.hermesceleste.network.StoredSession
 import dev.hazydreams.hermesceleste.ui.CelesteBackdrop
@@ -71,7 +72,7 @@ internal fun ConversationScreen(
     draft: String,
     turnState: TurnState,
     loadingMessage: String?,
-    errorMessage: String?,
+    notice: UiNotice?,
     onDraftChange: (String) -> Unit,
     onSend: () -> Unit,
     onInterrupt: () -> Unit,
@@ -150,13 +151,13 @@ internal fun ConversationScreen(
                 }
             }
 
-            if (loadingMessage != null || errorMessage != null) {
+            if (loadingMessage != null || notice != null) {
                 Column(
                     modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 12.dp),
                     verticalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
                     loadingMessage?.let { StatusMessage(it, CelesteBlue, showSpinner = true) }
-                    errorMessage?.let { StatusMessage(it, CelesteError) }
+                    notice?.let { StatusMessage(it.message, CelesteError) }
                 }
             }
 

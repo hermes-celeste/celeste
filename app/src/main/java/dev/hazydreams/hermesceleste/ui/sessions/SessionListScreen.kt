@@ -45,6 +45,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import dev.hazydreams.hermesceleste.SessionCatalogState
 import dev.hazydreams.hermesceleste.SessionCatalogStatus
+import dev.hazydreams.hermesceleste.UiNotice
 import dev.hazydreams.hermesceleste.catalogRowKey
 import dev.hazydreams.hermesceleste.keyFor
 import dev.hazydreams.hermesceleste.searchLoadedSessions
@@ -67,7 +68,7 @@ internal fun SessionListScreen(
     profiles: List<DashboardProfile>,
     selectedProfile: String,
     loadingMessage: String?,
-    errorMessage: String?,
+    notice: UiNotice?,
     onProfileSelected: (String) -> Unit,
     onNewConversation: () -> Unit,
     onSessionSelected: (StoredSession) -> Unit,
@@ -88,7 +89,7 @@ internal fun SessionListScreen(
             sessions = sessions,
             selectedProfile = selectedProfile,
             loadingMessage = loadingMessage,
-            errorMessage = errorMessage,
+            notice = notice,
         ).withQuery(query).let { state ->
             if (query.isBlank()) state else {
                 state.withSearchResults(query, searchLoadedSessions(state.rows, query))
@@ -338,13 +339,13 @@ internal fun SessionListScreen(
                 }
 
                 SessionCatalogStatus.Error -> CatalogMessage(
-                    message = catalog.errorMessage ?: "Could not load conversations.",
+                    message = catalog.notice?.message ?: "Could not load conversations.",
                     actionLabel = "Retry",
                     onAction = onRetry,
                 )
 
                 SessionCatalogStatus.Stale -> CatalogMessage(
-                    message = catalog.errorMessage ?: "Showing the last loaded conversations.",
+                    message = catalog.notice?.message ?: "Showing the last loaded conversations.",
                     actionLabel = "Retry",
                     onAction = onRetry,
                 )
@@ -396,7 +397,7 @@ private fun SessionRow(
     running: Boolean,
     onClick: () -> Unit,
 ) {
-    val semantics = sessionRowSemantics(
+    val rowSemantics = sessionRowSemantics(
         session = session,
         showProfile = showProfile,
         enabled = enabled,
@@ -409,9 +410,9 @@ private fun SessionRow(
             .clickable(enabled = enabled, role = Role.Button, onClick = onClick)
             .semantics(mergeDescendants = true) {
                 role = Role.Button
-                selected = semantics.selected
-                contentDescription = semantics.contentDescription
-                stateDescription = semantics.stateDescription
+                this.selected = rowSemantics.selected
+                contentDescription = rowSemantics.contentDescription
+                stateDescription = rowSemantics.stateDescription
             }
             .padding(vertical = 19.dp),
     ) {
@@ -434,7 +435,7 @@ private fun SessionRow(
         }
         Spacer(Modifier.height(13.dp))
         Text(
-            semantics.metadata.uppercase(),
+            rowSemantics.metadata.uppercase(),
             color = CelesteMuted,
             fontSize = 10.sp,
             fontWeight = FontWeight.SemiBold,
@@ -538,12 +539,12 @@ private fun legacyCatalogState(
     sessions: List<StoredSession>,
     selectedProfile: String,
     loadingMessage: String?,
-    errorMessage: String?,
+    notice: UiNotice?,
 ): SessionCatalogState {
     val phase = when {
         loadingMessage != null -> SessionCatalogStatus.Loading
-        errorMessage != null && sessions.isNotEmpty() -> SessionCatalogStatus.Stale
-        errorMessage != null -> SessionCatalogStatus.Error
+        notice != null && sessions.isNotEmpty() -> SessionCatalogStatus.Stale
+        notice != null -> SessionCatalogStatus.Error
         sessions.isEmpty() -> SessionCatalogStatus.Empty
         else -> SessionCatalogStatus.Ready
     }
@@ -551,6 +552,6 @@ private fun legacyCatalogState(
         phase = phase,
         scope = dev.hazydreams.hermesceleste.SessionScope.from("legacy", selectedProfile),
         rows = sessions,
-        errorMessage = errorMessage,
+        notice = notice,
     )
 }

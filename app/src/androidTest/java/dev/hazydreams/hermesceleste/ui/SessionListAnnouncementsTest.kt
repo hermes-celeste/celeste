@@ -15,6 +15,7 @@ import org.junit.runner.RunWith
 import dev.hazydreams.hermesceleste.SessionCatalogState
 import dev.hazydreams.hermesceleste.SessionCatalogStatus
 import dev.hazydreams.hermesceleste.SessionScope
+import dev.hazydreams.hermesceleste.UiNotice
 import dev.hazydreams.hermesceleste.keyFor
 import dev.hazydreams.hermesceleste.network.DashboardProfile
 import dev.hazydreams.hermesceleste.network.StoredSession
@@ -55,9 +56,9 @@ class SessionListAnnouncementsTest {
                 phase = SessionCatalogStatus.Stale,
                 scope = scope,
                 rows = listOf(knownSession),
-                errorMessage = "Hermes is offline.",
+                notice = UiNotice.CatalogUnavailable,
             ),
-            message = "Hermes is offline.",
+            message = UiNotice.CatalogUnavailable.message,
         )
         composeRule.onNodeWithText("Retry").assertExists()
     }
@@ -131,7 +132,7 @@ class SessionListAnnouncementsTest {
                     profiles = listOf(DashboardProfile(name = "default", isDefault = true)),
                     selectedProfile = "default",
                     loadingMessage = loadingMessage,
-                    errorMessage = null,
+                    notice = null,
                     onProfileSelected = {},
                     onNewConversation = {},
                     onSessionSelected = {},

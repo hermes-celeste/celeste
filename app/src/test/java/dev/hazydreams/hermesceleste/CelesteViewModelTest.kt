@@ -14,6 +14,7 @@ import dev.hazydreams.hermesceleste.network.GatewayConnection
 import dev.hazydreams.hermesceleste.network.GatewayConnectionState
 import dev.hazydreams.hermesceleste.network.GatewayCredential
 import dev.hazydreams.hermesceleste.network.GatewayEvent
+import dev.hazydreams.hermesceleste.network.ProfileSessionList
 import dev.hazydreams.hermesceleste.network.StoredSession
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -22,7 +23,9 @@ import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
+import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.runTest
@@ -59,6 +62,7 @@ class CelesteViewModelTest {
     fun sendsAndReducesStreamingEventsWithoutDuplicatingCompletion() = runTest {
         val gateway = FakeGateway()
         val viewModel = openConversation(gateway)
+        advanceUntilIdle()
 
         viewModel.updateDraft("Hello from Android")
         viewModel.sendMessage()
@@ -85,6 +89,7 @@ class CelesteViewModelTest {
     fun interruptUsesOfficialRpcThenReconcilesAuthoritativeHistory() = runTest {
         val gateway = FakeGateway()
         val viewModel = openConversation(gateway)
+        advanceUntilIdle()
         viewModel.updateDraft("Please do a long task")
         viewModel.sendMessage()
         gateway.emit("message.start")
@@ -111,6 +116,7 @@ class CelesteViewModelTest {
     fun reconnectResumesTheServerSnapshotAndNeverResendsAnUncertainPrompt() = runTest {
         val gateway = FakeGateway()
         val viewModel = openConversation(gateway)
+        advanceUntilIdle()
         viewModel.updateDraft("Do this once")
         viewModel.sendMessage()
         gateway.emit("message.start")
@@ -185,18 +191,20 @@ class CelesteViewModelTest {
 
         viewModel.updateDashboardUrl("http://hermes.test:9119")
         viewModel.findDashboard()
+        advanceUntilIdle()
         viewModel.loadSessions()
         advanceUntilIdle()
 
-        assertEquals(ConnectionPhase.ManualSetup, viewModel.state.value.connectionPhase)
+        assertEquals(ConnectionPhase.AuthenticationRequired, viewModel.state.value.connectionPhase)
         assertNull(viewModel.state.value.sessions)
-        assertEquals("Hermes rejected profile access.", viewModel.state.value.errorMessage)
+        assertEquals(UiNotice.AuthenticationRequired, viewModel.state.value.notice)
     }
 
     @Test
     fun foregroundHealthCheckReplacesAStaleSocketAndResumes() = runTest {
         val gateway = FakeGateway()
         val viewModel = openConversation(gateway)
+        advanceUntilIdle()
         gateway.failHealthCheck = true
 
         viewModel.onForeground()
@@ -214,6 +222,7 @@ class CelesteViewModelTest {
         val gateway = FakeGateway()
         val dashboard = FakeDashboard(gateway)
         val viewModel = openConversation(gateway, dashboard)
+        advanceUntilIdle()
         val callsBeforeDisconnect = dashboard.sessionListCalls
 
         gateway.disconnect("dashboard restarted")
@@ -257,7 +266,9 @@ class CelesteViewModelTest {
         )
         viewModel.updateDashboardUrl("http://hermes.test:9119")
         viewModel.findDashboard()
+        advanceUntilIdle()
         viewModel.loadSessions()
+        advanceUntilIdle()
         viewModel.selectProfile("work")
 
         viewModel.createNewConversation()
@@ -305,6 +316,7 @@ class CelesteViewModelTest {
     fun profileSelectionChangesOnlyTheNextNewConversationProfile() = runTest {
         val dashboard = FakeDashboard(FakeGateway())
         val viewModel = connectedViewModel(dashboard)
+        advanceUntilIdle()
 
         viewModel.selectProfile("work")
 
@@ -350,7 +362,7 @@ class CelesteViewModelTest {
         assertEquals(ConnectionPhase.AuthenticationRequired, viewModel.state.value.connectionPhase)
         assertNull(viewModel.state.value.sessions)
         assertNull(viewModel.state.value.activeSummary)
-        assertEquals("Hermes needs sign-in.", viewModel.state.value.errorMessage)
+        assertEquals(UiNotice.AuthenticationRequired, viewModel.state.value.notice)
         assertNull(store.load()?.secret)
         assertFalse(store.load()?.descriptor?.autoLoginEnabled ?: true)
         assertEquals(1, gateway.closeCount)
@@ -383,7 +395,7 @@ class CelesteViewModelTest {
         assertNull(viewModel.state.value.sessions)
         assertEquals(SessionCatalogStatus.NotReady, viewModel.state.value.sessionCatalog.phase)
         assertNull(viewModel.state.value.activeSummary)
-        assertEquals("Hermes needs sign-in.", viewModel.state.value.errorMessage)
+        assertEquals(UiNotice.AuthenticationRequired, viewModel.state.value.notice)
         assertNull(store.load()?.secret)
         assertFalse(store.load()?.descriptor?.autoLoginEnabled ?: true)
         assertEquals(GatewayConnectionState.Closed, gateway.state.value)
@@ -419,7 +431,7 @@ class CelesteViewModelTest {
         assertEquals(ConnectionPhase.AuthenticationRequired, viewModel.state.value.connectionPhase)
         assertNull(viewModel.state.value.sessions)
         assertNull(viewModel.state.value.activeSummary)
-        assertEquals("Hermes needs sign-in.", viewModel.state.value.errorMessage)
+        assertEquals(UiNotice.AuthenticationRequired, viewModel.state.value.notice)
         assertNull(store.load()?.secret)
         assertFalse(store.load()?.descriptor?.autoLoginEnabled ?: true)
         assertEquals(GatewayConnectionState.Closed, gateway.state.value)
@@ -429,6 +441,7 @@ class CelesteViewModelTest {
     fun refreshFailureRetainsTheAuthoritativeWindowAsStale() = runTest {
         val dashboard = FakeDashboard(FakeGateway())
         val viewModel = connectedViewModel(dashboard)
+        advanceUntilIdle()
         dashboard.sessionFailure = IOException("offline")
 
         viewModel.refreshSessionCatalog()
@@ -436,16 +449,21 @@ class CelesteViewModelTest {
 
         assertEquals(SessionCatalogStatus.Stale, viewModel.state.value.sessionCatalog.phase)
         assertEquals(listOf("stored-42", "stored-work", "ambiguous-profile"), viewModel.state.value.sessions?.map(StoredSession::id))
-        assertEquals("offline", viewModel.state.value.sessionCatalog.errorMessage)
+        assertEquals(UiNotice.CatalogUnavailable, viewModel.state.value.sessionCatalog.notice)
     }
 
     @Test
     fun noResultsDoesNotMaskRefreshingOrStaleCatalogState() = runTest {
         val dashboard = FakeDashboard(FakeGateway())
         val viewModel = connectedViewModel(dashboard)
+        advanceUntilIdle()
 
         viewModel.updateSessionQuery("does-not-exist")
         advanceUntilIdle()
+        mainDispatcher.scheduler.advanceUntilIdle()
+        viewModel.state.first { state ->
+            state.sessionCatalog.status == SessionCatalogStatus.NoResults
+        }
         assertEquals(SessionCatalogStatus.NoResults, viewModel.state.value.sessionCatalog.status)
 
         dashboard.sessionFailure = IOException("offline")
@@ -460,10 +478,17 @@ class CelesteViewModelTest {
     fun obsoleteLoadedWindowSearchCannotReplaceTheLatestQuery() = runTest {
         val dashboard = FakeDashboard(FakeGateway())
         val viewModel = connectedViewModel(dashboard)
+        advanceUntilIdle()
 
         viewModel.updateSessionQuery("work")
         viewModel.updateSessionQuery("shared")
         advanceUntilIdle()
+        mainDispatcher.scheduler.advanceUntilIdle()
+        viewModel.state.first { state ->
+            state.sessionQuery == "shared" &&
+                !state.sessionCatalog.queryInFlight &&
+                state.sessionCatalog.filteredRows.map(StoredSession::id) == listOf("stored-42")
+        }
 
         assertEquals("shared", viewModel.state.value.sessionQuery)
         assertEquals(listOf("stored-42"), viewModel.state.value.sessionCatalog.filteredRows.map(StoredSession::id))
@@ -473,12 +498,18 @@ class CelesteViewModelTest {
     fun creationProfileChangeDoesNotLeaveDebouncedUnscopedSearchInFlight() = runTest {
         val dashboard = FakeDashboard(FakeGateway())
         val viewModel = connectedViewModel(dashboard)
+        advanceUntilIdle()
 
         viewModel.updateSessionQuery("work")
         assertTrue(viewModel.state.value.sessionCatalog.queryInFlight)
 
         viewModel.selectProfile("work")
         advanceUntilIdle()
+        mainDispatcher.scheduler.advanceUntilIdle()
+        viewModel.state.first { state ->
+            !state.sessionCatalog.queryInFlight &&
+                state.sessionCatalog.filteredRows.map(StoredSession::id) == listOf("stored-work")
+        }
 
         assertEquals("work", viewModel.state.value.selectedProfile)
         assertFalse(viewModel.state.value.sessionCatalog.queryInFlight)
@@ -492,6 +523,7 @@ class CelesteViewModelTest {
     fun creationProfileChangeDoesNotInvalidateAnInitialUnscopedCatalogLoad() = runTest {
         val dashboard = FakeDashboard(FakeGateway())
         val viewModel = connectedViewModel(dashboard)
+        advanceUntilIdle()
         viewModel.selectProfile("work")
 
         dashboard.sessionListGate = CompletableDeferred()
@@ -520,6 +552,7 @@ class CelesteViewModelTest {
         }
         val dashboard = FakeDashboard(gateway)
         val viewModel = connectedViewModel(dashboard)
+        advanceUntilIdle()
         val loadedRows = viewModel.state.value.sessionCatalog.rows
 
         viewModel.createNewConversation()
@@ -532,7 +565,10 @@ class CelesteViewModelTest {
 
         assertEquals(SessionCatalogStatus.Stale, viewModel.state.value.sessionCatalog.phase)
         assertEquals(loadedRows, viewModel.state.value.sessionCatalog.rows)
-        assertEquals("new conversation unavailable", viewModel.state.value.sessionCatalog.errorMessage)
+        assertEquals(
+            UiNotice.NewConversationUnavailable,
+            viewModel.state.value.sessionCatalog.notice,
+        )
     }
 
     @Test
@@ -540,6 +576,7 @@ class CelesteViewModelTest {
         val gateway = FakeGateway().apply { omitStoredIdentity = true }
         val dashboard = FakeDashboard(gateway)
         val viewModel = connectedViewModel(dashboard)
+        advanceUntilIdle()
 
         viewModel.createNewConversation()
         advanceUntilIdle()
@@ -547,8 +584,8 @@ class CelesteViewModelTest {
         assertNull(viewModel.state.value.activeSummary)
         assertTrue(viewModel.state.value.sessions.orEmpty().none { it.id == "runtime-new-1" })
         assertEquals(
-            "Hermes created a conversation without a durable stored identity.",
-            viewModel.state.value.errorMessage,
+            UiNotice.NewConversationUnavailable,
+            viewModel.state.value.notice,
         )
         assertEquals(SessionCatalogStatus.Stale, viewModel.state.value.sessionCatalog.phase)
     }
@@ -566,6 +603,7 @@ class CelesteViewModelTest {
             createFailure = IOException("new conversation unavailable")
         }
         val viewModel = openConversation(gateway)
+        advanceUntilIdle()
         viewModel.updateDraft("Keep this unsent draft")
 
         viewModel.createNewConversation()
@@ -577,7 +615,7 @@ class CelesteViewModelTest {
             viewModel.state.value.messages.map(ConversationMessage::text),
         )
         assertEquals("Keep this unsent draft", viewModel.state.value.draft)
-        assertEquals("new conversation unavailable", viewModel.state.value.errorMessage)
+        assertEquals(UiNotice.NewConversationUnavailable, viewModel.state.value.notice)
         assertEquals(1, gateway.methods.count { it == "session.create" })
         viewModel.leaveConversation()
     }
@@ -592,7 +630,7 @@ class CelesteViewModelTest {
         assertEquals("and still arriving", suffix)
     }
 
-    private suspend fun openConversation(
+    private fun TestScope.openConversation(
         gateway: FakeGateway,
         dashboard: FakeDashboard = FakeDashboard(gateway),
     ): CelesteViewModel {
@@ -602,18 +640,22 @@ class CelesteViewModelTest {
         )
         viewModel.updateDashboardUrl("http://hermes.test:9119")
         viewModel.findDashboard()
+        advanceUntilIdle()
         viewModel.loadSessions()
+        advanceUntilIdle()
         viewModel.openSession(dashboard.session)
+        advanceUntilIdle()
         return viewModel
     }
 
-    private suspend fun connectedViewModel(dashboard: FakeDashboard): CelesteViewModel {
+    private fun TestScope.connectedViewModel(dashboard: FakeDashboard): CelesteViewModel {
         val viewModel = CelesteViewModel(
             dashboard = dashboard,
             reconnectDelayMillis = { _, _ -> 0L },
         )
         viewModel.updateDashboardUrl("http://hermes.test:9119")
         viewModel.findDashboard()
+        advanceUntilIdle()
         viewModel.loadSessions()
         advanceUntilIdle()
         return viewModel
@@ -687,6 +729,16 @@ class CelesteViewModelTest {
             sessionFailure?.let { throw it }
             return listOf(session, workSession, ambiguousProfileSession)
         }
+
+        override suspend fun listProfileSessions(
+            baseUrl: String,
+            credential: GatewayCredential,
+            profile: String,
+            limit: Int,
+        ): ProfileSessionList = ProfileSessionList(
+            sessions = listSessions(baseUrl, credential, limit),
+            profileOwnershipVerified = true,
+        )
 
         override suspend fun listProfiles(
             baseUrl: String,

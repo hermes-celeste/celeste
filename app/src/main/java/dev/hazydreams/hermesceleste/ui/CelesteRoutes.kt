@@ -119,7 +119,7 @@ internal fun CelesteRoutes(ui: CelesteUiState, viewModel: CelesteViewModel) {
                     -> ConnectionLoadingScreen()
 
                     ConnectionPhase.RestoreFailed -> ConnectionUnavailableScreen(
-                        errorMessage = ui.errorMessage,
+                        notice = ui.notice,
                         onRetry = viewModel::retrySavedConnection,
                         onSettings = { destination = CelesteDestination.Gateway },
                     )
@@ -133,7 +133,7 @@ internal fun CelesteRoutes(ui: CelesteUiState, viewModel: CelesteViewModel) {
                     profiles = ui.profiles,
                     selectedProfile = ui.selectedProfile,
                     loadingMessage = ui.loadingMessage,
-                    errorMessage = ui.errorMessage,
+                    notice = ui.notice,
                     catalogState = ui.sessionCatalog,
                     query = ui.sessionQuery,
                     onQueryChange = viewModel::updateSessionQuery,
@@ -166,7 +166,7 @@ internal fun CelesteRoutes(ui: CelesteUiState, viewModel: CelesteViewModel) {
                     draft = ui.draft,
                     turnState = ui.turnState,
                     loadingMessage = ui.loadingMessage,
-                    errorMessage = ui.errorMessage,
+                    notice = ui.notice,
                     onDraftChange = viewModel::updateDraft,
                     onSend = viewModel::sendMessage,
                     onInterrupt = viewModel::interrupt,
@@ -181,7 +181,7 @@ internal fun CelesteRoutes(ui: CelesteUiState, viewModel: CelesteViewModel) {
                 profiles = ui.profiles,
                 selectedProfile = ui.selectedProfile,
                 loadingMessage = ui.loadingMessage,
-                errorMessage = ui.errorMessage,
+                notice = ui.notice,
                 catalogState = ui.sessionCatalog,
                 query = ui.sessionQuery,
                 onQueryChange = viewModel::updateSessionQuery,
@@ -201,7 +201,7 @@ internal fun CelesteRoutes(ui: CelesteUiState, viewModel: CelesteViewModel) {
                 ui.connectionPhase == ConnectionPhase.Restoring -> ConnectionLoadingScreen()
 
             ui.connectionPhase == ConnectionPhase.RestoreFailed -> ConnectionUnavailableScreen(
-                errorMessage = ui.errorMessage,
+                notice = ui.notice,
                 onRetry = viewModel::retrySavedConnection,
                 onSettings = { destination = CelesteDestination.Gateway },
             )
@@ -234,7 +234,7 @@ private fun GatewaySettingsRoute(
             sessionToken = ui.sessionToken,
             connectionPhase = ui.connectionPhase,
             loadingMessage = ui.loadingMessage,
-            errorMessage = ui.errorMessage,
+            notice = ui.notice,
         ),
         actions = GatewaySettingsActions(
             onUsernameChange = viewModel::updateUsername,

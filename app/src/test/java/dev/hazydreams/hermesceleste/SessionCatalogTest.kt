@@ -93,18 +93,26 @@ class SessionCatalogTest {
         val scope = requireNotNull(SessionScope.from(origin, "work"))
         val initialRequest = request(scope, requestGeneration = 1)
         val loading = SessionCatalogReducer.begin(SessionCatalogState(), initialRequest, refreshing = false)
-        val initialFailure = SessionCatalogReducer.failed(loading, initialRequest, "offline")
+        val initialFailure = SessionCatalogReducer.failed(
+            loading,
+            initialRequest,
+            UiNotice.CatalogUnavailable,
+        )
         assertEquals(SessionCatalogStatus.Error, initialFailure.phase)
 
         val readyRequest = request(scope, requestGeneration = 2)
         val ready = SessionCatalogReducer.succeeded(
             SessionCatalogReducer.begin(initialFailure, readyRequest, refreshing = false),
             readyRequest,
-            listOf(row("known")),
+            listOf(row("known", profile = "work")),
         )
         val refreshRequest = request(scope, requestGeneration = 3)
         val refreshing = SessionCatalogReducer.begin(ready, refreshRequest, refreshing = true)
-        val stale = SessionCatalogReducer.failed(refreshing, refreshRequest, "offline")
+        val stale = SessionCatalogReducer.failed(
+            refreshing,
+            refreshRequest,
+            UiNotice.CatalogUnavailable,
+        )
 
         assertEquals(SessionCatalogStatus.Stale, stale.phase)
         assertEquals(listOf("known"), stale.rows.map(StoredSession::id))
@@ -124,10 +132,14 @@ class SessionCatalogTest {
         assertEquals(SessionCatalogStatus.ActionInFlight, inFlight.status)
         assertEquals(listOf("known"), inFlight.rows.map(StoredSession::id))
 
-        val failed = SessionCatalogReducer.actionFailed(inFlight, "new conversation unavailable")
+        val failed = SessionCatalogReducer.actionFailed(
+            inFlight,
+            UiNotice.NewConversationUnavailable,
+        )
         assertEquals(SessionCatalogStatus.Stale, failed.status)
         assertEquals(listOf("known"), failed.rows.map(StoredSession::id))
-        assertEquals("new conversation unavailable", failed.errorMessage)
+        assertEquals(UiNotice.NewConversationUnavailable, failed.notice)
+        assertEquals("Could not create a Hermes conversation.", failed.notice?.message)
     }
 
     @Test
@@ -163,7 +175,11 @@ class SessionCatalogTest {
         val refreshing = SessionCatalogReducer.begin(ready, refreshingRequest, refreshing = true)
 
         assertEquals(SessionCatalogStatus.Refreshing, refreshing.status)
-        val stale = SessionCatalogReducer.failed(refreshing, refreshingRequest, "offline")
+        val stale = SessionCatalogReducer.failed(
+            refreshing,
+            refreshingRequest,
+            UiNotice.CatalogUnavailable,
+        )
         assertEquals(SessionCatalogStatus.Stale, stale.status)
     }
 

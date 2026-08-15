@@ -5,7 +5,9 @@ import dev.hazydreams.hermesceleste.SessionCatalogRequest
 import dev.hazydreams.hermesceleste.SessionCatalogState
 import dev.hazydreams.hermesceleste.SessionCatalogStatus
 import dev.hazydreams.hermesceleste.SessionScope
+import dev.hazydreams.hermesceleste.UiNotice
 import dev.hazydreams.hermesceleste.network.StoredSession
+import dev.hazydreams.hermesceleste.ui.sessions.sessionRowSemantics
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -70,7 +72,7 @@ class SessionListSemanticsTest {
         val ready = SessionCatalogReducer.succeeded(
             loading,
             firstRequest,
-            listOf(session()),
+            listOf(session(profile = "default")),
         )
         val noResults = ready.withQuery("missing").withSearchResults("missing", emptyList())
         assertEquals(SessionCatalogStatus.NoResults, noResults.status)
@@ -79,7 +81,11 @@ class SessionListSemanticsTest {
         val refreshing = SessionCatalogReducer.begin(ready, refreshRequest, refreshing = true)
         assertEquals(SessionCatalogStatus.Refreshing, refreshing.status)
 
-        val stale = SessionCatalogReducer.failed(refreshing, refreshRequest, "offline")
+        val stale = SessionCatalogReducer.failed(
+            refreshing,
+            refreshRequest,
+            UiNotice.CatalogUnavailable,
+        )
         assertEquals(SessionCatalogStatus.Stale, stale.status)
     }
 

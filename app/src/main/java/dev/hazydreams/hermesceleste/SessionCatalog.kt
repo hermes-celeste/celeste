@@ -91,7 +91,7 @@ internal data class SessionCatalogState(
     val phase: SessionCatalogStatus = SessionCatalogStatus.NotReady,
     val scope: SessionScope? = null,
     val rows: List<StoredSession> = emptyList(),
-    val errorMessage: String? = null,
+    val notice: UiNotice? = null,
     val query: String = "",
     val request: SessionCatalogRequest? = null,
     val queryResults: List<StoredSession>? = null,
@@ -152,7 +152,7 @@ internal object SessionCatalogReducer {
             phase = if (refreshing) SessionCatalogStatus.Refreshing else SessionCatalogStatus.Loading,
             scope = request.scope,
             rows = nextRows,
-            errorMessage = null,
+            notice = null,
             request = request,
             queryResults = if (state.query.isBlank()) null else if (keepRows) state.filteredRows else emptyList(),
             queryInFlight = false,
@@ -168,7 +168,7 @@ internal object SessionCatalogReducer {
         phase = SessionCatalogStatus.Reconnecting,
         scope = scope,
         rows = if (keepRows && state.scope == scope) state.rows else emptyList(),
-        errorMessage = null,
+        notice = null,
         request = null,
         queryResults = if (state.query.isBlank()) null else if (keepRows && state.scope == scope) state.filteredRows else emptyList(),
         queryInFlight = false,
@@ -185,7 +185,7 @@ internal object SessionCatalogReducer {
         return state.copy(
             phase = if (filtered.isEmpty()) SessionCatalogStatus.Empty else SessionCatalogStatus.Ready,
             rows = filtered,
-            errorMessage = null,
+            notice = null,
             request = null,
             queryResults = if (state.query.isBlank()) null else searchLoadedSessions(filtered, state.query),
             queryInFlight = false,
@@ -196,12 +196,12 @@ internal object SessionCatalogReducer {
     fun failed(
         state: SessionCatalogState,
         request: SessionCatalogRequest,
-        message: String,
+        notice: UiNotice,
     ): SessionCatalogState {
         if (state.request != request || state.scope != request.scope) return state
         return state.copy(
             phase = if (state.rows.isEmpty()) SessionCatalogStatus.Error else SessionCatalogStatus.Stale,
-            errorMessage = message,
+            notice = notice,
             request = null,
             queryInFlight = false,
             openingKey = null,
@@ -210,7 +210,7 @@ internal object SessionCatalogReducer {
 
     fun opening(state: SessionCatalogState, key: SessionKey): SessionCatalogState = state.copy(
         phase = SessionCatalogStatus.Opening,
-        errorMessage = null,
+        notice = null,
         request = null,
         queryInFlight = false,
         openingKey = key,
@@ -218,7 +218,7 @@ internal object SessionCatalogReducer {
 
     fun openingSucceeded(state: SessionCatalogState): SessionCatalogState = state.copy(
         phase = if (state.rows.isEmpty()) SessionCatalogStatus.Empty else SessionCatalogStatus.Ready,
-        errorMessage = null,
+        notice = null,
         request = null,
         queryInFlight = false,
         openingKey = null,
@@ -226,10 +226,10 @@ internal object SessionCatalogReducer {
 
     fun openingFailed(
         state: SessionCatalogState,
-        message: String,
+        notice: UiNotice,
     ): SessionCatalogState = state.copy(
         phase = if (state.rows.isEmpty()) SessionCatalogStatus.Error else SessionCatalogStatus.Stale,
-        errorMessage = message,
+        notice = notice,
         request = null,
         queryInFlight = false,
         openingKey = null,
@@ -237,7 +237,7 @@ internal object SessionCatalogReducer {
 
     fun openingCancelled(state: SessionCatalogState): SessionCatalogState = state.copy(
         phase = if (state.rows.isEmpty()) SessionCatalogStatus.Empty else SessionCatalogStatus.Ready,
-        errorMessage = null,
+        notice = null,
         request = null,
         queryInFlight = false,
         openingKey = null,
@@ -245,7 +245,7 @@ internal object SessionCatalogReducer {
 
     fun actionStarted(state: SessionCatalogState): SessionCatalogState = state.copy(
         phase = SessionCatalogStatus.ActionInFlight,
-        errorMessage = null,
+        notice = null,
         request = null,
         queryInFlight = false,
         openingKey = null,
@@ -253,10 +253,18 @@ internal object SessionCatalogReducer {
 
     fun actionFailed(
         state: SessionCatalogState,
-        message: String,
+        notice: UiNotice,
     ): SessionCatalogState = state.copy(
         phase = if (state.rows.isEmpty()) SessionCatalogStatus.Error else SessionCatalogStatus.Stale,
-        errorMessage = message,
+        notice = notice,
+        request = null,
+        queryInFlight = false,
+        openingKey = null,
+    )
+
+    fun actionCancelled(state: SessionCatalogState): SessionCatalogState = state.copy(
+        phase = if (state.rows.isEmpty()) SessionCatalogStatus.Empty else SessionCatalogStatus.Ready,
+        notice = null,
         request = null,
         queryInFlight = false,
         openingKey = null,
