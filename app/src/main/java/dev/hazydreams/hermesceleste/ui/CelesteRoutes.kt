@@ -78,7 +78,6 @@ internal fun CelesteRoutes(ui: CelesteUiState, viewModel: CelesteViewModel) {
 
         CelesteDestination.Content -> when {
             activeSummary != null -> {
-                BackHandler(onBack = viewModel::leaveConversation)
                 ConversationScreen(
                     summary = activeSummary,
                     messages = ui.messages,
