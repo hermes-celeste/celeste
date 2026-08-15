@@ -365,27 +365,49 @@ internal class CelesteViewModel(
         val transaction = attachmentTransaction?.takeIf {
             it.owner == attachment.owner && attachmentId in it.attachmentIds
         }
-        val orphanedReferences = if (transaction != null) {
+        val owner = attachment.owner
+        val referencesToDetach = if (transaction != null) {
             (
                 transaction.stagedReferences +
-                    snapshot.attachments.mapNotNull { it.serverReference?.takeIf(String::isNotBlank) }
-                ).distinct()
+                    snapshot.attachments
+                        .filter { it.owner == owner }
+                        .mapNotNull { it.serverReference?.takeIf(String::isNotBlank) }
+            ).distinct()
         } else {
-            emptyList()
+            listOfNotNull(attachment.serverReference?.takeIf(String::isNotBlank))
         }
         if (transaction != null) {
             transaction.cancelledByUser = true
             attachmentTransactionJob?.cancel()
-            rememberOrphanedReferences(transaction.owner, orphanedReferences)
             unknownSubmit = null
         }
         attachmentJobs.remove(attachmentId)?.cancel()
         attachmentRetryCounts.remove(attachmentId)
+        val nextAttachments = snapshot.attachments
+            .filterNot { it.id == attachmentId }
+            .map { retained ->
+                if (
+                    transaction != null &&
+                    retained.owner == owner &&
+                    retained.serverReference != null &&
+                    retained.serverReference in referencesToDetach
+                ) {
+                    // image.detach removes the server metadata. Retained draft items must
+                    // lose that reference so an explicit retry stages them again.
+                    retained.copy(
+                        serverReference = null,
+                        transfer = AttachmentTransferState.Ready,
+                        error = null,
+                    )
+                } else {
+                    retained
+                }
+            }
         mutableState.value = snapshot.copy(
             messages = transaction?.let { current ->
                 snapshot.messages.filterNot { it.id == current.localMessageId }
             } ?: snapshot.messages,
-            attachments = snapshot.attachments.filterNot { it.id == attachmentId },
+            attachments = nextAttachments,
             editorGeneration = snapshot.editorGeneration + 1,
             attachmentNotice = null,
             turnState = if (transaction != null) TurnState.Idle else snapshot.turnState,
@@ -393,15 +415,12 @@ internal class CelesteViewModel(
         if (attachment.localFileId.isNotBlank()) {
             viewModelScope.launch { runCatching { attachmentStagingStore.delete(attachment.localFileId) } }
         }
-        val reference = attachment.serverReference
-        val activeGateway = gateway
-        val runtimeId = currentRuntimeSessionId
-        val owner = attachment.owner
-        val referencesToDetach = (orphanedReferences + listOfNotNull(reference)).distinct()
         if (referencesToDetach.isNotEmpty()) {
             // Keep references until detach succeeds; reconnect/context changes can defer cleanup.
             rememberOrphanedReferences(owner, referencesToDetach)
         }
+        val activeGateway = gateway
+        val runtimeId = currentRuntimeSessionId
         if (activeGateway != null && runtimeId != null && referencesToDetach.isNotEmpty()) {
             viewModelScope.launch {
                 if (
@@ -1068,10 +1087,26 @@ internal class CelesteViewModel(
         attachmentPickerToken = null
         attachmentTransactionJob?.cancel()
         attachmentTransactionJob = null
+        val current = mutableState.value
+        val currentOwner = currentAttachmentOwner(current)
         attachmentTransaction?.let { transaction ->
             transaction.cancelledByUser = true
-            rememberOrphanedReferences(transaction.owner, transaction.stagedReferences)
+            rememberOrphanedReferences(
+                transaction.owner,
+                (
+                    transaction.stagedReferences +
+                        current.attachments
+                            .filter { it.owner == transaction.owner }
+                            .mapNotNull { it.serverReference?.takeIf(String::isNotBlank) }
+                ).distinct(),
+            )
         }
+        rememberOrphanedReferences(
+            currentOwner,
+            current.attachments
+                .filter { it.owner == currentOwner }
+                .mapNotNull { it.serverReference?.takeIf(String::isNotBlank) },
+        )
         attachmentTransaction = null
         unknownSubmit = null
         attachmentJobs.values.forEach { it.cancel() }
@@ -1079,11 +1114,6 @@ internal class CelesteViewModel(
         transcriptPreviewJob?.cancel()
         transcriptPreviewJob = null
         attachmentRetryCounts.clear()
-        val current = mutableState.value
-        rememberOrphanedReferences(
-            currentAttachmentOwner(current),
-            current.attachments.mapNotNull { it.serverReference?.takeIf(String::isNotBlank) },
-        )
         val localFileIds = current.attachments
             .mapNotNull { it.localFileId.takeIf(String::isNotBlank) }
         mutableState.value = current.copy(
@@ -1329,6 +1359,7 @@ internal class CelesteViewModel(
                         stagedReference.isNotBlank()
                     ) {
                         references += stagedReference
+                        transactionState.stagedReferences += stagedReference
                         transactionState.activeAttachmentId = null
                         continue
                     }

@@ -140,37 +140,15 @@ interface DashboardService {
         credential: GatewayCredential,
     ): List<DashboardProfile>
 
-    /** Authenticated, profile-scoped preview seam; implementations return bytes only. */
-    suspend fun readImageMedia(
-        baseUrl: String,
-        credential: GatewayCredential,
-        profileId: String,
-        serverReference: String,
-    ): ByteArray = throw AttachmentMediaUnavailable()
-
     /**
-     * Preview reads carry the owner captured from the authoritative transcript.
-     * A caller cannot reuse a reference under a different normalized origin or profile.
+     * Authenticated preview reads are bound to the origin and profile captured with
+     * the authoritative transcript reference.
      */
     suspend fun readImageMedia(
         baseUrl: String,
         credential: GatewayCredential,
         reference: ImageMediaReference,
-    ): ByteArray {
-        val normalizedOrigin = DashboardUrlPolicy.normalize(baseUrl)
-        require(normalizedOrigin == reference.normalizedGatewayOrigin) {
-            "The image reference does not belong to this dashboard."
-        }
-        require(reference.profileId.isNotBlank()) {
-            "A Hermes profile is required for image previews."
-        }
-        return readImageMedia(
-            baseUrl = normalizedOrigin,
-            credential = credential,
-            profileId = reference.profileId,
-            serverReference = reference.serverReference,
-        )
-    }
+    ): ByteArray = throw AttachmentMediaUnavailable()
 
     suspend fun logout(baseUrl: String) = Unit
 
@@ -410,51 +388,58 @@ class DashboardClient(
     override suspend fun readImageMedia(
         baseUrl: String,
         credential: GatewayCredential,
-        profileId: String,
-        serverReference: String,
-    ): ByteArray = withContext(Dispatchers.IO) {
-        require(profileId.isNotBlank()) { "A Hermes profile is required for image previews." }
-        val reference = serverReference.trim()
-        require(reference.isNotBlank()) { "An image reference is required." }
-        require(!reference.contains("\u0000") && !reference.contains("://")) {
+        reference: ImageMediaReference,
+    ): ByteArray {
+        val normalizedOrigin = DashboardUrlPolicy.normalize(baseUrl)
+        require(normalizedOrigin == reference.normalizedGatewayOrigin) {
             "The image reference does not belong to this dashboard."
         }
-        require(reference.split('/').none { it == ".." }) {
+        require(reference.profileId.isNotBlank()) {
+            "A Hermes profile is required for image previews."
+        }
+        val serverReference = reference.serverReference.trim()
+        require(serverReference.isNotBlank()) { "An image reference is required." }
+        require(!serverReference.contains("\u0000") && !serverReference.contains("://")) {
             "The image reference does not belong to this dashboard."
         }
-        val url = DashboardUrlPolicy.normalize(baseUrl).let { normalized ->
-            normalized.toHttpUrl().newBuilder()
+        require(serverReference.split('/').none { it == ".." }) {
+            "The image reference does not belong to this dashboard."
+        }
+        return withContext(Dispatchers.IO) {
+            val url = normalizedOrigin.toHttpUrl().newBuilder()
                 .addPathSegment("api")
                 .addPathSegment("files")
                 .addPathSegment("read")
-                .addQueryParameter("path", reference)
-                .addQueryParameter("profile", profileId)
+                .addQueryParameter("path", serverReference)
+                .addQueryParameter("profile", reference.profileId)
                 .build()
-        }
-        val request = Request.Builder()
-            .url(url)
-            .header("Accept", "application/json")
-            .apply {
-                if (credential is GatewayCredential.StaticToken) {
-                    header("X-Hermes-Session-Token", credential.value.trim())
+            val request = Request.Builder()
+                .url(url)
+                .header("Accept", "application/json")
+                .apply {
+                    if (credential is GatewayCredential.StaticToken) {
+                        header("X-Hermes-Session-Token", credential.value.trim())
+                    }
                 }
+                .get()
+                .build()
+            val root = executeJson(request, "Hermes image preview") as? JsonObject
+                ?: throw InvalidDashboardResponse("Hermes image preview returned an unexpected response.")
+            val dataUrl = root["data_url"]?.jsonPrimitive?.contentOrNull
+                ?.takeIf { it.startsWith("data:image/", ignoreCase = true) && ";base64," in it }
+                ?: throw InvalidDashboardResponse("Hermes image preview returned no image data.")
+            val encoded = dataUrl.substringAfter(',', missingDelimiterValue = "")
+            val bytes = runCatching { Base64.getDecoder().decode(encoded) }
+                .getOrElse {
+                    throw InvalidDashboardResponse("Hermes image preview returned invalid image data.", it)
+                }
+            if (bytes.isEmpty() || bytes.size.toLong() > MAX_ATTACHMENT_BYTES) {
+                throw InvalidDashboardResponse("Hermes image preview exceeded the client image limit.")
             }
-            .get()
-            .build()
-        val root = executeJson(request, "Hermes image preview") as? JsonObject
-            ?: throw InvalidDashboardResponse("Hermes image preview returned an unexpected response.")
-        val dataUrl = root["data_url"]?.jsonPrimitive?.contentOrNull
-            ?.takeIf { it.startsWith("data:image/", ignoreCase = true) && ";base64," in it }
-            ?: throw InvalidDashboardResponse("Hermes image preview returned no image data.")
-        val encoded = dataUrl.substringAfter(',', missingDelimiterValue = "")
-        val bytes = runCatching { Base64.getDecoder().decode(encoded) }
-            .getOrElse { throw InvalidDashboardResponse("Hermes image preview returned invalid image data.", it) }
-        if (bytes.isEmpty() || bytes.size.toLong() > MAX_ATTACHMENT_BYTES) {
-            throw InvalidDashboardResponse("Hermes image preview exceeded the client image limit.")
+            runCatching { AttachmentValidator.validate(bytes, displayName = "transcript-image") }
+                .getOrElse { throw AttachmentMediaUnavailable() }
+            bytes
         }
-        runCatching { AttachmentValidator.validate(bytes, displayName = "transcript-image") }
-            .getOrElse { throw AttachmentMediaUnavailable() }
-        bytes
     }
 
     override suspend fun logout(baseUrl: String) = withContext(Dispatchers.IO) {

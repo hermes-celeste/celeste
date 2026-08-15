@@ -135,7 +135,53 @@ class CelesteViewModelAttachmentTest {
             secondAttachStarted = CompletableDeferred()
         }
         val store = FakeAttachmentStore()
-        val viewModel = openConversation(gateway, store)
+        val viewModel = openConversation(
+            gateway,
+            store,
+            reconnectDelayMillis = { _, _ -> 60_000L },
+        )
+        viewModel.updateDraft("Keep these images")
+        viewModel.beginAttachmentPicker()
+        viewModel.onAttachmentPickerResult(
+            listOf(Uri.parse("content://image-1"), Uri.parse("content://image-2")),
+        )
+        advanceUntilIdle()
+        viewModel.sendMessage()
+        gateway.secondAttachStarted!!.await()
+
+        gateway.disconnect("upload connection lost")
+        assertEquals(TurnState.Reconnecting, viewModel.state.value.turnState)
+        val removedId = viewModel.state.value.attachments[1].id
+        viewModel.removeAttachment(removedId)
+        advanceUntilIdle()
+
+        assertFalse("prompt.submit" in gateway.methods)
+        assertEquals(1, viewModel.state.value.attachments.size)
+        assertEquals(null, viewModel.state.value.attachments.single().serverReference)
+        assertEquals(AttachmentTransferState.Ready, viewModel.state.value.attachments.single().transfer)
+        assertTrue(viewModel.state.value.messages.none { it.id?.startsWith("local-") == true })
+        assertEquals(1, gateway.methods.count { it == "image.detach" })
+    }
+
+    @Test
+    fun contextSwitchCapturesTransactionReferencesForOwnerScopedCleanup() = runTest {
+        val gateway = AttachmentGateway().apply {
+            blockSecondAttach = true
+            secondAttachStarted = CompletableDeferred()
+        }
+        val dashboard = FakeDashboard(gateway)
+        val store = FakeAttachmentStore()
+        val viewModel = CelesteViewModel(
+            dashboard = dashboard,
+            connectionStore = InMemoryConnectionStore(),
+            attachmentStagingStore = store,
+            reconnectDelayMillis = { _, _ -> 0L },
+        )
+        viewModel.updateDashboardUrl("http://hermes.test:9119")
+        viewModel.findDashboard()
+        viewModel.loadSessions()
+        viewModel.openSession(dashboard.session)
+        advanceUntilIdle()
 
         viewModel.updateDraft("Keep these images")
         viewModel.beginAttachmentPicker()
@@ -146,14 +192,14 @@ class CelesteViewModelAttachmentTest {
         viewModel.sendMessage()
         gateway.secondAttachStarted!!.await()
 
-        val removedId = viewModel.state.value.attachments[1].id
-        viewModel.removeAttachment(removedId)
+        viewModel.leaveConversation()
+        advanceUntilIdle()
+        viewModel.openSession(dashboard.session)
         advanceUntilIdle()
 
-        assertFalse("prompt.submit" in gateway.methods)
-        assertEquals(1, viewModel.state.value.attachments.size)
-        assertTrue(viewModel.state.value.messages.none { it.id?.startsWith("local-") == true })
-        assertEquals(1, gateway.methods.count { it == "image.detach" })
+        assertEquals(1, gateway.detachRequests.size)
+        assertEquals("stored-1", gateway.detachRequests.single()["session_id"]?.toString()?.trim('"'))
+        assertEquals("/hermes/images/upload.png", gateway.detachRequests.single()["path"]?.toString()?.trim('"'))
     }
 
     @Test
@@ -180,13 +226,14 @@ class CelesteViewModelAttachmentTest {
     private suspend fun openConversation(
         gateway: AttachmentGateway,
         store: FakeAttachmentStore,
+        reconnectDelayMillis: (Boolean, Int) -> Long = { _, _ -> 0L },
     ): CelesteViewModel {
         val dashboard = FakeDashboard(gateway)
         val viewModel = CelesteViewModel(
             dashboard = dashboard,
             connectionStore = InMemoryConnectionStore(),
             attachmentStagingStore = store,
-            reconnectDelayMillis = { _, _ -> 0L },
+            reconnectDelayMillis = reconnectDelayMillis,
         )
         viewModel.updateDashboardUrl("http://hermes.test:9119")
         viewModel.findDashboard()
@@ -252,6 +299,7 @@ class CelesteViewModelAttachmentTest {
         var blockSecondAttach = false
         var secondAttachStarted: CompletableDeferred<Unit>? = null
         val releaseSecondAttach = CompletableDeferred<Unit>()
+        val detachRequests = mutableListOf<JsonObject>()
         var disconnectOnPromptFailure = false
         var attachFailure: Throwable? = null
         var promptFailure: Throwable? = null
@@ -282,6 +330,7 @@ class CelesteViewModelAttachmentTest {
                     }
                     promptText = params["text"]?.toString()?.trim('"')
                 }
+                "image.detach" -> detachRequests += params
                 "session.resume" -> return buildJsonObject {
                     put("session_id", "runtime-1")
                     put("resumed", "stored-1")
@@ -291,10 +340,15 @@ class CelesteViewModelAttachmentTest {
             }
             return when (method) {
                 "image.attach_bytes" -> buildJsonObject { put("path", "/hermes/images/upload.png"); put("bytes", 16) }
+                "image.detach" -> buildJsonObject { put("detached", true) }
                 "prompt.submit" -> buildJsonObject { put("status", "streaming") }
                 else -> buildJsonObject {}
             }
         }
         override fun close() { mutableState.value = GatewayConnectionState.Closed }
+
+        fun disconnect(reason: String) {
+            mutableState.value = GatewayConnectionState.Disconnected(reason)
+        }
     }
 }

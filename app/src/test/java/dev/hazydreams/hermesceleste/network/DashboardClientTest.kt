@@ -11,6 +11,7 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import java.util.Base64
 import mockwebserver3.MockResponse
 import mockwebserver3.MockWebServer
 import okhttp3.Response
@@ -383,6 +384,73 @@ class DashboardClientTest {
     }
 
     @Test
+    fun readsProfileBoundImageMediaWithStaticToken() = runTest {
+        val baseUrl = server.url("/").toString().trimEnd('/')
+        val imageBytes = Base64.getDecoder().decode(VALID_PNG_BASE64)
+        server.enqueue(
+            MockResponse.Builder()
+                .code(200)
+                .body("""{"data_url":"data:image/png;base64,$VALID_PNG_BASE64"}""")
+                .build(),
+        )
+
+        val result = DashboardClient().readImageMedia(
+            baseUrl = baseUrl,
+            credential = GatewayCredential.StaticToken("preview-token"),
+            reference = ImageMediaReference(
+                normalizedGatewayOrigin = baseUrl,
+                profileId = "work",
+                serverReference = "/hermes/images/cat.png",
+            ),
+        )
+
+        assertEquals(imageBytes.toList(), result.toList())
+        val request = server.takeRequest()
+        assertEquals("/api/files/read", request.url.encodedPath)
+        assertEquals("/hermes/images/cat.png", request.url.queryParameter("path"))
+        assertEquals("work", request.url.queryParameter("profile"))
+        assertEquals("preview-token", request.headers["X-Hermes-Session-Token"])
+    }
+
+    @Test
+    fun rejectsImageReferenceFromAnotherOriginBeforeAuthenticatedFetch() = runTest {
+        val baseUrl = server.url("/").toString().trimEnd('/')
+        val failure = runCatching {
+            DashboardClient().readImageMedia(
+                baseUrl = baseUrl,
+                credential = GatewayCredential.StaticToken("must-not-fetch"),
+                reference = ImageMediaReference(
+                    normalizedGatewayOrigin = "http://other-hermes.test:9119",
+                    profileId = "default",
+                    serverReference = "/hermes/images/cat.png",
+                ),
+            )
+        }.exceptionOrNull()
+
+        assertTrue(failure is IllegalArgumentException)
+        assertEquals(0, server.requestCount)
+    }
+
+    @Test
+    fun rejectsImageReferenceWithoutAnOwningProfileBeforeAuthenticatedFetch() = runTest {
+        val baseUrl = server.url("/").toString().trimEnd('/')
+        val failure = runCatching {
+            DashboardClient().readImageMedia(
+                baseUrl = baseUrl,
+                credential = GatewayCredential.StaticToken("must-not-fetch"),
+                reference = ImageMediaReference(
+                    normalizedGatewayOrigin = baseUrl,
+                    profileId = "",
+                    serverReference = "/hermes/images/cat.png",
+                ),
+            )
+        }.exceptionOrNull()
+
+        assertTrue(failure is IllegalArgumentException)
+        assertEquals(0, server.requestCount)
+    }
+
+    @Test
     fun missingLegacyProfileCatalogUsesOnlyTheDefaultProfile() = runTest {
         server.enqueue(MockResponse.Builder().code(404).body("not found").build())
         val baseUrl = server.url("/").toString().trimEnd('/')
@@ -684,6 +752,8 @@ class DashboardClientTest {
     }
 
     private companion object {
+        const val VALID_PNG_BASE64 =
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
         const val gatewayReadyFrame =
             """{"jsonrpc":"2.0","method":"event","params":{"type":"gateway.ready","payload":{}}}"""
     }
