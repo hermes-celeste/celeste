@@ -257,6 +257,25 @@ fun SessionListPreviewScreenshot() {
 }
 
 @PreviewTest
+@Preview(name = "13 · Empty conversations", widthDp = 390, heightDp = 844, showBackground = true)
+@Composable
+fun EmptySessionListPreviewScreenshot() {
+    HermesCelesteTheme {
+        SessionListScreen(
+            sessions = emptyList(),
+            profiles = listOf(DashboardProfile(name = "default", isDefault = true)),
+            selectedProfile = "default",
+            loadingMessage = null,
+            errorMessage = null,
+            onProfileSelected = {},
+            onNewConversation = {},
+            onSessionSelected = {},
+            onSettings = {},
+        )
+    }
+}
+
+@PreviewTest
 @Preview(name = "04 · New chat", widthDp = 390, heightDp = 844, showBackground = true)
 @Composable
 fun NewConversationPreviewScreenshot() {

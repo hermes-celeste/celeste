@@ -1,7 +1,6 @@
 package dev.hazydreams.hermesceleste.ui.conversation
 
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -18,8 +17,6 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.drawBehind
-import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 
 import androidx.compose.ui.text.font.FontWeight
@@ -27,13 +24,12 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import dev.hazydreams.hermesceleste.network.ConversationMessage
 import dev.hazydreams.hermesceleste.ui.CelesteBlue
-import dev.hazydreams.hermesceleste.ui.CelesteCoral
 import dev.hazydreams.hermesceleste.ui.CelesteGoldText
-import dev.hazydreams.hermesceleste.ui.CelesteHairline
 import dev.hazydreams.hermesceleste.ui.CelesteInk
+import dev.hazydreams.hermesceleste.ui.CelesteLightTone
 import dev.hazydreams.hermesceleste.ui.CelesteMuted
-import dev.hazydreams.hermesceleste.ui.CelestePanelRaised
 import dev.hazydreams.hermesceleste.ui.CelesteSoftBlue
+import dev.hazydreams.hermesceleste.ui.CelesteSurface
 
 internal const val STREAMING_TRANSCRIPT_KEY = "streaming:assistant"
 
@@ -66,17 +62,15 @@ private fun UserMessage(message: ConversationMessage) {
     ) {
         Column(
             modifier = Modifier
-                .fillMaxWidth(0.88f)
+                .fillMaxWidth(0.78f)
                 .background(CelesteSoftBlue, RoundedCornerShape(20.dp))
-                .padding(horizontal = 17.dp, vertical = 15.dp),
+                .padding(horizontal = 16.dp, vertical = 13.dp),
         ) {
-            MessageLabel("You", CelesteBlue, message.pending)
             if (message.text.isNotBlank()) {
-                Spacer(Modifier.height(6.dp))
                 Text(
                     text = message.text,
                     color = CelesteInk,
-                    style = MaterialTheme.typography.bodyLarge,
+                    style = MaterialTheme.typography.bodyMedium,
                 )
             }
         }
@@ -85,27 +79,16 @@ private fun UserMessage(message: ConversationMessage) {
 
 @Composable
 private fun AssistantMessage(message: ConversationMessage) {
-    val accent = CelesteCoral
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .drawBehind {
-                drawLine(
-                    color = accent,
-                    start = Offset(0f, 0f),
-                    end = Offset(0f, size.height),
-                    strokeWidth = 2.dp.toPx(),
-                )
-            }
-            .padding(start = 17.dp, end = 8.dp, top = 3.dp, bottom = 3.dp),
+            .padding(horizontal = 2.dp, vertical = 2.dp),
     ) {
-        MessageLabel("Hermes", accent, message.pending)
         if (message.text.isNotBlank()) {
-            Spacer(Modifier.height(8.dp))
             Text(
                 text = message.text,
                 color = CelesteInk,
-                style = MaterialTheme.typography.bodyLarge,
+                style = MaterialTheme.typography.bodyMedium,
             )
         }
     }
@@ -113,25 +96,31 @@ private fun AssistantMessage(message: ConversationMessage) {
 
 @Composable
 private fun ToolMessage(message: ConversationMessage) {
-    Column(
+    CelesteSurface(
         modifier = Modifier
-            .fillMaxWidth()
-            .background(CelestePanelRaised.copy(alpha = 0.72f), RoundedCornerShape(14.dp))
-            .border(1.dp, CelesteHairline, RoundedCornerShape(14.dp))
-            .padding(horizontal = 15.dp, vertical = 13.dp),
+            .fillMaxWidth(),
+        tone = CelesteLightTone.Cool,
+        emphasized = message.pending,
+        shape = RoundedCornerShape(16.dp),
+        contentPadding = androidx.compose.foundation.layout.PaddingValues(
+            horizontal = 15.dp,
+            vertical = 13.dp,
+        ),
     ) {
-        MessageLabel(
-            message.toolName?.replace('_', ' ') ?: "Tool",
-            CelesteGoldText,
-            message.pending,
-        )
-        if (message.text.isNotBlank()) {
-            Spacer(Modifier.height(6.dp))
-            Text(
-                text = message.text,
-                color = CelesteMuted,
-                style = MaterialTheme.typography.bodyMedium,
+        Column {
+            MessageLabel(
+                message.toolName?.replace('_', ' ') ?: "Tool",
+                CelesteBlue,
+                message.pending,
             )
+            if (message.text.isNotBlank()) {
+                Spacer(Modifier.height(6.dp))
+                Text(
+                    text = message.text,
+                    color = CelesteMuted,
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+            }
         }
     }
 }
