@@ -13,7 +13,14 @@ Run agent sessions from the repository root. Hermes loads `AGENTS.md` from the w
 - `app/src/screenshotTestDebug/reference` — accepted screenshot references
 - `app/src/main/res` — Android manifest resources, launcher assets, backup rules, and theme resources
 - `scripts/celeste-env` — project JDK and Android SDK environment wrapper
-- `docs` — source of truth for system-level and process-level knowledge
+- `docs` — source of truth for current system-level and process-level knowledge
+- [Celeste Project](https://github.com/orgs/hermes-celeste/projects/2) — prospective feature investigations and their workflow state
+
+## Project backlog
+
+The [Celeste Project](https://github.com/orgs/hermes-celeste/projects/2) is the source of truth for prospective work. Its draft issues may preserve historical observations, code pointers, and open questions that have **not** been revalidated; they are not product decisions, specifications, or implementation approval.
+
+When a draft is selected, revalidate its claims against current Celeste and relevant Hermes, Conduit, and Android sources. Update the draft with the verified findings, then convert it into a repository issue before implementation. Keep unvalidated research in the Project rather than active repository docs.
 
 ## Docs
 
