@@ -2,7 +2,10 @@ coverage:
   status:
     project:
       default:
+        base: auto
         informational: true
+        target: auto
+        threshold: "0%"
     patch:
       default:
         informational: true
@@ -10,6 +13,7 @@ coverage:
 comment:
   behavior: default
   hide_project_coverage: false
+  layout: "diff, flags, files"
   require_changes: false
   require_base: false
   require_head: true
