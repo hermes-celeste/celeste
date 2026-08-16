@@ -471,7 +471,7 @@ internal fun GatewaySettingsScreen(
                 )
                 Spacer(Modifier.height(8.dp))
                 Text(
-                    text = "•  Encrypted  •  Local-first",
+                    text = "•  Local-first",
                     color = CelesteSuccess,
                     fontSize = 10.sp,
                     textAlign = TextAlign.Center,

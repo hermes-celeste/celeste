@@ -2,12 +2,12 @@
 <resources>
     <style name="Theme.HermesCeleste" parent="android:style/Theme.Material.Light.NoActionBar">
         <item name="android:fontFamily">sans</item>
-        <item name="android:windowBackground">#FFFEFA</item>
-        <item name="android:statusBarColor">#FFFEFA</item>
-        <item name="android:navigationBarColor">#FFFEFA</item>
+        <item name="android:windowBackground">@color/celeste_paper</item>
+        <item name="android:statusBarColor">@color/celeste_paper</item>
+        <item name="android:navigationBarColor">@color/celeste_paper</item>
         <item name="android:windowLightStatusBar">true</item>
         <item name="android:windowLightNavigationBar">true</item>
-        <item name="android:colorAccent">#8A651F</item>
+        <item name="android:colorAccent">@color/celeste_blue</item>
         <item name="android:windowActionModeOverlay">true</item>
     </style>
 </resources>

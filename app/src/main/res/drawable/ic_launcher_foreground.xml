@@ -7,20 +7,20 @@
     <path
         android:fillColor="@android:color/transparent"
         android:pathData="M54,18 A36,36 0,1 1,53.9 18"
-        android:strokeColor="#C49A4A"
+        android:strokeColor="@color/celeste_blue"
         android:strokeWidth="2" />
     <path
         android:fillColor="@android:color/transparent"
         android:pathData="M54,30 A24,24 0,1 1,53.9 30"
-        android:strokeColor="#52C49A4A"
+        android:strokeColor="@color/celeste_glow_blue_translucent"
         android:strokeWidth="1.5" />
     <path
         android:fillColor="@android:color/transparent"
         android:pathData="M29,80 A36,36 0,0 1,18 54"
-        android:strokeColor="#171717"
+        android:strokeColor="@color/celeste_ink"
         android:strokeLineCap="round"
         android:strokeWidth="4" />
     <path
-        android:fillColor="#C49A4A"
+        android:fillColor="@color/celeste_amber"
         android:pathData="M80,32 A5,5 0,1 1,79.9 32" />
 </vector>

@@ -261,10 +261,10 @@ private fun ConversationComposer(
                     placeholder = {
                         Text(
                             text = when (turnState) {
-                                TurnState.Idle -> "Message Celeste…"
-                                TurnState.Running -> "Celeste is working…"
+                                TurnState.Idle -> "Message Hermes…"
+                                TurnState.Running -> "Hermes is responding…"
                                 TurnState.Synchronizing -> "Synchronizing…"
-                                TurnState.Reconnecting -> "Keep drafting while Celeste reconnects…"
+                                TurnState.Reconnecting -> "Keep drafting while Hermes reconnects…"
                             },
                             color = CelesteMuted,
                             maxLines = 1,
