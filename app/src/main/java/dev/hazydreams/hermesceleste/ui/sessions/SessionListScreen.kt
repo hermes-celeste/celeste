@@ -1,18 +1,22 @@
 package dev.hazydreams.hermesceleste.ui.sessions
 
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
-import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -33,6 +37,7 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -40,14 +45,14 @@ import dev.hazydreams.hermesceleste.network.DashboardProfile
 import dev.hazydreams.hermesceleste.network.StoredSession
 import dev.hazydreams.hermesceleste.ui.CelesteBackdrop
 import dev.hazydreams.hermesceleste.ui.CelesteBlue
-
 import dev.hazydreams.hermesceleste.ui.CelesteError
 import dev.hazydreams.hermesceleste.ui.CelesteHairline
 import dev.hazydreams.hermesceleste.ui.CelesteInk
+import dev.hazydreams.hermesceleste.ui.CelesteLightTone
 import dev.hazydreams.hermesceleste.ui.CelesteMuted
+import dev.hazydreams.hermesceleste.ui.CelesteOrb
 import dev.hazydreams.hermesceleste.ui.CelestePanel
-
-import dev.hazydreams.hermesceleste.ui.EditorialDivider
+import dev.hazydreams.hermesceleste.ui.CelesteSurface
 import dev.hazydreams.hermesceleste.ui.StatusMessage
 
 @Composable
@@ -64,89 +69,81 @@ internal fun SessionListScreen(
 ) {
     var profileMenuExpanded by remember { mutableStateOf(false) }
 
-    CelesteBackdrop(showOrnament = false) {
+    CelesteBackdrop {
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(top = 44.dp),
+                .statusBarsPadding(),
         ) {
-            Row(
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 28.dp),
-                verticalAlignment = Alignment.Top,
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 20.dp, vertical = 14.dp),
             ) {
-                Column(Modifier.weight(1f)) {
-                    Text("Conversations", style = MaterialTheme.typography.headlineLarge)
-                }
+                Text(
+                    text = "Celeste",
+                    style = MaterialTheme.typography.titleLarge,
+                    modifier = Modifier.align(Alignment.Center),
+                )
                 TextButton(
                     onClick = onSettings,
                     enabled = loadingMessage == null,
+                    modifier = Modifier.align(Alignment.CenterEnd),
                     contentPadding = PaddingValues(horizontal = 8.dp, vertical = 8.dp),
                 ) {
-                    Text("Settings", fontWeight = FontWeight.SemiBold)
+                    Text("Settings", color = CelesteInk, fontWeight = FontWeight.SemiBold)
                 }
             }
 
-            Row(
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 28.dp, vertical = 24.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(10.dp),
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 20.dp, vertical = 6.dp),
             ) {
-                Box(Modifier.weight(1f)) {
-                    OutlinedButton(
-                        onClick = { profileMenuExpanded = true },
-                        enabled = loadingMessage == null,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(50.dp)
-                            .semantics {
-                                contentDescription = "Profile: ${selectedProfile.replaceFirstChar(Char::uppercase)}"
-                                stateDescription = if (profileMenuExpanded) "Expanded" else "Collapsed"
+                OutlinedButton(
+                    onClick = { profileMenuExpanded = true },
+                    enabled = loadingMessage == null,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(46.dp)
+                        .semantics {
+                            contentDescription = "Profile: ${selectedProfile.replaceFirstChar(Char::uppercase)}"
+                            stateDescription = if (profileMenuExpanded) "Expanded" else "Collapsed"
+                        },
+                    shape = RoundedCornerShape(23.dp),
+                    border = BorderStroke(1.dp, CelesteHairline),
+                    colors = ButtonDefaults.outlinedButtonColors(
+                        containerColor = CelestePanel,
+                        contentColor = CelesteInk,
+                    ),
+                ) {
+                    Text(
+                        text = "${selectedProfile.replaceFirstChar(Char::uppercase)}  ↓",
+                        style = MaterialTheme.typography.labelLarge,
+                    )
+                }
+                DropdownMenu(
+                    expanded = profileMenuExpanded,
+                    onDismissRequest = { profileMenuExpanded = false },
+                    containerColor = CelestePanel,
+                ) {
+                    profiles.forEach { profile ->
+                        DropdownMenuItem(
+                            text = {
+                                Text(if (profile.isDefault) "${profile.name} · default" else profile.name)
                             },
-                        shape = RoundedCornerShape(25.dp),
-                        border = androidx.compose.foundation.BorderStroke(1.dp, CelesteHairline),
-                        colors = ButtonDefaults.outlinedButtonColors(contentColor = CelesteInk),
-                    ) {
-                        Text(
-                            "${selectedProfile.replaceFirstChar(Char::uppercase)}  ↓",
-                            style = MaterialTheme.typography.labelLarge,
+                            onClick = {
+                                onProfileSelected(profile.name)
+                                profileMenuExpanded = false
+                            },
                         )
                     }
-                    DropdownMenu(
-                        expanded = profileMenuExpanded,
-                        onDismissRequest = { profileMenuExpanded = false },
-                        containerColor = CelestePanel,
-                    ) {
-                        profiles.forEach { profile ->
-                            DropdownMenuItem(
-                                text = {
-                                    Text(
-                                        if (profile.isDefault) "${profile.name} · default" else profile.name,
-                                    )
-                                },
-                                onClick = {
-                                    onProfileSelected(profile.name)
-                                    profileMenuExpanded = false
-                                },
-                            )
-                        }
-                    }
-                }
-                OutlinedButton(
-                    onClick = onNewConversation,
-                    enabled = loadingMessage == null,
-                    modifier = Modifier.height(50.dp),
-                    shape = RoundedCornerShape(25.dp),
-                    contentPadding = PaddingValues(horizontal = 20.dp),
-                    border = androidx.compose.foundation.BorderStroke(1.dp, CelesteInk),
-                    colors = ButtonDefaults.outlinedButtonColors(contentColor = CelesteInk),
-                ) {
-                    Text("New chat  +", fontWeight = FontWeight.SemiBold)
                 }
             }
 
             if (loadingMessage != null || errorMessage != null) {
                 Column(
-                    modifier = Modifier.padding(horizontal = 28.dp, vertical = 4.dp),
+                    modifier = Modifier.padding(horizontal = 24.dp, vertical = 8.dp),
                     verticalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
                     loadingMessage?.let { StatusMessage(it, CelesteBlue, showSpinner = true) }
@@ -154,53 +151,148 @@ internal fun SessionListScreen(
                 }
             }
 
-            LazyColumn(
-                modifier = Modifier.fillMaxWidth(),
-                contentPadding = PaddingValues(start = 28.dp, end = 28.dp, top = 4.dp, bottom = 40.dp),
-            ) {
-                itemsIndexed(
-                    items = sessions,
-                    key = { _, session -> session.id },
-                ) { _, session ->
-                    Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clickable(enabled = loadingMessage == null) { onSessionSelected(session) }
-                            .padding(vertical = 21.dp),
+            if (sessions.isEmpty()) {
+                EmptyConversationState(
+                    modifier = Modifier.weight(1f),
+                    enabled = loadingMessage == null,
+                    onNewConversation = onNewConversation,
+                )
+            } else {
+                Box(modifier = Modifier.weight(1f)) {
+                    LazyColumn(
+                        modifier = Modifier.fillMaxSize(),
+                        contentPadding = PaddingValues(
+                            start = 20.dp,
+                            end = 20.dp,
+                            top = 12.dp,
+                            bottom = 104.dp,
+                        ),
+                        verticalArrangement = Arrangement.spacedBy(12.dp),
                     ) {
-                        Text(
-                            session.title.ifBlank { "Untitled conversation" },
-                            style = MaterialTheme.typography.headlineMedium,
-                            maxLines = 2,
-                            overflow = TextOverflow.Ellipsis,
-                        )
-                        if (session.preview.isNotBlank()) {
-                            Spacer(Modifier.height(9.dp))
-                            Text(
-                                session.preview,
-                                color = CelesteMuted,
-                                style = MaterialTheme.typography.bodyMedium,
-                                maxLines = 2,
-                                overflow = TextOverflow.Ellipsis,
+                        items(
+                            items = sessions,
+                            key = { session -> session.id },
+                        ) { session ->
+                            ConversationCard(
+                                session = session,
+                                showProfile = profiles.size > 1,
+                                enabled = loadingMessage == null,
+                                onClick = { onSessionSelected(session) },
                             )
                         }
-                        Spacer(Modifier.height(13.dp))
-                        val metadata = if (profiles.size > 1) {
-                            "${session.profile.uppercase()}  ·  ${session.messageCount} MESSAGES"
-                        } else {
-                            "${session.messageCount} MESSAGES"
-                        }
-                        Text(
-                            metadata,
-                            color = CelesteMuted,
-                            fontSize = 10.sp,
-                            fontWeight = FontWeight.SemiBold,
-                            letterSpacing = 0.7.sp,
-                        )
                     }
-                    EditorialDivider()
+
+                    NewConversationButton(
+                        enabled = loadingMessage == null,
+                        onClick = onNewConversation,
+                        modifier = Modifier
+                            .align(Alignment.BottomEnd)
+                            .navigationBarsPadding()
+                            .padding(end = 20.dp, bottom = 18.dp),
+                    )
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun ConversationCard(
+    session: StoredSession,
+    showProfile: Boolean,
+    enabled: Boolean,
+    onClick: () -> Unit,
+) {
+    CelesteSurface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(enabled = enabled, onClick = onClick),
+        tone = CelesteLightTone.Cool,
+        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 15.dp),
+    ) {
+        Column {
+            Text(
+                text = session.title.ifBlank { "Untitled conversation" },
+                style = MaterialTheme.typography.titleMedium,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+            )
+            if (session.preview.isNotBlank()) {
+                Spacer(Modifier.height(6.dp))
+                Text(
+                    text = session.preview,
+                    color = CelesteMuted,
+                    style = MaterialTheme.typography.bodyMedium,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+            Spacer(Modifier.height(11.dp))
+            Text(
+                text = if (showProfile) {
+                    "${session.profile.uppercase()}  ·  ${session.messageCount} MESSAGES"
+                } else {
+                    "${session.messageCount} MESSAGES"
+                },
+                color = CelesteMuted,
+                fontSize = 9.sp,
+                fontWeight = FontWeight.SemiBold,
+                letterSpacing = 0.7.sp,
+            )
+        }
+    }
+}
+
+@Composable
+private fun EmptyConversationState(
+    modifier: Modifier,
+    enabled: Boolean,
+    onNewConversation: () -> Unit,
+) {
+    Column(
+        modifier = modifier
+            .fillMaxWidth()
+            .navigationBarsPadding()
+            .padding(horizontal = 28.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center,
+    ) {
+        CelesteOrb(modifier = Modifier.size(76.dp))
+        Spacer(Modifier.height(28.dp))
+        Text("No conversations yet", style = MaterialTheme.typography.titleLarge)
+        Spacer(Modifier.height(8.dp))
+        Text(
+            text = "Start a new conversation to connect with your Hermes agent.",
+            color = CelesteMuted,
+            style = MaterialTheme.typography.bodyMedium,
+            textAlign = TextAlign.Center,
+        )
+        Spacer(Modifier.height(28.dp))
+        NewConversationButton(enabled = enabled, onClick = onNewConversation)
+    }
+}
+
+@Composable
+private fun NewConversationButton(
+    enabled: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Button(
+        onClick = onClick,
+        enabled = enabled,
+        modifier = modifier.height(48.dp),
+        shape = RoundedCornerShape(24.dp),
+        colors = ButtonDefaults.buttonColors(
+            containerColor = CelesteInk,
+            contentColor = CelestePanel,
+            disabledContainerColor = CelesteHairline,
+            disabledContentColor = CelesteMuted,
+        ),
+        contentPadding = PaddingValues(horizontal = 20.dp),
+    ) {
+        Text("+", fontSize = 18.sp, fontWeight = FontWeight.Bold)
+        Spacer(Modifier.size(8.dp))
+        Text("New conversation", fontWeight = FontWeight.SemiBold)
     }
 }

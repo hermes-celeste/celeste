@@ -1,7 +1,6 @@
 package dev.hazydreams.hermesceleste.ui
 
 import androidx.activity.compose.BackHandler
-import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -24,12 +23,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.geometry.Size
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.StrokeCap
-import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -164,7 +158,6 @@ private fun GatewaySettingsRoute(
 
 @Composable
 internal fun CelesteBackdrop(
-    showOrnament: Boolean = true,
     content: @Composable BoxScope.() -> Unit,
 ) {
     Box(
@@ -172,66 +165,6 @@ internal fun CelesteBackdrop(
             .fillMaxSize()
             .background(MaterialTheme.colorScheme.background),
     ) {
-        Canvas(Modifier.fillMaxSize()) {
-            drawRect(
-                brush = Brush.verticalGradient(
-                    colors = listOf(
-                        CelesteGold.copy(alpha = 0.08f),
-                        CelesteGold.copy(alpha = 0.025f),
-                        Color.Transparent,
-                    ),
-                    startY = 0f,
-                    endY = size.height * 0.38f,
-                ),
-            )
-
-            if (showOrnament) {
-                val haloCenter = Offset(size.width - 8.dp.toPx(), 46.dp.toPx())
-                val innerHaloRadius = 64.dp.toPx()
-
-                listOf(
-                    Triple(innerHaloRadius, 0.48f, 0.7.dp.toPx()),
-                    Triple(87.dp.toPx(), 0.30f, 0.45.dp.toPx()),
-                    Triple(111.dp.toPx(), 0.18f, 0.45.dp.toPx()),
-                ).forEach { (radius, alpha, strokeWidth) ->
-                    drawCircle(
-                        color = CelesteGold.copy(alpha = alpha),
-                        radius = radius,
-                        center = haloCenter,
-                        style = Stroke(width = strokeWidth),
-                    )
-                }
-
-                drawArc(
-                    color = CelesteGold.copy(alpha = 0.58f),
-                    startAngle = 116f,
-                    sweepAngle = 54f,
-                    useCenter = false,
-                    topLeft = Offset(
-                        haloCenter.x - innerHaloRadius,
-                        haloCenter.y - innerHaloRadius,
-                    ),
-                    size = Size(innerHaloRadius * 2f, innerHaloRadius * 2f),
-                    style = Stroke(width = 0.85.dp.toPx(), cap = StrokeCap.Round),
-                )
-
-                val star = Offset(size.width - 101.dp.toPx(), 118.dp.toPx())
-                drawLine(
-                    color = CelesteGold.copy(alpha = 0.54f),
-                    start = star - Offset(0f, 6.5.dp.toPx()),
-                    end = star + Offset(0f, 6.5.dp.toPx()),
-                    strokeWidth = 0.5.dp.toPx(),
-                    cap = StrokeCap.Round,
-                )
-                drawLine(
-                    color = CelesteGold.copy(alpha = 0.54f),
-                    start = star - Offset(4.5.dp.toPx(), 0f),
-                    end = star + Offset(4.5.dp.toPx(), 0f),
-                    strokeWidth = 0.5.dp.toPx(),
-                    cap = StrokeCap.Round,
-                )
-            }
-        }
         CompositionLocalProvider(LocalContentColor provides MaterialTheme.colorScheme.onBackground) {
             content()
         }
