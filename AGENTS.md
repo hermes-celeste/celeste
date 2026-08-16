@@ -1,12 +1,14 @@
 # Celeste
 
-Celeste is a native Android client for a self-hosted Hermes Agent dashboard. Its Android launcher and app-list label is **Hermes Celeste**; the product, repository, and documentation name is **Celeste**.
+Celeste is an Android-first native client for a self-hosted Hermes Agent dashboard. Android is the only application target today; protocol behavior, application state, and custom Compose UI are being kept portable for a future iOS target. Its Android launcher and app-list label is **Hermes Celeste**; the product, repository, and documentation name is **Celeste**.
 
 Run agent sessions from the repository root. Hermes loads `AGENTS.md` from the working directory rather than walking parent directories.
 
 ## Repository map
 
-- `app/src/main/java/dev/hazydreams/hermesceleste` — Compose UI, application state, and lifecycle coordination
+- `app/src/main/java/dev/hazydreams/hermesceleste/CelesteController.kt` — platform-neutral application/session orchestration and UI state, pending the shared source-set split
+- `app/src/main/java/dev/hazydreams/hermesceleste/MainActivity.kt` and `CelesteViewModel.kt` — Android application, lifecycle, and dependency adapters
+- `app/src/main/java/dev/hazydreams/hermesceleste/ui` — custom Compose UI plus the remaining explicit Android UI hooks
 - `app/src/main/java/dev/hazydreams/hermesceleste/network` — dashboard HTTP, authentication, JSON-RPC, and gateway transport
 - `app/src/test` — unit, protocol, lifecycle, and opt-in live contract tests
 - `app/src/screenshotTest` — host-rendered Compose screenshot scenarios
@@ -68,7 +70,8 @@ GitHub Actions owns APK assembly and test-build signing; do not create distribut
 - The current official Hermes server and Desktop implementation is protocol authority. Check it before changing routes, payloads, events, or lifecycle behavior; see [`docs/hermes-protocol.md`](docs/hermes-protocol.md).
 - The Hermes dashboard owns profiles, sessions, messages, and capabilities. Do not create a second mobile session store or synchronization layer; see [`docs/architecture.md`](docs/architecture.md).
 - Keep transport, authentication, protocol models, and session state independent of Compose.
+- Keep protocol behavior, application state, and custom Compose UI free of Android, AndroidX, and JVM APIs; inject narrow platform adapters where operating-system integration is real.
 - Never log, commit, fixture, or screenshot credentials or private conversation data. Persist only supported reusable authentication through the Keystore-backed connection store; raw passwords and private conversation data remain memory-only. See [`docs/security.md`](docs/security.md).
 - The source repository is public. Do not publish releases, sign distributable builds, create store infrastructure, or expose credentials/private user data; see [`docs/development.md`](docs/development.md) and [`docs/security.md`](docs/security.md).
-- Build the application UI with Kotlin and Jetpack Compose. Do not introduce a WebView UI.
+- Build custom application UI with Kotlin and Compose APIs that can move to Compose Multiplatform. Keep native system integration target-specific and do not introduce a WebView UI.
 - Do not accept a visual change by updating screenshot references without project-owner review; see [`docs/testing.md`](docs/testing.md).

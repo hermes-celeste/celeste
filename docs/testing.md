@@ -7,7 +7,7 @@ Match verification to what changed:
 | Change | Required evidence |
 | --- | --- |
 | Documentation only | Link/terminology audit and `git diff --check` |
-| Kotlin state or protocol logic | Focused unit test during iteration, then `testDebugUnitTest` |
+| Portable controller, state, or protocol logic | Focused unit test during iteration, then `testDebugUnitTest` |
 | URL, authentication, HTTP, or WebSocket behavior | MockWebServer/gateway regression plus `testDebugUnitTest`; use the live contract when server admission or shape changed |
 | Compose layout, copy, color, or interaction state | Relevant unit checks plus host screenshot review and `validateDebugScreenshotTest` |
 | Manifest, resources, launcher, packaging, or install behavior | Local `lintDebug`, GitHub Actions packaging, and device verification when behavior crosses onto Android |
@@ -18,6 +18,8 @@ Always run `git diff --check`. Disclose any changed runtime surface that was not
 ## Unit and protocol tests
 
 Tests live under `app/src/test`.
+
+The repository does not have shared Kotlin Multiplatform source sets yet. Portable controller/protocol tests still run as Android host-unit tests, but they should exercise injected contracts without requiring Activity, AndroidX `ViewModel`, or device APIs. Move them to shared tests when the build boundary exists. Android adapters retain Android-specific unit, lint, screenshot, packaging, and device evidence. A future iOS target will require its own runtime, accessibility, lifecycle, and system-integration checks; shared tests alone will not establish iOS quality.
 
 - `DashboardUrlPolicyTest` owns URL normalization and cleartext admission.
 - `DashboardClientTest` owns HTTP/authentication and short WebSocket operations.

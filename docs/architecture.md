@@ -2,10 +2,11 @@
 
 ## Shape
 
-Celeste is currently a single-module Android application:
+Celeste is currently a single-module Android application. That module is the present packaging boundary, not the intended long-term ownership boundary:
 
-- `MainActivity.kt` owns Activity setup, ViewModel wiring, and lifecycle forwarding.
-- `CelesteViewModel.kt` owns application/session state, turn reduction, lifecycle recovery, and user actions.
+- `MainActivity.kt` owns Android Activity setup, ViewModel wiring, and lifecycle forwarding.
+- `CelesteViewModel.kt` is a thin Android lifetime and dependency-composition adapter.
+- `CelesteController.kt` owns application/session state, turn reduction, lifecycle recovery commands, and user actions with no direct Android, AndroidX, or JVM imports. The network contracts and models it consumes still live in the Android/JVM source tree and remain a later source-set split.
 - `ui/CelesteRoutes.kt` owns top-level destination selection.
 - `ui/CelesteSurfaces.kt` owns the shared backdrop, contained-light surfaces, and reusable state affordances.
 - `ui/gateway/`, `ui/sessions/`, and `ui/conversation/` own their existing screen areas; transcript row identity and rendering stay with conversation UI.
@@ -13,7 +14,7 @@ Celeste is currently a single-module Android application:
 - `network/HermesGateway.kt` is a thin persistent JSON-RPC transport.
 - `network/GatewaySessionApi.kt` owns typed session RPC requests and response decoding.
 - `network/DashboardUrlPolicy.kt` owns dashboard URL normalization and cleartext admission.
-- `connection/` owns saved-connection modeling, cold-start decisions, and the Android Keystore storage adapter.
+- `connection/` owns portable saved-connection modeling and cold-start decisions plus the current Android Keystore storage adapter.
 - `ui/CelesteTheme.kt` owns current Compose color tokens and Material theme wiring.
 
 Keep this map updated when ownership moves. Do not add a new layer only to match a generic architecture diagram.
@@ -22,11 +23,13 @@ Keep this map updated when ownership moves. Do not add a new layer only to match
 
 ### Compose
 
-Compose renders `CelesteUiState` and emits user intent. Top-level routing keeps conversations separate from **Settings → Gateway**; first-run setup and failed-restore recovery reuse the same Gateway editor rather than introducing a second connection flow. Compose must not own credentials, sockets, RPC framing, retry policy, or authoritative session history.
+Compose renders `CelesteUiState` and emits user intent to `CelesteController`. Top-level routing keeps conversations separate from **Settings → Gateway**; first-run setup and failed-restore recovery reuse the same Gateway editor rather than introducing a second connection flow. Compose must not own credentials, sockets, RPC framing, retry policy, or authoritative session history.
 
-### Application state
+### Application controller
 
-`CelesteViewModel` coordinates cold-start restoration, the selected dashboard, in-memory credential, profile/session selection, persistent gateway, transcript projection, draft, and turn state. It is the boundary between UI intent and protocol operations. Restoration stops after loading the session list; only explicit user intent opens a conversation.
+`CelesteController` coordinates cold-start restoration, the selected dashboard, in-memory credential, profile/session selection, persistent gateway, transcript projection, draft, and turn state. It is the boundary between UI intent and protocol operations. The host supplies its coroutine scope, `DashboardService`, `ConnectionStore`, client source, and mandatory dashboard URL admission function; the controller owns and cancels a child scope. Restoration stops after loading the session list; only explicit user intent opens a conversation.
+
+The Android `CelesteViewModel` constructs the controller with `viewModelScope`, Android's connection store, and the `android` client source. `MainActivity` forwards foreground/background events. A future platform host must provide equivalent lifetime and platform dependencies rather than reproduce controller behavior.
 
 The four turn states are intentionally user-facing projections:
 
@@ -45,7 +48,7 @@ Session listing uses a disposable WebSocket. `DashboardClient.resumeSession` als
 
 ### Saved connection
 
-`ConnectionStore` separates non-secret endpoint/account metadata from reusable authentication material. Production uses `AndroidConnectionStore`: metadata is stored in a private preference file, while static tokens or provider session cookies are encrypted with an unlocked-device AES-GCM key in Android Keystore and written under `noBackupFilesDir`. AES-GCM additional authenticated data binds ciphertext to the application ID, descriptor version, normalized endpoint including path prefix, and authentication mode. There is no plaintext fallback.
+`ConnectionStore` is the portable contract separating non-secret endpoint/account metadata from reusable authentication material. Current production uses `AndroidConnectionStore`: metadata is stored in a private preference file, while static tokens or provider session cookies are encrypted with an unlocked-device AES-GCM key in Android Keystore and written under `noBackupFilesDir`. AES-GCM additional authenticated data binds ciphertext to the application ID, descriptor version, normalized endpoint including path prefix, and authentication mode. There is no plaintext fallback.
 
 The Gateway settings surface edits the endpoint directly and applies a change only through an explicit reconnect action. `Sign out` deletes encrypted authentication material and disables automatic restoration while retaining safe endpoint/account prefill. `Forget connection` also deletes the descriptor and Keystore key. Definitive authentication rejection deletes reusable authentication while retaining safe prefill; transient network and server failures preserve the saved connection for explicit Retry.
 
@@ -67,6 +70,14 @@ Provider cookies may rotate while Hermes refreshes a session. Celeste snapshots 
 8. On interruption, disconnect, or foreground recovery, ask the server for authoritative state before continuing.
 
 The dashboard remains the source of truth throughout this flow. Celeste holds a screen projection and unsent draft, not a competing history database.
+
+## Shared and platform ownership
+
+New behavior belongs in portable Kotlin and Compose by default. Protocol models and decoding, session/turn reduction, settings models, transcript presentation, design tokens, and custom screens should not import operating-system APIs.
+
+Platform code owns application entry points, lifecycle bridges, secure storage, system back/navigation, keyboard and insets, pickers, notifications, haptics, and other operating-system integrations. Use constructor-injected contracts at real seams instead of platform checks spread through shared code. A concrete transport may remain target-specific when its dependency is not portable; protocol rules must remain above it.
+
+The current source tree has not yet been moved into Kotlin Multiplatform source sets. When that build boundary is introduced, preserve this ownership rather than changing behavior merely to maximize a shared-code percentage.
 
 ## Session identity
 
@@ -99,4 +110,4 @@ Regression coverage for these invariants belongs in `CelesteViewModelTest` and `
 
 ## Growth rule
 
-Split files when an ownership boundary becomes real. A capability-specific protocol adapter is a likely future seam if the current dashboard client boundary becomes obstructive. Preserve the layer direction: Compose → application state → dashboard/protocol → transport, with connection persistence injected into application state.
+Split files and modules when an ownership boundary becomes real. A capability-specific protocol adapter is a likely future seam if the current dashboard client boundary becomes obstructive. Preserve the layer direction: shared Compose → `CelesteController` → dashboard/protocol → transport, with lifetime, client identity, and connection persistence injected by the platform host.

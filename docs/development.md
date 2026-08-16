@@ -10,7 +10,15 @@ scripts/celeste-env ./gradlew --no-daemon tasks
 
 Use the checked-in Gradle wrapper, not a system Gradle installation. Keep `distributionSha256Sum` pinned in `gradle/wrapper/gradle-wrapper.properties`.
 
-The project currently uses Java 17, a single `:app` module, Kotlin, Jetpack Compose, kotlinx.serialization, coroutines, and OkHttp. Build versions and dependency coordinates belong in Gradle files, not this document.
+The project currently uses Java 17, a single Android `:app` module, Kotlin, Jetpack Compose, kotlinx.serialization, coroutines, and OkHttp. Build versions and dependency coordinates belong in Gradle files, not this document. No iOS target is configured yet.
+
+## Portability boundary
+
+Android is the current build, packaging, and runtime target. New protocol behavior, application state, and custom Compose UI must remain portable unless an operating-system API is essential. `CelesteController` is the present application boundary: it accepts a host scope, service/store contracts, client identity, and URL admission function, while AndroidX `ViewModel`, Activity lifecycle, Keystore, and other Android integrations remain outside it.
+
+The intended Gradle direction is a Kotlin Multiplatform shared module/source set plus a thin Android application module and, later, an iOS host. Validate that split against lint, Kover, screenshot tests, and GitHub APK packaging before moving source. Do not add Apple targets, signing, or store infrastructure without explicit approval.
+
+When adding a feature, put product rules and custom presentation on the portable side. Add a platform adapter only for lifecycle, secure storage, system navigation, keyboard/insets, pickers, notifications, haptics, or another concrete operating-system service. Do not add platform branches to shared state merely because only Android ships today.
 
 ## Host memory constraints
 

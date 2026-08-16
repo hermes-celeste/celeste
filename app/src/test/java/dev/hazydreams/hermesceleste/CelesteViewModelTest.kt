@@ -15,6 +15,7 @@ import dev.hazydreams.hermesceleste.network.GatewayConnectionState
 import dev.hazydreams.hermesceleste.network.GatewayCredential
 import dev.hazydreams.hermesceleste.network.GatewayEvent
 import dev.hazydreams.hermesceleste.network.StoredSession
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -258,8 +259,34 @@ class CelesteViewModelTest {
     }
 
     @Test
+    fun portableControllerUsesTheHostClientSource() = runTest {
+        val gateway = FakeGateway()
+        val dashboard = FakeDashboard(gateway)
+        val controller = CelesteController(
+            parentScope = CoroutineScope(mainDispatcher),
+            dashboard = dashboard,
+            connectionStore = InMemoryConnectionStore(),
+            clientSource = "ios",
+            normalizeDashboardUrl = { it },
+            reconnectDelayMillis = { _, _ -> 0L },
+        )
+        advanceUntilIdle()
+
+        controller.updateDashboardUrl("http://hermes.test:9119")
+        controller.findDashboard()
+        controller.loadSessions()
+        controller.createNewConversation()
+        advanceUntilIdle()
+
+        val createParams = gateway.requests.single { it.first == "session.create" }.second
+        assertEquals("ios", createParams["source"]?.jsonPrimitive?.content)
+        assertEquals("ios", controller.state.value.activeSummary?.source)
+        controller.close()
+    }
+
+    @Test
     fun removesPersistedPrefixFromInflightProjection() {
-        val suffix = CelesteViewModel.unpersistedInflightText(
+        val suffix = CelesteController.unpersistedInflightText(
             inflight = "Already stored and still arriving",
             messages = listOf(ConversationMessage(role = "assistant", text = "Already stored")),
         )

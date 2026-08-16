@@ -104,7 +104,7 @@ class HermesGatewayTest {
         val gateway = gateway()
         gateway.connect()
 
-        val resumed = gateway.resumeStoredSession("stored-42")
+        val resumed = gateway.resumeStoredSession("stored-42", "android")
         assertEquals("runtime-7", resumed.runtimeSessionId)
         assertTrue(resumed.running == false)
 
