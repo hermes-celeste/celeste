@@ -88,6 +88,14 @@ private data class RememberedDashboard(
     val persistenceError: Throwable?,
 )
 
+/**
+ * Owns Celeste's portable application and session state.
+ *
+ * The host must provide a serial UI scope and invoke controller actions and [close] on that
+ * scope's dispatcher. Child work inherits the same dispatcher so reconciliation, event reduction,
+ * and local identity generation stay confined without platform-specific synchronization. Closing
+ * the controller or cancelling its parent scope releases the active gateway and authentication.
+ */
 internal class CelesteController(
     parentScope: CoroutineScope,
     private val dashboard: DashboardService,
@@ -122,8 +130,10 @@ internal class CelesteController(
     private var reconciling = false
     private var currentSessionCanResume = true
     private val bufferedEvents = mutableListOf<GatewayEvent>()
+    private var resourcesReleased = false
 
     init {
+        controllerJob.invokeOnCompletion { releaseResources() }
         restoreSavedConnection()
     }
 
@@ -1149,12 +1159,18 @@ internal class CelesteController(
         activeGateway?.close()
     }
 
-    internal fun close() {
-        controllerJob.cancel()
+    private fun releaseResources() {
+        if (resourcesReleased) return
+        resourcesReleased = true
         connectionJob?.cancel()
         connectionJob = null
         closeGateway()
         dashboard.clearAuthentication()
+    }
+
+    internal fun close() {
+        releaseResources()
+        controllerJob.cancel()
     }
 
     companion object {

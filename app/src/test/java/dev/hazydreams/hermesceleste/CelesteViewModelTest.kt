@@ -18,6 +18,7 @@ import dev.hazydreams.hermesceleste.network.StoredSession
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
@@ -285,6 +286,62 @@ class CelesteViewModelTest {
     }
 
     @Test
+    fun portableControllerUsesTheHostClientSourceWhenResuming() = runTest {
+        val gateway = FakeGateway()
+        val dashboard = FakeDashboard(gateway)
+        val controller = CelesteController(
+            parentScope = CoroutineScope(mainDispatcher),
+            dashboard = dashboard,
+            connectionStore = InMemoryConnectionStore(),
+            clientSource = "ios",
+            normalizeDashboardUrl = { it },
+            reconnectDelayMillis = { _, _ -> 0L },
+        )
+        advanceUntilIdle()
+
+        controller.updateDashboardUrl("http://hermes.test:9119")
+        controller.findDashboard()
+        controller.loadSessions()
+        controller.openSession(dashboard.session)
+        advanceUntilIdle()
+
+        val resumeParams = gateway.requests.single { it.first == "session.resume" }.second
+        assertEquals("stored-42", resumeParams["session_id"]?.jsonPrimitive?.content)
+        assertEquals("ios", resumeParams["source"]?.jsonPrimitive?.content)
+        controller.close()
+    }
+
+    @Test
+    fun cancellingTheParentScopeClosesGatewayAndClearsAuthentication() = runTest {
+        val gateway = FakeGateway()
+        val dashboard = FakeDashboard(gateway)
+        val parentJob = Job()
+        val controller = CelesteController(
+            parentScope = CoroutineScope(mainDispatcher + parentJob),
+            dashboard = dashboard,
+            connectionStore = InMemoryConnectionStore(),
+            clientSource = "android",
+            normalizeDashboardUrl = { it },
+            reconnectDelayMillis = { _, _ -> 0L },
+        )
+        advanceUntilIdle()
+
+        controller.updateDashboardUrl("http://hermes.test:9119")
+        controller.findDashboard()
+        controller.loadSessions()
+        controller.openSession(dashboard.session)
+        advanceUntilIdle()
+        val authenticationClearsBeforeCancellation = dashboard.clearAuthenticationCount
+
+        parentJob.cancel()
+        advanceUntilIdle()
+
+        assertEquals(1, gateway.closeCount)
+        assertEquals(GatewayConnectionState.Closed, gateway.state.value)
+        assertEquals(authenticationClearsBeforeCancellation + 1, dashboard.clearAuthenticationCount)
+    }
+
+    @Test
     fun removesPersistedPrefixFromInflightProjection() {
         val suffix = CelesteController.unpersistedInflightText(
             inflight = "Already stored and still arriving",
@@ -312,6 +369,7 @@ class CelesteViewModelTest {
         private val authRequired: Boolean = false,
     ) : DashboardService {
         var profileFailure: Throwable? = null
+        var clearAuthenticationCount = 0
 
         val session = StoredSession(
             id = "stored-42",
@@ -361,6 +419,10 @@ class CelesteViewModelTest {
         override fun exportAuthentication(baseUrl: String): AuthenticationMaterial? =
             if (authRequired) AuthenticationMaterial("synthetic-session-cookies") else null
 
+        override fun clearAuthentication() {
+            clearAuthenticationCount += 1
+        }
+
         override fun createGateway(
             baseUrl: String,
             credential: GatewayCredential,
@@ -377,6 +439,7 @@ class CelesteViewModelTest {
         val requests = mutableListOf<Pair<String, JsonObject>>()
         var connectCount = 0
         var createCount = 0
+        var closeCount = 0
         var failHealthCheck = false
         var connectFailure: Throwable? = null
         var resumePayload: JsonObject = resumePayload(messages = emptyList(), running = false)
@@ -418,6 +481,7 @@ class CelesteViewModelTest {
         }
 
         override fun close() {
+            closeCount += 1
             mutableState.value = GatewayConnectionState.Closed
         }
 

@@ -26,10 +26,10 @@ The repository does not have shared Kotlin Multiplatform source sets yet. Portab
 - `ConnectionStoreTest` owns bootstrap decisions, secret redaction, Sign out versus Forget semantics, and ciphertext endpoint binding.
 - `BackupExclusionTest` owns named descriptor exclusions across legacy backup, cloud backup, and device transfer rules.
 - `HermesGatewayTest` owns readiness, request correlation, events, endpoint refresh, and disconnect behavior.
-- `CelesteViewModelTest` owns session creation/resume, event reduction, interruption, reconnect, and no-resend invariants; `CelesteViewModelAutoLoginTest` owns cold restore, typed recovery, remembered login, and cleanup transitions.
+- `CelesteViewModelTest` is the current host-unit location for `CelesteController` session creation/resume, event reduction, interruption, reconnect, host lifetime, and no-resend invariants. New portable behavior should exercise the controller directly even while older cases still enter through the thin Android adapter. `CelesteViewModelAutoLoginTest` owns cold restore, typed recovery, remembered login, and cleanup transitions.
 - `LiveHermesDashboardTest` is the opt-in real-server contract.
 
-Add a regression at the lowest layer that owns the failure. Cross-layer lifecycle invariants belong in the ViewModel tests even when a socket symptom exposed them.
+Add a regression at the lowest layer that owns the failure. Portable application and host-lifetime invariants belong to direct controller tests even when a socket symptom exposed them; Android lifecycle wiring belongs to the ViewModel adapter tests.
 
 Mock WebSocket tests use real time with `runBlocking`. Do not convert them to `runTest`: virtual-time advancement can outrun real MockWebServer callbacks and create false timeouts. Pure coroutine/state tests can use `runTest`.
 

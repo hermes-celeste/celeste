@@ -77,6 +77,10 @@ New behavior belongs in portable Kotlin and Compose by default. Protocol models 
 
 Platform code owns application entry points, lifecycle bridges, secure storage, system back/navigation, keyboard and insets, pickers, notifications, haptics, and other operating-system integrations. Use constructor-injected contracts at real seams instead of platform checks spread through shared code. A concrete transport may remain target-specific when its dependency is not portable; protocol rules must remain above it.
 
+`CelesteController` is confined to the serial UI dispatcher supplied by its host. Hosts call its actions and `close()` on that dispatcher; its child coroutines inherit the same context so mutable application state is reduced in order. Cancelling the host scope is also a lifetime boundary: it must close the active gateway and clear in-memory authentication even if the host does not call `close()` separately.
+
+`CelesteRoutes` is currently part of the Android navigation adapter because it installs AndroidX `BackHandler`. The screen composables beneath that route assembly remain portable; a future iOS host will provide the equivalent system-back/navigation bridge rather than importing the Android hook into shared source sets.
+
 The current source tree has not yet been moved into Kotlin Multiplatform source sets. When that build boundary is introduced, preserve this ownership rather than changing behavior merely to maximize a shared-code percentage.
 
 ## Session identity
@@ -106,7 +110,7 @@ Do not substitute one for the other because they happen to match in a test fixtu
 - Interim/final assistant merging and completion deduplication are text- and prefix-based projection rules, not protocol identity guarantees.
 - The synthetic summary for a newly created conversation is not refreshed from `session.list` while that conversation remains active.
 
-Regression coverage for these invariants belongs in `CelesteViewModelTest` and `HermesGatewayTest`; see [`testing.md`](testing.md).
+Regression coverage for these invariants belongs to `CelesteController` and `HermesGateway`; see [`testing.md`](testing.md) for the current host-test locations.
 
 ## Growth rule
 
