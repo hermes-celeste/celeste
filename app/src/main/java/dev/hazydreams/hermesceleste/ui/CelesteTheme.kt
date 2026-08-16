@@ -13,32 +13,27 @@ import androidx.compose.ui.unit.sp
 import dev.hazydreams.hermesceleste.R
 
 val CelestePaper = Color(0xFFFCFCFD)
-val CelestePaperRaised = Color(0xFFFFFFFF)
 val CelesteInk = Color(0xFF111113)
-val CelestePanel = CelestePaperRaised
+val CelestePanel = Color(0xFFFFFFFF)
 val CelestePanelRaised = Color(0xFFF6F6F9)
 val CelesteGlowBlue = Color(0xFF7AA6FF)
 val CelesteBlue = Color(0xFF3756C8)
 val CelesteAmber = Color(0xFFFFC57A)
+val CelesteAmberText = Color(0xFF8A651F)
 val CelesteSuccess = Color(0xFF39B987)
-val CelesteGold = CelesteAmber
-val CelesteGoldText = Color(0xFF8A651F)
-val CelesteCoral = CelesteGoldText
-val CelesteText = CelesteInk
 val CelesteMuted = Color(0xFF6E6E73)
 val CelesteHairline = Color(0xFFE3E3E8)
 val CelesteSoftBlue = Color(0xFFF2F5FC)
-val CelesteSoftCoral = Color(0xFFFFF7EB)
 val CelesteError = Color(0xFFB74747)
 
 private val CelesteColors = lightColorScheme(
     primary = CelesteInk,
     onPrimary = CelestePaper,
-    secondary = CelesteGoldText,
-    tertiary = CelesteGold,
+    secondary = CelesteAmberText,
+    tertiary = CelesteAmber,
     background = CelestePaper,
     onBackground = CelesteInk,
-    surface = CelestePaperRaised,
+    surface = CelestePanel,
     onSurface = CelesteInk,
     surfaceVariant = CelestePanelRaised,
     onSurfaceVariant = CelesteMuted,

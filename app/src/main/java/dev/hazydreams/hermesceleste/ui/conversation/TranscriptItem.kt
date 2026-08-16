@@ -18,13 +18,12 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
-
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import dev.hazydreams.hermesceleste.network.ConversationMessage
+import dev.hazydreams.hermesceleste.ui.CelesteAmberText
 import dev.hazydreams.hermesceleste.ui.CelesteBlue
-import dev.hazydreams.hermesceleste.ui.CelesteGoldText
 import dev.hazydreams.hermesceleste.ui.CelesteInk
 import dev.hazydreams.hermesceleste.ui.CelesteLightTone
 import dev.hazydreams.hermesceleste.ui.CelesteMuted
@@ -137,7 +136,7 @@ private fun MessageLabel(label: String, color: Color, pending: Boolean) {
         )
         if (pending) {
             Spacer(Modifier.size(7.dp))
-            Box(Modifier.size(6.dp).background(CelesteGoldText, CircleShape))
+            Box(Modifier.size(6.dp).background(CelesteAmberText, CircleShape))
         }
     }
 }

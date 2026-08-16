@@ -1141,7 +1141,6 @@ internal class CelesteViewModel(
         connectionJob = null
         closeGateway()
         dashboard.clearAuthentication()
-        super.onCleared()
     }
 
     companion object {

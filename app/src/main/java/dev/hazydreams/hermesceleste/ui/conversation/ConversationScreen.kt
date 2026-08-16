@@ -54,10 +54,10 @@ import dev.hazydreams.hermesceleste.network.ConversationMessage
 import dev.hazydreams.hermesceleste.network.StoredSession
 import dev.hazydreams.hermesceleste.ui.CelesteActivityFrame
 import dev.hazydreams.hermesceleste.ui.CelesteAmber
+import dev.hazydreams.hermesceleste.ui.CelesteAmberText
 import dev.hazydreams.hermesceleste.ui.CelesteBackdrop
 import dev.hazydreams.hermesceleste.ui.CelesteBlue
 import dev.hazydreams.hermesceleste.ui.CelesteError
-import dev.hazydreams.hermesceleste.ui.CelesteGoldText
 import dev.hazydreams.hermesceleste.ui.CelesteHairline
 import dev.hazydreams.hermesceleste.ui.CelesteInk
 import dev.hazydreams.hermesceleste.ui.CelesteLightTone
@@ -300,7 +300,7 @@ private fun ConversationComposer(
                             .height(46.dp),
                         shape = RoundedCornerShape(23.dp),
                         border = BorderStroke(1.dp, CelesteAmber),
-                        colors = ButtonDefaults.outlinedButtonColors(contentColor = CelesteGoldText),
+                        colors = ButtonDefaults.outlinedButtonColors(contentColor = CelesteAmberText),
                         contentPadding = PaddingValues(0.dp),
                     ) {
                         Text("Stop", fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
@@ -350,7 +350,7 @@ private fun turnStateLabel(turnState: TurnState): String = when (turnState) {
 
 private fun turnStateColor(turnState: TurnState): Color = when (turnState) {
     TurnState.Idle -> CelesteBlue
-    TurnState.Running -> CelesteGoldText
+    TurnState.Running -> CelesteAmberText
     TurnState.Synchronizing -> CelesteBlue
     TurnState.Reconnecting -> CelesteError
 }

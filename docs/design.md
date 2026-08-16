@@ -44,15 +44,7 @@ Do not duplicate hexadecimal values here. Change tokens in code and validate aff
 - Standard user messages use a quiet rounded bubble without a speaker label. Standard assistant responses are plain transcript text without a speaker label, vertical rail, or legacy response container.
 - Tool and system events remain labeled because their role is not inferable from conversational position; render them as contained surfaces.
 - Active-turn framing derives from authoritative `TurnState`, remains clipped to the conversation viewport, and preserves a static distinction when system animation is disabled.
-- The page background is flat cloud white. Do not restore the retired gold top gradient or corner ornament.
-
-## Editorial concept anchor
-
-![Recovered Celeste editorial connection concept](references/celeste-editorial-concept.png)
-
-This recovered connection screen is the selected early direction that established Celeste's editorial warmth, serif-led hierarchy, cobalt and coral accents, generous negative space, and restrained halo geometry. It is an iteration anchor, not a claim that the current production UI implements this composition.
-
-The executable source is `app/src/screenshotTest/kotlin/dev/hazydreams/hermesceleste/CelesteEditorialConceptScreenshotTest.kt`. Its accepted screenshot reference is the reproducibility check; `references/celeste-editorial-concept.png` is the stable human-review artifact. Keep the original concept intact. Create additional named concept previews and reference images when exploring revisions, then deliberately promote accepted choices into production components and tokens.
+- The page background is flat cloud white; light belongs to contained surfaces and active states.
 
 ## Interaction states
 
