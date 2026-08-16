@@ -17,6 +17,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      id-token: write
     steps:
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -37,8 +38,8 @@ jobs:
             "platforms;android-37.0" \
             "build-tools;37.0.0"
 
-      - name: Run unit tests and lint
-        run: ./gradlew --no-daemon testDebugUnitTest lintDebug
+      - name: Run unit tests, coverage, and lint
+        run: ./gradlew --no-daemon testDebugUnitTest :app:koverXmlReportDebug lintDebug
 
       - name: Validate Compose screenshots
         run: ./gradlew --no-daemon validateDebugScreenshotTest
@@ -46,6 +47,16 @@ jobs:
       - name: Verify debug packaging on pull requests
         if: github.event_name == 'pull_request'
         run: ./gradlew --no-daemon assembleDebug
+
+      - name: Upload unit coverage to Codecov
+        uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v7.0.0
+        with:
+          disable_search: true
+          fail_ci_if_error: false
+          files: app/build/reports/kover/reportDebug.xml
+          flags: unit
+          name: android-unit
+          use_oidc: true
 
   publish-test-apk:
     name: Publish latest test APK

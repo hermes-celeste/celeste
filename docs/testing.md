@@ -87,6 +87,8 @@ Base-path-prefixed dashboard routing is supported in source but does not yet hav
 
 `.github/workflows/android.yml` runs the repository checks on pull requests. Pull requests must pass unit tests, lint, screenshot validation, and debug APK assembly without publishing an artifact.
 
+The `Verify` job generates `app/build/reports/kover/reportDebug.xml` from local JVM unit tests and uploads it to Codecov using GitHub OIDC. Codecov project and patch statuses are informational, and its pull-request comment is the primary coverage summary; coverage does not gate merges. The report includes the full application source, including Compose UI, but Kover does not measure screenshot or device execution.
+
 A successful `main` run, including a manually dispatched run, publishes `Hermes-Celeste-latest.apk` as the current test build. The workflow uploads the new APK before deleting older artifacts with the same name, then verifies that exactly one remains. A failed build cannot remove the last known-good package. GitHub requires artifacts to expire; the current APK uses the maximum 90-day retention and requires GitHub sign-in to download.
 
 The test APK is a debug build signed with a dedicated test-only identity, not a release or store artifact. Install it only for project testing. Each successful build uses the same application ID and test signing identity so Android can update-install it over an earlier GitHub Actions build while preserving application data. A locally built debug APK has a different signing identity and cannot update a GitHub-built installation.

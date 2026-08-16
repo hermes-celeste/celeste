@@ -3,6 +3,7 @@ plugins {
     id("com.android.compose.screenshot")
     id("org.jetbrains.kotlin.plugin.compose")
     id("org.jetbrains.kotlin.plugin.serialization")
+    id("org.jetbrains.kotlinx.kover")
 }
 
 val testKeystorePath = providers.environmentVariable("CELESTE_TEST_KEYSTORE_PATH").orNull
