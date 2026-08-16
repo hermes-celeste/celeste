@@ -33,7 +33,7 @@ scripts/celeste-env ./gradlew --no-daemon validateDebugScreenshotTest
 
 Use [`testing.md`](testing.md) to select the checks required for a change. GitHub Actions owns APK assembly and test-build signing; do not create distributable APKs locally.
 
-GitHub Actions uses the checked-in Gradle wrapper directly on a standard Ubuntu runner. Workflow actions must be limited to necessary official actions and pinned to immutable commit SHAs. The CI and current-test-APK behavior is defined in [`testing.md`](testing.md).
+GitHub Actions uses the checked-in Gradle wrapper directly on a standard Ubuntu runner. Workflow actions must be limited to necessary official actions and pinned to immutable commit SHAs. Dependabot checks Gradle and GitHub Actions weekly, groups minor and patch updates per ecosystem, and leaves major updates isolated for review. The CI and current-test-APK behavior is defined in [`testing.md`](testing.md).
 
 ## Change workflow
 
