@@ -6,7 +6,8 @@ Celeste is currently a single-module Android application:
 
 - `MainActivity.kt` owns Activity setup, ViewModel wiring, and lifecycle forwarding.
 - `CelesteViewModel.kt` owns application/session state, turn reduction, lifecycle recovery, and user actions.
-- `ui/CelesteRoutes.kt` owns top-level destination selection and the shared screen backdrop.
+- `ui/CelesteRoutes.kt` owns top-level destination selection.
+- `ui/CelesteSurfaces.kt` owns the shared backdrop, contained-light surfaces, and reusable state affordances.
 - `ui/gateway/`, `ui/sessions/`, and `ui/conversation/` own their existing screen areas; transcript row identity and rendering stay with conversation UI.
 - `network/DashboardClient.kt` owns dashboard HTTP operations, authentication setup, profile/session discovery, and gateway construction.
 - `network/HermesGateway.kt` is a thin persistent JSON-RPC transport.

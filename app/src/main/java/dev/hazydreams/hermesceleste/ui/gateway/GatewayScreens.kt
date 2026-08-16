@@ -26,6 +26,7 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
@@ -52,10 +53,10 @@ import androidx.compose.ui.unit.sp
 import dev.hazydreams.hermesceleste.ConnectionPhase
 import dev.hazydreams.hermesceleste.connection.SavedAuthMode
 import dev.hazydreams.hermesceleste.network.DashboardProbeResult
+import dev.hazydreams.hermesceleste.ui.CelesteAmberText
 import dev.hazydreams.hermesceleste.ui.CelesteBackdrop
 import dev.hazydreams.hermesceleste.ui.CelesteBlue
 import dev.hazydreams.hermesceleste.ui.CelesteError
-import dev.hazydreams.hermesceleste.ui.CelesteGoldText
 import dev.hazydreams.hermesceleste.ui.CelesteHairline
 import dev.hazydreams.hermesceleste.ui.CelesteInk
 import dev.hazydreams.hermesceleste.ui.CelesteLightTone
@@ -67,8 +68,6 @@ import dev.hazydreams.hermesceleste.ui.CelestePaper
 import dev.hazydreams.hermesceleste.ui.CelesteSectionLabel
 import dev.hazydreams.hermesceleste.ui.CelesteSuccess
 import dev.hazydreams.hermesceleste.ui.CelesteSurface
-import dev.hazydreams.hermesceleste.ui.CelesteWordmark
-import dev.hazydreams.hermesceleste.ui.EditorialDivider
 import dev.hazydreams.hermesceleste.ui.StatusMessage
 
 internal data class GatewaySettingsUiState(
@@ -106,9 +105,9 @@ internal fun ConnectionLoadingScreen() {
                 .padding(horizontal = 28.dp, vertical = 38.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
-            CelesteWordmark(trailing = "PRIVATE", trailingColor = CelesteGoldText)
+            NavigationHeader(title = "Celeste", onBack = null)
             Spacer(Modifier.weight(1f))
-            CelesteHalo()
+            CelesteOrb(modifier = Modifier.size(84.dp))
             Spacer(Modifier.height(26.dp))
             Text(
                 text = "Finding your Hermes",
@@ -136,7 +135,7 @@ internal fun ConnectionUnavailableScreen(
                 .navigationBarsPadding()
                 .padding(horizontal = 28.dp, vertical = 38.dp),
         ) {
-            CelesteWordmark(trailing = "OFFLINE", trailingColor = CelesteError)
+            NavigationHeader(title = "Celeste", onBack = null)
             Spacer(Modifier.weight(0.72f))
             Text(
                 text = "Hermes is\nout of reach.",
@@ -185,7 +184,7 @@ internal fun SettingsScreen(
                 .navigationBarsPadding()
                 .padding(horizontal = 20.dp, vertical = 28.dp),
         ) {
-            EditorialHeader(title = "Settings", onBack = onBack)
+            NavigationHeader(title = "Settings", onBack = onBack)
             Spacer(Modifier.height(34.dp))
             CelesteSectionLabel("Connection")
             Spacer(Modifier.height(12.dp))
@@ -260,7 +259,7 @@ internal fun GatewaySettingsScreen(
                     horizontalAlignment = Alignment.CenterHorizontally,
                 ) {
                     Spacer(Modifier.height(34.dp))
-                    CelesteHalo()
+                    CelesteOrb(modifier = Modifier.size(84.dp))
                     Spacer(Modifier.height(16.dp))
                     Text(
                         text = "Your Hermes.",
@@ -278,7 +277,7 @@ internal fun GatewaySettingsScreen(
                     Spacer(Modifier.height(42.dp))
                 }
             } else {
-                EditorialHeader(title = "Gateway", onBack = onBack)
+                NavigationHeader(title = "Gateway", onBack = onBack)
                 Spacer(Modifier.height(32.dp))
             }
 
@@ -451,7 +450,7 @@ internal fun GatewaySettingsScreen(
 
             if (savedAuthMode != null) {
                 Spacer(Modifier.height(34.dp))
-                EditorialDivider()
+                HorizontalDivider(thickness = 1.dp, color = CelesteHairline)
                 TextButton(
                     onClick = { confirmForgetConnection = true },
                     modifier = Modifier.fillMaxWidth().padding(top = 10.dp),
@@ -516,7 +515,7 @@ internal fun GatewaySettingsScreen(
 }
 
 @Composable
-private fun EditorialHeader(title: String, onBack: (() -> Unit)?) {
+private fun NavigationHeader(title: String, onBack: (() -> Unit)?) {
     Box(modifier = Modifier.fillMaxWidth()) {
         Text(
             text = title,
@@ -550,9 +549,9 @@ private fun connectionStatusLabel(phase: ConnectionPhase): String = when (phase)
 
 private fun connectionStatusColor(phase: ConnectionPhase): Color = when (phase) {
     ConnectionPhase.Connected -> CelesteSuccess
-    ConnectionPhase.CheckingSavedConnection, ConnectionPhase.Restoring -> CelesteGoldText
+    ConnectionPhase.CheckingSavedConnection, ConnectionPhase.Restoring -> CelesteAmberText
     ConnectionPhase.RestoreFailed -> CelesteError
-    ConnectionPhase.AuthenticationRequired -> CelesteGoldText
+    ConnectionPhase.AuthenticationRequired -> CelesteAmberText
     ConnectionPhase.ManualSetup -> CelesteMuted
 }
 
@@ -643,9 +642,4 @@ private fun CelestePrimaryButton(
             Text("↗", color = if (enabled) CelestePaper else CelesteMuted, fontSize = 17.sp)
         }
     }
-}
-
-@Composable
-private fun CelesteHalo() {
-    CelesteOrb(modifier = Modifier.size(84.dp))
 }

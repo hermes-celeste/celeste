@@ -75,13 +75,9 @@ The test lists and resumes a real stored session. It skips when the URL is absen
 
 ## APK and device cadence
 
-Do not assemble distributable APKs locally. Use host tests per change; GitHub Actions verifies packaging on pull requests and produces the consistently signed test APK only from successful `main` runs. At meaningful user-facing milestones, download that GitHub artifact and update-install it on a real device while preserving app data:
+Do not assemble, retrieve, inspect, or install APKs in agent workflows. Use host tests per change; GitHub Actions verifies packaging on pull requests and produces the consistently signed test APK only from successful `main` runs. The project owner retrieves that artifact from GitHub and handles real-device installation and updates.
 
-```bash
-scripts/celeste-env adb install -r /path/to/Hermes-Celeste-latest.apk
-```
-
-Use a real device for Android-only behavior such as lifecycle transitions, IME/insets, system back, permissions, network changes, launcher assets, and performance. Record the flows and device conditions exercised rather than reporting “tested on device” without specifics.
+Real-device feedback remains valuable for Android-only behavior such as lifecycle transitions, IME/insets, system back, permissions, network changes, launcher assets, and performance. Record owner-reported flows and device conditions rather than reporting “tested on device” without specifics.
 
 There is currently no `app/src/androidTest` suite. The configured instrumentation runner and connected-device tasks do not constitute device coverage; report Android runtime behavior as untested unless it was explicitly exercised.
 

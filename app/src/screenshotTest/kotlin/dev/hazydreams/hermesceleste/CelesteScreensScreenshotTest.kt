@@ -31,7 +31,7 @@ private val previewSessions = listOf(
     StoredSession(
         id = "visual-layer",
         title = "Visual direction and interaction language",
-        preview = "A luminous editorial interface with warm restraint, clear hierarchy, and atmosphere that serves the content.",
+        preview = "A luminous contained-light interface with clear hierarchy and atmosphere attached to state.",
         startedAt = 1_786_017_600.0,
         messageCount = 12,
         source = "desktop",
@@ -257,7 +257,7 @@ fun SessionListPreviewScreenshot() {
 }
 
 @PreviewTest
-@Preview(name = "13 · Empty conversations", widthDp = 390, heightDp = 844, showBackground = true)
+@Preview(name = "14 · Empty conversations", widthDp = 390, heightDp = 844, showBackground = true)
 @Composable
 fun EmptySessionListPreviewScreenshot() {
     HermesCelesteTheme {
@@ -276,7 +276,7 @@ fun EmptySessionListPreviewScreenshot() {
 }
 
 @PreviewTest
-@Preview(name = "04 · New chat", widthDp = 390, heightDp = 844, showBackground = true)
+@Preview(name = "04 · New conversation", widthDp = 390, heightDp = 844, showBackground = true)
 @Composable
 fun NewConversationPreviewScreenshot() {
     HermesCelesteTheme {
