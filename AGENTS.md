@@ -63,7 +63,7 @@ scripts/celeste-env ./gradlew --no-daemon lintDebug
 scripts/celeste-env ./gradlew --no-daemon validateDebugScreenshotTest
 ```
 
-GitHub Actions owns APK assembly and test-build signing; do not create distributable APKs locally. Choose checks by change boundary; see [`docs/testing.md`](docs/testing.md). Always finish with `git diff --check`.
+GitHub Actions owns the full regression matrix, APK assembly, and test-build signing. Locally, run only the focused tests, lint, or screenshot previews that directly exercise the changed boundary; do not reproduce the entire CI workflow before pushing. Broaden local verification only when a change genuinely spans several boundaries or while diagnosing a CI failure. Do not create distributable APKs locally; see [`docs/testing.md`](docs/testing.md). Always finish with `git diff --check`.
 
 ## Critical rules
 
