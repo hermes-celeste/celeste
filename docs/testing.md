@@ -7,13 +7,19 @@ Match verification to what changed:
 | Change | Required evidence |
 | --- | --- |
 | Documentation only | Link/terminology audit and `git diff --check` |
-| Portable controller, state, or protocol logic | Focused unit test during iteration, then `testDebugUnitTest` |
-| URL, authentication, HTTP, or WebSocket behavior | MockWebServer/gateway regression plus `testDebugUnitTest`; use the live contract when server admission or shape changed |
-| Compose layout, copy, color, or interaction state | Relevant unit checks plus host screenshot review and `validateDebugScreenshotTest` |
+| Portable controller, state, or protocol logic | Focused unit tests for the affected controller, state, or protocol behavior |
+| URL, authentication, HTTP, or WebSocket behavior | Focused MockWebServer/gateway regressions; use the live contract when server admission or shape changed |
+| Compose layout, copy, color, or interaction state | Relevant unit checks plus focused host rendering, visual review, and validation of the affected previews |
 | Manifest, resources, launcher, packaging, or install behavior | Local `lintDebug`, GitHub Actions packaging, and device verification when behavior crosses onto Android |
-| Release milestone | Local unit tests, lint, screenshots, a successful GitHub-built APK, and meaningful real-device flows |
+| Release milestone | Targeted local evidence, a successful full GitHub Actions run and GitHub-built APK, and meaningful real-device flows |
 
 Always run `git diff --check`. Disclose any changed runtime surface that was not exercised.
+
+## Local scope versus CI
+
+Local verification is intentionally targeted. During implementation, run only the test class, preview, lint task, or contract that owns the behavior being changed. For visual work, render and validate the affected previews, inspect them, and update accepted references only after project-owner approval.
+
+Do not run the complete GitHub Actions matrix locally as a routine pre-push or post-edit ritual. GitHub Actions owns full unit, lint, screenshot, and packaging regression after each push. Run broader local suites only when a change crosses several boundaries, shared infrastructure makes focused selection unreliable, or a CI failure needs local diagnosis.
 
 ## Unit and protocol tests
 
@@ -33,7 +39,7 @@ Add a regression at the lowest layer that owns the failure. Portable application
 
 Mock WebSocket tests use real time with `runBlocking`. Do not convert them to `runTest`: virtual-time advancement can outrun real MockWebServer callbacks and create false timeouts. Pure coroutine/state tests can use `runTest`.
 
-Run all local unit tests with:
+When a change genuinely warrants the complete local unit suite, run:
 
 ```bash
 scripts/celeste-env ./gradlew --no-daemon testDebugUnitTest
@@ -41,9 +47,15 @@ scripts/celeste-env ./gradlew --no-daemon testDebugUnitTest
 
 ## Host-rendered Compose screenshots
 
-The screenshot scenarios live in `app/src/screenshotTest`; accepted PNGs live in `app/src/screenshotTestDebug/reference`. The current matrix covers Gateway setup, password sign-in, Settings and connected Gateway management, saved-connection restoration and recovery, conversation listing, a blank new conversation, composing, streaming, completion, and reconnection.
+The screenshot scenarios live in `app/src/screenshotTest`; accepted PNGs live in `app/src/screenshotTestDebug/reference`. The current matrix covers Gateway setup, password sign-in, Settings and connected Gateway management, saved-connection restoration and recovery, conversation listing, a blank new conversation, composing, rich Markdown at normal and narrow phone widths, jump-to-latest navigation, streaming, completion, and reconnection.
 
-Validate accepted references:
+Validate one affected preview during iteration:
+
+```bash
+scripts/celeste-env ./gradlew --no-daemon validateDebugScreenshotTest --tests '*PreviewScreenshot*'
+```
+
+When broad local screenshot validation is warranted, run:
 
 ```bash
 scripts/celeste-env ./gradlew --no-daemon validateDebugScreenshotTest

@@ -63,7 +63,7 @@ scripts/celeste-env ./gradlew --no-daemon lintDebug
 scripts/celeste-env ./gradlew --no-daemon validateDebugScreenshotTest
 ```
 
-GitHub Actions owns APK assembly and test-build signing; do not create distributable APKs locally. Choose checks by change boundary; see [`docs/testing.md`](docs/testing.md). Always finish with `git diff --check`.
+GitHub Actions owns the full regression matrix, APK assembly, and test-build signing. Locally, run only the focused tests, lint, or screenshot previews that directly exercise the changed boundary; do not reproduce the entire CI workflow before pushing. Broaden local verification only when a change genuinely spans several boundaries or while diagnosing a CI failure. Do not create distributable APKs locally; see [`docs/testing.md`](docs/testing.md). Always finish with `git diff --check`.
 
 ## Critical rules
 
@@ -71,7 +71,7 @@ GitHub Actions owns APK assembly and test-build signing; do not create distribut
 - The Hermes dashboard owns profiles, sessions, messages, and capabilities. Do not create a second mobile session store or synchronization layer; see [`docs/architecture.md`](docs/architecture.md).
 - Keep transport, authentication, protocol models, and session state independent of Compose.
 - Keep protocol behavior, application state, and custom Compose UI free of Android, AndroidX, and JVM APIs; inject narrow platform adapters where operating-system integration is real.
-- Never log, commit, fixture, or screenshot credentials or private conversation data. Persist only supported reusable authentication through the Keystore-backed connection store; raw passwords and private conversation data remain memory-only. See [`docs/security.md`](docs/security.md).
+- Never log, commit, fixture, or include credentials or private conversation data in repository-owned screenshots. Celeste must not persist private conversation content or transmit it anywhere except the user-configured Hermes dashboard. Explicit user-initiated copying of selected transcript text or code to the device clipboard is allowed and is not application persistence or exfiltration. Persist only supported reusable authentication through the Keystore-backed connection store; raw passwords remain process-memory only. See [`docs/security.md`](docs/security.md).
 - The source repository is public. Do not publish releases, sign distributable builds, create store infrastructure, or expose credentials/private user data; see [`docs/development.md`](docs/development.md) and [`docs/security.md`](docs/security.md).
 - Build custom application UI with Kotlin and Compose APIs that can move to Compose Multiplatform. Keep native system integration target-specific and do not introduce a WebView UI.
 - Do not accept a visual change by updating screenshot references without project-owner review; see [`docs/testing.md`](docs/testing.md).

@@ -49,6 +49,8 @@ The manifest disables backup. `backup_rules.xml` and `data_extraction_rules.xml`
 
 Password fields are visually masked, but the app does not currently set `FLAG_SECURE`. Masking does not provide storage encryption, screenshot blocking, clipboard protection, or recording protection. Do not use real credentials in review screenshots or recordings.
 
+Celeste must not persist private conversation content or transmit it outside the user-configured Hermes dashboard. Normal transcript selection and the explicit code-block Copy action may place only the content the user chose onto the device clipboard. That user-initiated, device-local handoff is allowed; it is not Celeste persistence or exfiltration. Never write conversation content to the clipboard automatically, never place credentials there, and do not retain a second application-owned copy after the operation. Clipboard lifetime, history, and access after an explicit copy are controlled by the operating system and the device owner.
+
 Do not log or fixture:
 
 - message bodies or assistant output;

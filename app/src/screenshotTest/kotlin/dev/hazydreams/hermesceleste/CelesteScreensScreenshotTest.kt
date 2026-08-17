@@ -321,7 +321,7 @@ fun StreamingPreviewScreenshot() {
                     id = "preview-user-2",
                 ),
             ),
-            streamingText = "The socket now stays deliberately thin. A lifecycle-aware session controller owns retries, refreshes its one-use ticket, resumes the authoritative history, and then",
+            streamingText = "The socket now stays **deliberately thin**. A lifecycle-aware session controller owns retries, resumes authoritative history, and then `reconciles",
             turnState = TurnState.Running,
         )
     }
@@ -351,6 +351,44 @@ fun CompletedPreviewScreenshot() {
 }
 
 @PreviewTest
+@Preview(name = "15 · Rich transcript", widthDp = 390, heightDp = 844, showBackground = true)
+@Composable
+fun RichTranscriptPreviewScreenshot() {
+    HermesCelesteTheme {
+        PreviewConversation(
+            messages = richPreviewMessages,
+            turnState = TurnState.Idle,
+        )
+    }
+}
+
+@PreviewTest
+@Preview(name = "16 · Rich transcript narrow", widthDp = 320, heightDp = 844, showBackground = true)
+@Composable
+fun RichTranscriptNarrowPreviewScreenshot() {
+    HermesCelesteTheme {
+        PreviewConversation(
+            messages = richPreviewMessages,
+            turnState = TurnState.Idle,
+        )
+    }
+}
+
+@PreviewTest
+@Preview(name = "17 · Jump to latest", widthDp = 390, heightDp = 844, showBackground = true)
+@Composable
+fun JumpToLatestPreviewScreenshot() {
+    HermesCelesteTheme {
+        PreviewConversation(
+            messages = previewMessages + richPreviewMessages,
+            turnState = TurnState.Idle,
+            initiallyFollowLatest = false,
+            jumpToLatestVisible = true,
+        )
+    }
+}
+
+@PreviewTest
 @Preview(name = "08 · Reconnecting", widthDp = 390, heightDp = 844, showBackground = true)
 @Composable
 fun ReconnectingPreviewScreenshot() {
@@ -363,6 +401,35 @@ fun ReconnectingPreviewScreenshot() {
     }
 }
 
+private val richPreviewMessages = listOf(
+    ConversationMessage(
+        role = "user",
+        text = "Show me **the result** with the important details.",
+        id = "preview-rich-user",
+    ),
+    ConversationMessage(
+        role = "assistant",
+        text = """
+            ## Release check
+
+            > Ready after review, with the raw source preserved.
+
+            - **Markdown** renders natively
+            - Links stay [safe](https://example.com)
+            - [x] Streaming remains readable
+
+            ```kotlin
+            val stableProjection = reconcile(snapshot, pendingEvents)
+            ```
+
+            | State | Result | Owner | Notes |
+            | --- | --- | --- | --- |
+            | Reconnect | Tested | Client | Stable |
+        """.trimIndent(),
+        id = "preview-rich-assistant",
+    ),
+)
+
 @Composable
 private fun PreviewConversation(
     summary: StoredSession = previewSessions[1],
@@ -371,6 +438,8 @@ private fun PreviewConversation(
     draft: String = "",
     turnState: TurnState,
     errorMessage: String? = null,
+    initiallyFollowLatest: Boolean = true,
+    jumpToLatestVisible: Boolean? = null,
 ) {
     ConversationScreen(
         summary = summary,
@@ -385,5 +454,7 @@ private fun PreviewConversation(
         onInterrupt = {},
         onReconnect = {},
         onBack = {},
+        initiallyFollowLatest = initiallyFollowLatest,
+        jumpToLatestVisibleOverride = jumpToLatestVisible,
     )
 }

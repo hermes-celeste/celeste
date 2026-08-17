@@ -32,6 +32,8 @@ import dev.hazydreams.hermesceleste.ui.CelesteSurface
 
 internal const val STREAMING_TRANSCRIPT_KEY = "streaming:assistant"
 
+internal fun streamingTranscriptKey(sessionId: String): String = "$STREAMING_TRANSCRIPT_KEY:$sessionId"
+
 internal fun transcriptItemKeys(messages: List<ConversationMessage>): List<String> {
     val occurrences = mutableMapOf<String, Int>()
     return messages.mapIndexed { index, message ->
@@ -45,16 +47,16 @@ internal fun transcriptItemKeys(messages: List<ConversationMessage>): List<Strin
 }
 
 @Composable
-internal fun MessageBubble(message: ConversationMessage) {
+internal fun MessageBubble(message: ConversationMessage, streaming: Boolean = false) {
     when (message.role) {
-        "user" -> UserMessage(message)
-        "assistant" -> AssistantMessage(message)
+        "user" -> UserMessage(message, streaming)
+        "assistant" -> AssistantMessage(message, streaming)
         else -> ToolMessage(message)
     }
 }
 
 @Composable
-private fun UserMessage(message: ConversationMessage) {
+private fun UserMessage(message: ConversationMessage, streaming: Boolean) {
     Row(
         modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.End,
@@ -66,10 +68,9 @@ private fun UserMessage(message: ConversationMessage) {
                 .padding(horizontal = 16.dp, vertical = 13.dp),
         ) {
             if (message.text.isNotBlank()) {
-                Text(
-                    text = message.text,
-                    color = CelesteInk,
-                    style = MaterialTheme.typography.bodyMedium,
+                RichMarkdown(
+                    content = message.text,
+                    streaming = streaming,
                 )
             }
         }
@@ -77,17 +78,16 @@ private fun UserMessage(message: ConversationMessage) {
 }
 
 @Composable
-private fun AssistantMessage(message: ConversationMessage) {
+private fun AssistantMessage(message: ConversationMessage, streaming: Boolean) {
     Column(
         modifier = Modifier
             .fillMaxWidth()
             .padding(horizontal = 2.dp, vertical = 2.dp),
     ) {
         if (message.text.isNotBlank()) {
-            Text(
-                text = message.text,
-                color = CelesteInk,
-                style = MaterialTheme.typography.bodyMedium,
+            RichMarkdown(
+                content = message.text,
+                streaming = streaming,
             )
         }
     }

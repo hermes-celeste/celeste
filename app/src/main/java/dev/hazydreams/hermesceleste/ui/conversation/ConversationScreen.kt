@@ -2,6 +2,8 @@ package dev.hazydreams.hermesceleste.ui.conversation
 
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.animateScrollBy
+import androidx.compose.foundation.interaction.collectIsDraggedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -23,6 +25,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
@@ -31,6 +34,8 @@ import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
@@ -39,10 +44,21 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.derivedStateOf
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.StrokeJoin
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.graphics.vector.path
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
@@ -66,6 +82,7 @@ import dev.hazydreams.hermesceleste.ui.CelestePanel
 import dev.hazydreams.hermesceleste.ui.CelestePaper
 import dev.hazydreams.hermesceleste.ui.CelesteSurface
 import dev.hazydreams.hermesceleste.ui.StatusMessage
+import kotlinx.coroutines.launch
 
 @Composable
 internal fun ConversationScreen(
@@ -81,11 +98,26 @@ internal fun ConversationScreen(
     onInterrupt: () -> Unit,
     onReconnect: () -> Unit,
     onBack: () -> Unit,
+    initiallyFollowLatest: Boolean = true,
+    jumpToLatestVisibleOverride: Boolean? = null,
 ) {
     val listState = rememberLazyListState()
+    val coroutineScope = rememberCoroutineScope()
+    val isReaderDragging = listState.interactionSource.collectIsDraggedAsState()
+    var followLatest by remember(summary.id, initiallyFollowLatest) {
+        mutableStateOf(initiallyFollowLatest)
+    }
     val focusManager = LocalFocusManager.current
     val transcriptKeys = remember(messages) { transcriptItemKeys(messages) }
     val visibleMessageCount = messages.size + if (streamingText.isNotBlank()) 1 else 0
+    val jumpToLatestVisible = remember(listState, visibleMessageCount) {
+        derivedStateOf {
+            shouldShowJumpToLatest(
+                canScrollForward = listState.canScrollForward,
+                visibleMessageCount = visibleMessageCount,
+            )
+        }
+    }
     val safeDrawingInsets = WindowInsets.safeDrawing
     val headerTopPadding = maxOf(
         22.dp,
@@ -93,8 +125,22 @@ internal fun ConversationScreen(
     )
     val activeTurn = turnState == TurnState.Running || turnState == TurnState.Synchronizing
 
+    LaunchedEffect(listState, summary.id) {
+        snapshotFlow {
+            ScrollFollowObservation(
+                readerDragging = isReaderDragging.value,
+                scrolledBackward = listState.lastScrolledBackward,
+                canScrollForward = listState.canScrollForward,
+            )
+        }.collect { observation ->
+            followLatest = updatedFollowLatest(followLatest, observation)
+        }
+    }
+
     LaunchedEffect(visibleMessageCount, streamingText.length) {
-        if (visibleMessageCount > 0) listState.animateScrollToItem(visibleMessageCount - 1)
+        latestTranscriptIndex(visibleMessageCount)?.let { latestIndex ->
+            if (followLatest) listState.animateScrollToLatest(latestIndex)
+        }
     }
 
     CelesteBackdrop {
@@ -127,27 +173,45 @@ internal fun ConversationScreen(
                     }
                 }
 
-                LazyColumn(
-                    state = listState,
+                Box(
                     modifier = Modifier
                         .weight(1f)
                         .fillMaxWidth(),
-                    contentPadding = PaddingValues(horizontal = 20.dp, vertical = 22.dp),
-                    verticalArrangement = Arrangement.spacedBy(20.dp),
                 ) {
-                    itemsIndexed(
-                        items = messages,
-                        key = { index, _ -> transcriptKeys[index] },
-                    ) { _, message ->
-                        MessageBubble(message)
-                    }
-                    if (streamingText.isNotBlank()) {
-                        item(key = STREAMING_TRANSCRIPT_KEY) {
-                            MessageBubble(
-                                ConversationMessage(role = "assistant", text = streamingText, pending = true),
-                            )
+                    LazyColumn(
+                        state = listState,
+                        modifier = Modifier.fillMaxSize(),
+                        contentPadding = PaddingValues(horizontal = 20.dp, vertical = 22.dp),
+                        verticalArrangement = Arrangement.spacedBy(20.dp),
+                    ) {
+                        itemsIndexed(
+                            items = messages,
+                            key = { index, _ -> transcriptKeys[index] },
+                        ) { _, message ->
+                            MessageBubble(message)
+                        }
+                        if (streamingText.isNotBlank()) {
+                            item(key = streamingTranscriptKey(summary.id)) {
+                                MessageBubble(
+                                    ConversationMessage(role = "assistant", text = streamingText, pending = true),
+                                    streaming = true,
+                                )
+                            }
                         }
                     }
+
+                    JumpToLatestButton(
+                        visible = jumpToLatestVisibleOverride ?: jumpToLatestVisible.value,
+                        onClick = {
+                            followLatest = true
+                            latestTranscriptIndex(visibleMessageCount)?.let { latestIndex ->
+                                coroutineScope.launch { listState.animateScrollToLatest(latestIndex) }
+                            }
+                        },
+                        modifier = Modifier
+                            .align(Alignment.BottomCenter)
+                            .padding(bottom = 12.dp),
+                    )
                 }
 
                 ConversationComposer(
@@ -155,11 +219,82 @@ internal fun ConversationScreen(
                     turnState = turnState,
                     onDraftChange = onDraftChange,
                     onSend = {
+                        followLatest = true
                         onSend()
                         focusManager.clearFocus()
                     },
                     onInterrupt = onInterrupt,
                     onReconnect = onReconnect,
+                )
+            }
+        }
+    }
+}
+
+internal fun latestTranscriptIndex(visibleMessageCount: Int): Int? =
+    (visibleMessageCount - 1).takeIf { it >= 0 }
+
+internal data class ScrollFollowObservation(
+    val readerDragging: Boolean,
+    val scrolledBackward: Boolean,
+    val canScrollForward: Boolean,
+)
+
+internal fun updatedFollowLatest(
+    current: Boolean,
+    observation: ScrollFollowObservation,
+): Boolean = when {
+    observation.readerDragging && observation.scrolledBackward -> false
+    !observation.canScrollForward -> true
+    else -> current
+}
+
+internal fun remainingScrollToLatest(
+    itemOffset: Int,
+    itemSize: Int,
+    viewportEndOffset: Int,
+    afterContentPadding: Int,
+): Int = (itemOffset + itemSize + afterContentPadding - viewportEndOffset).coerceAtLeast(0)
+
+private suspend fun LazyListState.animateScrollToLatest(latestIndex: Int) {
+    animateScrollToItem(latestIndex)
+    val latestItem = layoutInfo.visibleItemsInfo.firstOrNull { it.index == latestIndex } ?: return
+    val remaining = remainingScrollToLatest(
+        itemOffset = latestItem.offset,
+        itemSize = latestItem.size,
+        viewportEndOffset = layoutInfo.viewportEndOffset,
+        afterContentPadding = layoutInfo.afterContentPadding,
+    )
+    if (remaining > 0) animateScrollBy(remaining.toFloat())
+}
+
+internal fun shouldShowJumpToLatest(
+    canScrollForward: Boolean,
+    visibleMessageCount: Int,
+): Boolean = canScrollForward && visibleMessageCount > 0
+
+@Composable
+private fun JumpToLatestButton(
+    visible: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    if (visible) {
+        CelesteSurface(
+            modifier = modifier.size(48.dp),
+            tone = CelesteLightTone.Cool,
+            shape = CircleShape,
+            containerColor = CelestePaper,
+        ) {
+            IconButton(
+                onClick = onClick,
+                modifier = Modifier.fillMaxSize(),
+            ) {
+                Icon(
+                    imageVector = JumpToLatestIcon,
+                    contentDescription = "Jump to latest message",
+                    modifier = Modifier.size(22.dp),
+                    tint = CelesteMuted,
                 )
             }
         }
@@ -353,4 +488,27 @@ private fun turnStateColor(turnState: TurnState): Color = when (turnState) {
     TurnState.Running -> CelesteAmberText
     TurnState.Synchronizing -> CelesteBlue
     TurnState.Reconnecting -> CelesteError
+}
+
+private val JumpToLatestIcon: ImageVector by lazy {
+    ImageVector.Builder(
+        name = "Jump to latest",
+        defaultWidth = 24.dp,
+        defaultHeight = 24.dp,
+        viewportWidth = 24f,
+        viewportHeight = 24f,
+    ).apply {
+        path(
+            stroke = SolidColor(Color.Black),
+            strokeLineWidth = 1.8f,
+            strokeLineCap = StrokeCap.Round,
+            strokeLineJoin = StrokeJoin.Round,
+        ) {
+            moveTo(12f, 4f)
+            verticalLineTo(18f)
+            moveTo(6.5f, 12.5f)
+            lineTo(12f, 18f)
+            lineTo(17.5f, 12.5f)
+        }
+    }.build()
 }
