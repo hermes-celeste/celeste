@@ -7,7 +7,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import dev.hazydreams.hermesceleste.CelesteUiState
-import dev.hazydreams.hermesceleste.CelesteViewModel
+import dev.hazydreams.hermesceleste.CelesteController
 import dev.hazydreams.hermesceleste.ConnectionPhase
 import dev.hazydreams.hermesceleste.ui.conversation.ConversationScreen
 import dev.hazydreams.hermesceleste.ui.gateway.ConnectionLoadingScreen
@@ -19,7 +19,7 @@ import dev.hazydreams.hermesceleste.ui.gateway.SettingsScreen
 import dev.hazydreams.hermesceleste.ui.sessions.SessionListScreen
 
 @Composable
-internal fun CelesteRoutes(ui: CelesteUiState, viewModel: CelesteViewModel) {
+internal fun CelesteRoutes(ui: CelesteUiState, controller: CelesteController) {
     val activeSummary = ui.activeSummary
     val sessions = ui.sessions
     var destination by rememberSaveable { mutableStateOf(CelesteDestination.Content) }
@@ -40,7 +40,7 @@ internal fun CelesteRoutes(ui: CelesteUiState, viewModel: CelesteViewModel) {
             BackHandler(enabled = canNavigateBack) { destination = CelesteDestination.Settings }
             GatewaySettingsRoute(
                 ui = ui,
-                viewModel = viewModel,
+                controller = controller,
                 onBack = if (canNavigateBack) {
                     { destination = CelesteDestination.Settings }
                 } else {
@@ -51,7 +51,7 @@ internal fun CelesteRoutes(ui: CelesteUiState, viewModel: CelesteViewModel) {
 
         CelesteDestination.Content -> when {
             activeSummary != null -> {
-                BackHandler(onBack = viewModel::leaveConversation)
+                BackHandler(onBack = controller::leaveConversation)
                 ConversationScreen(
                     summary = activeSummary,
                     messages = ui.messages,
@@ -60,11 +60,11 @@ internal fun CelesteRoutes(ui: CelesteUiState, viewModel: CelesteViewModel) {
                     turnState = ui.turnState,
                     loadingMessage = ui.loadingMessage,
                     errorMessage = ui.errorMessage,
-                    onDraftChange = viewModel::updateDraft,
-                    onSend = viewModel::sendMessage,
-                    onInterrupt = viewModel::interrupt,
-                    onReconnect = viewModel::reconnectNow,
-                    onBack = viewModel::leaveConversation,
+                    onDraftChange = controller::updateDraft,
+                    onSend = controller::sendMessage,
+                    onInterrupt = controller::interrupt,
+                    onReconnect = controller::reconnectNow,
+                    onBack = controller::leaveConversation,
                 )
             }
 
@@ -74,9 +74,9 @@ internal fun CelesteRoutes(ui: CelesteUiState, viewModel: CelesteViewModel) {
                 selectedProfile = ui.selectedProfile,
                 loadingMessage = ui.loadingMessage,
                 errorMessage = ui.errorMessage,
-                onProfileSelected = viewModel::selectProfile,
-                onNewConversation = viewModel::createNewConversation,
-                onSessionSelected = viewModel::openSession,
+                onProfileSelected = controller::selectProfile,
+                onNewConversation = controller::createNewConversation,
+                onSessionSelected = controller::openSession,
                 onSettings = { destination = CelesteDestination.Settings },
             )
 
@@ -85,11 +85,11 @@ internal fun CelesteRoutes(ui: CelesteUiState, viewModel: CelesteViewModel) {
 
             ui.connectionPhase == ConnectionPhase.RestoreFailed -> ConnectionUnavailableScreen(
                 errorMessage = ui.errorMessage,
-                onRetry = viewModel::retrySavedConnection,
+                onRetry = controller::retrySavedConnection,
                 onSettings = { destination = CelesteDestination.Gateway },
             )
 
-            else -> GatewaySettingsRoute(ui = ui, viewModel = viewModel, onBack = null)
+            else -> GatewaySettingsRoute(ui = ui, controller = controller, onBack = null)
         }
     }
 }
@@ -103,7 +103,7 @@ private enum class CelesteDestination {
 @Composable
 private fun GatewaySettingsRoute(
     ui: CelesteUiState,
-    viewModel: CelesteViewModel,
+    controller: CelesteController,
     onBack: (() -> Unit)?,
 ) {
     GatewaySettingsScreen(
@@ -119,17 +119,17 @@ private fun GatewaySettingsRoute(
             errorMessage = ui.errorMessage,
         ),
         actions = GatewaySettingsActions(
-            onUsernameChange = viewModel::updateUsername,
-            onPasswordChange = viewModel::updatePassword,
-            onSessionTokenChange = viewModel::updateSessionToken,
+            onUsernameChange = controller::updateUsername,
+            onPasswordChange = controller::updatePassword,
+            onSessionTokenChange = controller::updateSessionToken,
             onApplyAddress = { address ->
-                viewModel.updateDashboardUrl(address)
-                viewModel.findDashboard()
+                controller.updateDashboardUrl(address)
+                controller.findDashboard()
             },
-            onConnect = viewModel::loadSessions,
-            onRetry = viewModel::retrySavedConnection,
-            onSignOut = viewModel::signOut,
-            onForgetConnection = viewModel::forgetConnection,
+            onConnect = controller::loadSessions,
+            onRetry = controller::retrySavedConnection,
+            onSignOut = controller::signOut,
+            onForgetConnection = controller::forgetConnection,
             onBack = onBack,
         ),
     )

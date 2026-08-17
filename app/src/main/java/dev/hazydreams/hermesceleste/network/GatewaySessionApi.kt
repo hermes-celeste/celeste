@@ -20,13 +20,17 @@ data class CreatedSession(
     val profile: String?,
 )
 
-suspend fun GatewayConnection.createSession(profile: String): CreatedSession {
+suspend fun GatewayConnection.createSession(
+    profile: String,
+    clientSource: String,
+): CreatedSession {
     val selectedProfile = profile.trim().ifEmpty { "default" }
+    require(clientSource.isNotBlank()) { "A client source is required." }
     val result = request(
         method = "session.create",
         params = buildJsonObject {
             put("cols", 96)
-            put("source", "android")
+            put("source", clientSource)
             put("profile", selectedProfile)
         },
         timeoutMillis = 30_000,
@@ -46,14 +50,18 @@ suspend fun GatewayConnection.createSession(profile: String): CreatedSession {
     )
 }
 
-suspend fun GatewayConnection.resumeStoredSession(storedSessionId: String): ResumedSession {
+suspend fun GatewayConnection.resumeStoredSession(
+    storedSessionId: String,
+    clientSource: String,
+): ResumedSession {
     require(storedSessionId.isNotBlank()) { "Choose a Hermes session to open." }
+    require(clientSource.isNotBlank()) { "A client source is required." }
     val result = request(
         method = "session.resume",
         params = buildJsonObject {
             put("session_id", storedSessionId)
             put("cols", 96)
-            put("source", "android")
+            put("source", clientSource)
         },
         timeoutMillis = 30_000,
     ).asObject("Hermes returned no resumed session.")

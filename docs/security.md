@@ -29,6 +29,8 @@ Passwords and WebSocket tickets are process-memory only. Passwords are never per
 
 `AndroidConnectionStore` keeps the normalized endpoint, authentication mode, provider, and optional username in a private descriptor preference. Reusable authentication is AES-GCM encrypted with a non-exportable Android Keystore key that requires the device to be unlocked. Ciphertext lives in `noBackupFilesDir`; additional authenticated data binds it to the application ID, format version, exact normalized endpoint including path prefix, and authentication mode. There is no plaintext or weak-storage fallback.
 
+`ConnectionStore` defines the platform-neutral persistence contract; Android Keystore is the only production implementation today. A future iOS target must provide equivalent Keychain-backed protection and preserve Sign out, Forget connection, endpoint binding, rotation, redaction, and failure semantics. Shared code must never introduce a plaintext fallback to avoid writing a platform adapter.
+
 Restored provider cookies must be unexpired Hermes session cookies for the exact saved host and a path matching the normalized endpoint. PKCE and unrelated cookies are never exported. Definitive 401/403 rejection deletes reusable authentication and pauses later automatic attempts; offline, timeout, 429, malformed response, and server failures retain the encrypted material for explicit Retry.
 
 Provider access and refresh cookies can rotate. After a successful cold restore and when the app moves to the background, Celeste re-encrypts the latest cookie-jar state through serialized store access. Sign out and Forget connection invalidate the active connection generation before cleanup so a late refresh write cannot recreate deleted authentication material.

@@ -2,7 +2,9 @@
 
 ## Identity
 
-**Celeste** is a native Android client for a self-hosted [Hermes Agent](https://github.com/NousResearch/hermes-agent) dashboard. Desktop and Celeste are clients of the same Hermes server and shared state. Celeste does not copy conversations into a separate mobile service.
+**Celeste** is an Android-first native client for a self-hosted [Hermes Agent](https://github.com/NousResearch/hermes-agent) dashboard. Desktop and Celeste are clients of the same Hermes server and shared state. Celeste does not copy conversations into a separate mobile service.
+
+Android is the only application target today. The product direction is one Compose Multiplatform Celeste whose protocol behavior, application state, and custom UI can be shared with a future iOS target. This direction does not promise an iOS application, release date, or store presence.
 
 Use these names consistently:
 
@@ -18,11 +20,11 @@ The Android name includes Hermes so the installed app is easy to find. It does n
 ## Product principles
 
 - **One Hermes, another surface.** Profiles, sessions, messages, and agent work remain on the user’s Hermes server.
-- **Native Android.** Use Kotlin, Jetpack Compose, Android lifecycle primitives, coroutines, and Flow. Do not wrap a web client in a WebView.
-- **Mobile-shaped control.** Preserve Hermes capabilities while adapting navigation, density, input, and system integration to Android.
+- **Android first, shared by design.** Deliver and verify Android now while keeping protocol rules, application state, and custom Compose UI portable. Do not build a separately interpreted iOS client or wrap a web client in a WebView.
+- **Platform-native edges.** Preserve Hermes capabilities while adapting lifecycle, navigation, input, secure storage, and system integration to each operating system through narrow adapters.
 - **Independent design.** Celeste should feel related to Hermes without mechanically copying Desktop layout.
 - **Direct connection.** The current product connects to the user’s dashboard without a Celeste account, relay, or copied history.
-- **Least privilege.** Ask for Android permissions only when a shipped feature needs them.
+- **Least privilege.** Ask for platform permissions only when a shipped feature needs them.
 
 ## Current functional boundary
 

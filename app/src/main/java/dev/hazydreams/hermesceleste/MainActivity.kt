@@ -51,23 +51,24 @@ private class CelesteViewModelFactory(
 
 @Composable
 private fun HermesCelesteApp(viewModel: CelesteViewModel) {
-    val ui by viewModel.state.collectAsStateWithLifecycle()
+    val controller = viewModel.controller
+    val ui by controller.state.collectAsStateWithLifecycle()
     val lifecycleOwner = LocalLifecycleOwner.current
 
-    DisposableEffect(lifecycleOwner, viewModel, ui.activeSummary?.id) {
+    DisposableEffect(lifecycleOwner, controller, ui.activeSummary?.id) {
         val observer = LifecycleEventObserver { _, event ->
             when (event) {
-                Lifecycle.Event.ON_START -> viewModel.onForeground()
-                Lifecycle.Event.ON_STOP -> viewModel.onBackground()
+                Lifecycle.Event.ON_START -> controller.onForeground()
+                Lifecycle.Event.ON_STOP -> controller.onBackground()
                 else -> Unit
             }
         }
         lifecycleOwner.lifecycle.addObserver(observer)
         if (lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) {
-            viewModel.onForeground()
+            controller.onForeground()
         }
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
 
-    CelesteRoutes(ui = ui, viewModel = viewModel)
+    CelesteRoutes(ui = ui, controller = controller)
 }

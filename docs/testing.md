@@ -7,7 +7,7 @@ Match verification to what changed:
 | Change | Required evidence |
 | --- | --- |
 | Documentation only | Link/terminology audit and `git diff --check` |
-| Kotlin state or protocol logic | Focused unit test during iteration, then `testDebugUnitTest` |
+| Portable controller, state, or protocol logic | Focused unit test during iteration, then `testDebugUnitTest` |
 | URL, authentication, HTTP, or WebSocket behavior | MockWebServer/gateway regression plus `testDebugUnitTest`; use the live contract when server admission or shape changed |
 | Compose layout, copy, color, or interaction state | Relevant unit checks plus host screenshot review and `validateDebugScreenshotTest` |
 | Manifest, resources, launcher, packaging, or install behavior | Local `lintDebug`, GitHub Actions packaging, and device verification when behavior crosses onto Android |
@@ -19,15 +19,17 @@ Always run `git diff --check`. Disclose any changed runtime surface that was not
 
 Tests live under `app/src/test`.
 
+The repository does not have shared Kotlin Multiplatform source sets yet. Portable controller/protocol tests still run as Android host-unit tests, but they should exercise injected contracts without requiring Activity, AndroidX `ViewModel`, or device APIs. Move them to shared tests when the build boundary exists. Android adapters retain Android-specific unit, lint, screenshot, packaging, and device evidence. A future iOS target will require its own runtime, accessibility, lifecycle, and system-integration checks; shared tests alone will not establish iOS quality.
+
 - `DashboardUrlPolicyTest` owns URL normalization and cleartext admission.
 - `DashboardClientTest` owns HTTP/authentication and short WebSocket operations.
 - `ConnectionStoreTest` owns bootstrap decisions, secret redaction, Sign out versus Forget semantics, and ciphertext endpoint binding.
 - `BackupExclusionTest` owns named descriptor exclusions across legacy backup, cloud backup, and device transfer rules.
 - `HermesGatewayTest` owns readiness, request correlation, events, endpoint refresh, and disconnect behavior.
-- `CelesteViewModelTest` owns session creation/resume, event reduction, interruption, reconnect, and no-resend invariants; `CelesteViewModelAutoLoginTest` owns cold restore, typed recovery, remembered login, and cleanup transitions.
+- `CelesteViewModelTest` is the current host-unit location for `CelesteController` session creation/resume, event reduction, interruption, reconnect, host lifetime, and no-resend invariants. New portable behavior should exercise the controller directly even while older cases still enter through the thin Android adapter. `CelesteViewModelAutoLoginTest` owns cold restore, typed recovery, remembered login, and cleanup transitions.
 - `LiveHermesDashboardTest` is the opt-in real-server contract.
 
-Add a regression at the lowest layer that owns the failure. Cross-layer lifecycle invariants belong in the ViewModel tests even when a socket symptom exposed them.
+Add a regression at the lowest layer that owns the failure. Portable application and host-lifetime invariants belong to direct controller tests even when a socket symptom exposed them; Android lifecycle wiring belongs to the ViewModel adapter tests.
 
 Mock WebSocket tests use real time with `runBlocking`. Do not convert them to `runTest`: virtual-time advancement can outrun real MockWebServer callbacks and create false timeouts. Pure coroutine/state tests can use `runTest`.
 
