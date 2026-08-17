@@ -41,7 +41,7 @@ scripts/celeste-env ./gradlew --no-daemon testDebugUnitTest
 
 ## Host-rendered Compose screenshots
 
-The screenshot scenarios live in `app/src/screenshotTest`; accepted PNGs live in `app/src/screenshotTestDebug/reference`. The current matrix covers Gateway setup, password sign-in, Settings and connected Gateway management, saved-connection restoration and recovery, conversation listing, a blank new conversation, composing, rich Markdown at normal and narrow phone widths, streaming, completion, and reconnection.
+The screenshot scenarios live in `app/src/screenshotTest`; accepted PNGs live in `app/src/screenshotTestDebug/reference`. The current matrix covers Gateway setup, password sign-in, Settings and connected Gateway management, saved-connection restoration and recovery, conversation listing, a blank new conversation, composing, rich Markdown at normal and narrow phone widths, jump-to-latest navigation, streaming, completion, and reconnection.
 
 Validate accepted references:
 

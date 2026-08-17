@@ -375,6 +375,20 @@ fun RichTranscriptNarrowPreviewScreenshot() {
 }
 
 @PreviewTest
+@Preview(name = "17 · Jump to latest", widthDp = 390, heightDp = 844, showBackground = true)
+@Composable
+fun JumpToLatestPreviewScreenshot() {
+    HermesCelesteTheme {
+        PreviewConversation(
+            messages = previewMessages + richPreviewMessages,
+            turnState = TurnState.Idle,
+            autoScrollToLatest = false,
+            jumpToLatestVisible = true,
+        )
+    }
+}
+
+@PreviewTest
 @Preview(name = "08 · Reconnecting", widthDp = 390, heightDp = 844, showBackground = true)
 @Composable
 fun ReconnectingPreviewScreenshot() {
@@ -424,6 +438,8 @@ private fun PreviewConversation(
     draft: String = "",
     turnState: TurnState,
     errorMessage: String? = null,
+    autoScrollToLatest: Boolean = true,
+    jumpToLatestVisible: Boolean? = null,
 ) {
     ConversationScreen(
         summary = summary,
@@ -438,5 +454,7 @@ private fun PreviewConversation(
         onInterrupt = {},
         onReconnect = {},
         onBack = {},
+        autoScrollToLatest = autoScrollToLatest,
+        jumpToLatestVisibleOverride = jumpToLatestVisible,
     )
 }
