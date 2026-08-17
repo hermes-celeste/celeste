@@ -2,8 +2,10 @@ package dev.hazydreams.hermesceleste
 
 import dev.hazydreams.hermesceleste.network.ConversationMessage
 import dev.hazydreams.hermesceleste.ui.conversation.STREAMING_TRANSCRIPT_KEY
+import dev.hazydreams.hermesceleste.ui.conversation.streamingTranscriptKey
 import dev.hazydreams.hermesceleste.ui.conversation.transcriptItemKeys
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotEquals
 import org.junit.Test
 
 class TranscriptItemKeysTest {
@@ -41,6 +43,12 @@ class TranscriptItemKeysTest {
             transcriptItemKeys(messages),
         )
         assertEquals(transcriptItemKeys(messages), transcriptItemKeys(messages))
+    }
+
+    @Test
+    fun streamingParserIdentityIsScopedToTheActiveSession() {
+        assertEquals("streaming:assistant:session-a", streamingTranscriptKey("session-a"))
+        assertNotEquals(streamingTranscriptKey("session-a"), streamingTranscriptKey("session-b"))
     }
 
     private fun message(id: String?): ConversationMessage =

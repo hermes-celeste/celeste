@@ -19,7 +19,7 @@ The installed Android app is named **Hermes Celeste** so it is easy to find in t
 
 ## Status
 
-Celeste is in early development. The native Android chat flow and secure connection restoration are functional; OAuth sign-in, rich Markdown, attachments, approvals, and broader Hermes management features are still ahead. There is no iOS application or release commitment yet.
+Celeste is in early development. The native Android chat flow, rich Markdown for ordinary messages, and secure connection restoration are functional; OAuth sign-in, attachments, approvals, and broader Hermes management features are still ahead. There is no iOS application or release commitment yet.
 
 ## Development
 

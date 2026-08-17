@@ -106,6 +106,7 @@ internal fun CelesteSurface(
     tone: CelesteLightTone = CelesteLightTone.Cool,
     emphasized: Boolean = false,
     shape: Shape = RoundedCornerShape(20.dp),
+    containerColor: Color = CelestePanel,
     contentPadding: PaddingValues = PaddingValues(0.dp),
     content: @Composable BoxScope.() -> Unit,
 ) {
@@ -158,7 +159,7 @@ internal fun CelesteSurface(
                     spotColor = glow.copy(alpha = if (emphasized) 0.54f else 0.40f),
                 )
                 .clip(shape)
-                .background(CelestePanel)
+                .background(containerColor)
                 .border(1.dp, border, shape)
                 .padding(contentPadding),
             content = content,

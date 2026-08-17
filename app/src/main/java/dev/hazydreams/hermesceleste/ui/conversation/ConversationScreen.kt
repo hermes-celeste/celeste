@@ -142,9 +142,10 @@ internal fun ConversationScreen(
                         MessageBubble(message)
                     }
                     if (streamingText.isNotBlank()) {
-                        item(key = STREAMING_TRANSCRIPT_KEY) {
+                        item(key = streamingTranscriptKey(summary.id)) {
                             MessageBubble(
                                 ConversationMessage(role = "assistant", text = streamingText, pending = true),
+                                streaming = true,
                             )
                         }
                     }
