@@ -1,12 +1,14 @@
 package dev.hazydreams.hermesceleste
 
 import dev.hazydreams.hermesceleste.network.ConversationMessage
+import dev.hazydreams.hermesceleste.ui.conversation.ScrollFollowObservation
 import dev.hazydreams.hermesceleste.ui.conversation.STREAMING_TRANSCRIPT_KEY
 import dev.hazydreams.hermesceleste.ui.conversation.latestTranscriptIndex
 import dev.hazydreams.hermesceleste.ui.conversation.remainingScrollToLatest
 import dev.hazydreams.hermesceleste.ui.conversation.shouldShowJumpToLatest
 import dev.hazydreams.hermesceleste.ui.conversation.streamingTranscriptKey
 import dev.hazydreams.hermesceleste.ui.conversation.transcriptItemKeys
+import dev.hazydreams.hermesceleste.ui.conversation.updatedFollowLatest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotEquals
 import org.junit.Test
@@ -88,6 +90,35 @@ class TranscriptItemKeysTest {
                 afterContentPadding = 20,
             ),
         )
+    }
+
+    @Test
+    fun scrollingBackwardPausesFollowingUntilTheReaderReturnsToTheBottom() {
+        val scrolledUp = ScrollFollowObservation(
+            readerDragging = true,
+            scrolledBackward = true,
+            canScrollForward = true,
+        )
+        val streamingContinues = ScrollFollowObservation(
+            readerDragging = false,
+            scrolledBackward = false,
+            canScrollForward = true,
+        )
+        val nonReaderScroll = ScrollFollowObservation(
+            readerDragging = false,
+            scrolledBackward = true,
+            canScrollForward = true,
+        )
+        val returnedToBottom = ScrollFollowObservation(
+            readerDragging = false,
+            scrolledBackward = false,
+            canScrollForward = false,
+        )
+
+        assertEquals(false, updatedFollowLatest(current = true, observation = scrolledUp))
+        assertEquals(false, updatedFollowLatest(current = false, observation = streamingContinues))
+        assertEquals(true, updatedFollowLatest(current = true, observation = nonReaderScroll))
+        assertEquals(true, updatedFollowLatest(current = false, observation = returnedToBottom))
     }
 
     private fun message(id: String?): ConversationMessage =

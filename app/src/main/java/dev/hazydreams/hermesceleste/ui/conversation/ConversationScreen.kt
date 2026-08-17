@@ -3,6 +3,7 @@ package dev.hazydreams.hermesceleste.ui.conversation
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.animateScrollBy
+import androidx.compose.foundation.interaction.collectIsDraggedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -44,8 +45,12 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -93,11 +98,15 @@ internal fun ConversationScreen(
     onInterrupt: () -> Unit,
     onReconnect: () -> Unit,
     onBack: () -> Unit,
-    autoScrollToLatest: Boolean = true,
+    initiallyFollowLatest: Boolean = true,
     jumpToLatestVisibleOverride: Boolean? = null,
 ) {
     val listState = rememberLazyListState()
     val coroutineScope = rememberCoroutineScope()
+    val isReaderDragging = listState.interactionSource.collectIsDraggedAsState()
+    var followLatest by remember(summary.id, initiallyFollowLatest) {
+        mutableStateOf(initiallyFollowLatest)
+    }
     val focusManager = LocalFocusManager.current
     val transcriptKeys = remember(messages) { transcriptItemKeys(messages) }
     val visibleMessageCount = messages.size + if (streamingText.isNotBlank()) 1 else 0
@@ -116,9 +125,21 @@ internal fun ConversationScreen(
     )
     val activeTurn = turnState == TurnState.Running || turnState == TurnState.Synchronizing
 
-    LaunchedEffect(visibleMessageCount, streamingText.length, autoScrollToLatest) {
+    LaunchedEffect(listState, summary.id) {
+        snapshotFlow {
+            ScrollFollowObservation(
+                readerDragging = isReaderDragging.value,
+                scrolledBackward = listState.lastScrolledBackward,
+                canScrollForward = listState.canScrollForward,
+            )
+        }.collect { observation ->
+            followLatest = updatedFollowLatest(followLatest, observation)
+        }
+    }
+
+    LaunchedEffect(visibleMessageCount, streamingText.length) {
         latestTranscriptIndex(visibleMessageCount)?.let { latestIndex ->
-            if (autoScrollToLatest) listState.animateScrollToLatest(latestIndex)
+            if (followLatest) listState.animateScrollToLatest(latestIndex)
         }
     }
 
@@ -182,6 +203,7 @@ internal fun ConversationScreen(
                     JumpToLatestButton(
                         visible = jumpToLatestVisibleOverride ?: jumpToLatestVisible.value,
                         onClick = {
+                            followLatest = true
                             latestTranscriptIndex(visibleMessageCount)?.let { latestIndex ->
                                 coroutineScope.launch { listState.animateScrollToLatest(latestIndex) }
                             }
@@ -197,6 +219,7 @@ internal fun ConversationScreen(
                     turnState = turnState,
                     onDraftChange = onDraftChange,
                     onSend = {
+                        followLatest = true
                         onSend()
                         focusManager.clearFocus()
                     },
@@ -210,6 +233,21 @@ internal fun ConversationScreen(
 
 internal fun latestTranscriptIndex(visibleMessageCount: Int): Int? =
     (visibleMessageCount - 1).takeIf { it >= 0 }
+
+internal data class ScrollFollowObservation(
+    val readerDragging: Boolean,
+    val scrolledBackward: Boolean,
+    val canScrollForward: Boolean,
+)
+
+internal fun updatedFollowLatest(
+    current: Boolean,
+    observation: ScrollFollowObservation,
+): Boolean = when {
+    observation.readerDragging && observation.scrolledBackward -> false
+    !observation.canScrollForward -> true
+    else -> current
+}
 
 internal fun remainingScrollToLatest(
     itemOffset: Int,

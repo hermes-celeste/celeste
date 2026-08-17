@@ -382,7 +382,7 @@ fun JumpToLatestPreviewScreenshot() {
         PreviewConversation(
             messages = previewMessages + richPreviewMessages,
             turnState = TurnState.Idle,
-            autoScrollToLatest = false,
+            initiallyFollowLatest = false,
             jumpToLatestVisible = true,
         )
     }
@@ -438,7 +438,7 @@ private fun PreviewConversation(
     draft: String = "",
     turnState: TurnState,
     errorMessage: String? = null,
-    autoScrollToLatest: Boolean = true,
+    initiallyFollowLatest: Boolean = true,
     jumpToLatestVisible: Boolean? = null,
 ) {
     ConversationScreen(
@@ -454,7 +454,7 @@ private fun PreviewConversation(
         onInterrupt = {},
         onReconnect = {},
         onBack = {},
-        autoScrollToLatest = autoScrollToLatest,
+        initiallyFollowLatest = initiallyFollowLatest,
         jumpToLatestVisibleOverride = jumpToLatestVisible,
     )
 }

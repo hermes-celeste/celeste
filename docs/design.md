@@ -43,7 +43,7 @@ Do not duplicate hexadecimal values here. Change tokens in code and validate aff
 - A contained surface emits its own blurred blue or amber halo. The light may extend beyond the edge as blur, but it must remain visibly anchored to that surface's shape.
 - Standard user messages use a quiet rounded bubble without a speaker label. Standard assistant responses are plain transcript text without a speaker label, vertical rail, or legacy response container.
 - User and assistant message bodies derive native rich Markdown from their canonical raw text. Tool input and output remain literal. Code and tables use the shared contained cool-light surface, size from the available message width, and scroll internally rather than widening the transcript.
-- When transcript content continues below the viewport, show a compact centered jump-to-latest control immediately above the composer; remove it once the list reaches the bottom.
+- Sending a message opts into following the latest transcript content. Scrolling upward pauses automatic following during streaming; tapping the centered jump-to-latest control or manually reaching the bottom resumes it. Show the control immediately above the composer whenever content continues below the viewport.
 - Tool and system events remain labeled because their role is not inferable from conversational position; render them as contained surfaces.
 - Active-turn framing derives from authoritative `TurnState`, remains clipped to the conversation viewport, and preserves a static distinction when system animation is disabled.
 - The page background is flat cloud white; light belongs to contained surfaces and active states.
