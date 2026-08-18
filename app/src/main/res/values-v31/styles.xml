@@ -2,8 +2,8 @@
 <resources>
     <style name="Theme.HermesCeleste" parent="@style/Theme.HermesCelesteBase">
         <item name="android:forceDarkAllowed">false</item>
-        <item name="android:windowSplashScreenBackground">@color/celeste_paper</item>
+        <item name="android:windowSplashScreenBackground">@color/celeste_canvas</item>
         <item name="android:windowSplashScreenAnimatedIcon">@drawable/ic_launcher_foreground</item>
-        <item name="android:windowSplashScreenIconBackgroundColor">@color/celeste_paper</item>
+        <item name="android:windowSplashScreenIconBackgroundColor">@color/celeste_canvas</item>
     </style>
 </resources>

@@ -79,14 +79,13 @@ import com.mikepenz.markdown.model.markdownAnimations
 import com.mikepenz.markdown.model.markdownDimens
 import com.mikepenz.markdown.model.markdownPadding
 import com.mikepenz.markdown.model.rememberMarkdownState
-import dev.hazydreams.hermesceleste.ui.CelesteBlue
+import dev.hazydreams.hermesceleste.ui.CelesteAccent
 import dev.hazydreams.hermesceleste.ui.CelesteHairline
-import dev.hazydreams.hermesceleste.ui.CelesteInk
-import dev.hazydreams.hermesceleste.ui.CelesteLightTone
-import dev.hazydreams.hermesceleste.ui.CelesteMuted
-import dev.hazydreams.hermesceleste.ui.CelestePanelRaised
-import dev.hazydreams.hermesceleste.ui.CelesteSoftBlue
-import dev.hazydreams.hermesceleste.ui.CelesteSurface
+import dev.hazydreams.hermesceleste.ui.CelesteTextPrimary
+import dev.hazydreams.hermesceleste.ui.CelesteTextMuted
+import dev.hazydreams.hermesceleste.ui.CelesteSurfaceRaised
+import dev.hazydreams.hermesceleste.ui.CelesteSurfaceSelected
+import dev.hazydreams.hermesceleste.ui.CelestePanel
 import org.intellij.markdown.MarkdownElementTypes
 import org.intellij.markdown.ast.ASTNode
 import org.intellij.markdown.ast.getTextInNode
@@ -230,7 +229,7 @@ private fun RawMarkdownFallback(content: String, modifier: Modifier) {
     Text(
         text = content,
         modifier = modifier,
-        color = CelesteInk,
+        color = CelesteTextPrimary,
         style = MaterialTheme.typography.bodyMedium,
     )
 }
@@ -301,7 +300,7 @@ private fun CelesteMarkdownParagraph(content: String, node: ASTNode, style: Text
     Text(
         text = annotated,
         modifier = Modifier.fillMaxWidth(),
-        color = CelesteInk,
+        color = CelesteTextPrimary,
         style = style,
     )
 }
@@ -344,7 +343,7 @@ private fun CelesteMarkdownTable(content: String, node: ASTNode, style: TextStyl
     }
     val bodyRows = remember(node) { node.children.filter { it.type == GFMElementTypes.ROW } }
     val shape = RoundedCornerShape(12.dp)
-    CelesteSurface(
+    CelestePanel(
         modifier = Modifier
             .fillMaxWidth()
             .padding(vertical = 7.dp)
@@ -355,9 +354,8 @@ private fun CelesteMarkdownTable(content: String, node: ASTNode, style: TextStyl
                     columnCount = columnCount,
                 )
             },
-        tone = CelesteLightTone.Cool,
         shape = shape,
-        containerColor = CelestePanelRaised,
+        containerColor = CelesteSurfaceRaised,
     ) {
         MarkdownTable(
             content = content,
@@ -404,7 +402,7 @@ private fun CelesteCodeBlock(code: String, language: String?, style: TextStyle) 
     val label = language?.trim()?.takeIf(String::isNotEmpty)?.uppercase() ?: "CODE"
     val shape = RoundedCornerShape(12.dp)
 
-    CelesteSurface(
+    CelestePanel(
         modifier = Modifier
             .fillMaxWidth()
             .padding(vertical = 7.dp)
@@ -412,9 +410,8 @@ private fun CelesteCodeBlock(code: String, language: String?, style: TextStyle) 
                 isTraversalGroup = true
                 contentDescription = if (label == "CODE") "Code block" else "$label code block"
             },
-        tone = CelesteLightTone.Cool,
         shape = shape,
-        containerColor = CelestePanelRaised,
+        containerColor = CelesteSurfaceRaised,
     ) {
         Column(modifier = Modifier.fillMaxWidth()) {
             Row(
@@ -426,7 +423,7 @@ private fun CelesteCodeBlock(code: String, language: String?, style: TextStyle) 
                 Text(
                     text = label,
                     modifier = Modifier.weight(1f),
-                    color = CelesteMuted,
+                    color = CelesteTextMuted,
                     style = MaterialTheme.typography.labelMedium,
                 )
                 TextButton(
@@ -438,7 +435,7 @@ private fun CelesteCodeBlock(code: String, language: String?, style: TextStyle) 
                         imageVector = CopyCodeIcon,
                         contentDescription = null,
                         modifier = Modifier.size(18.dp),
-                        tint = CelesteMuted,
+                        tint = CelesteTextMuted,
                     )
                 }
             }
@@ -448,7 +445,7 @@ private fun CelesteCodeBlock(code: String, language: String?, style: TextStyle) 
                 modifier = Modifier
                     .horizontalScroll(rememberScrollState())
                     .padding(horizontal = 12.dp, vertical = 11.dp),
-                color = CelesteInk,
+                color = CelesteTextPrimary,
                 style = style,
             )
         }
@@ -466,8 +463,8 @@ private fun CelesteTaskCheckbox(content: String, node: ASTNode) {
             .padding(end = 5.dp)
             .size(16.dp)
             .clip(shape)
-            .background(if (checked) CelesteInk else Color.Transparent)
-            .border(1.dp, if (checked) CelesteInk else CelesteHairline, shape)
+            .background(if (checked) CelesteTextPrimary else Color.Transparent)
+            .border(1.dp, if (checked) CelesteTextPrimary else CelesteHairline, shape)
             .semantics {
                 contentDescription = if (checked) "Completed task" else "Incomplete task"
             },
@@ -478,7 +475,7 @@ private fun CelesteTaskCheckbox(content: String, node: ASTNode) {
                 imageVector = TaskCheckIcon,
                 contentDescription = null,
                 modifier = Modifier.size(12.dp),
-                tint = CelestePanelRaised,
+                tint = CelesteSurfaceRaised,
             )
         }
     }
@@ -486,11 +483,11 @@ private fun CelesteTaskCheckbox(content: String, node: ASTNode) {
 
 @Composable
 private fun celesteMarkdownColors() = markdownColor(
-    text = CelesteInk,
-    codeBackground = CelestePanelRaised,
-    inlineCodeBackground = CelesteSoftBlue,
+    text = CelesteTextPrimary,
+    codeBackground = CelesteSurfaceRaised,
+    inlineCodeBackground = CelesteSurfaceSelected,
     dividerColor = CelesteHairline,
-    tableBackground = CelestePanelRaised,
+    tableBackground = CelesteSurfaceRaised,
 )
 
 @Composable
@@ -505,7 +502,7 @@ private fun celesteMarkdownTypography() = markdownTypography(
     code = MaterialTheme.typography.bodyMedium.copy(fontFamily = FontFamily.Monospace),
     inlineCode = MaterialTheme.typography.bodyMedium.copy(fontFamily = FontFamily.Monospace),
     quote = MaterialTheme.typography.bodyMedium.copy(
-        color = CelesteMuted,
+        color = CelesteTextMuted,
         fontStyle = FontStyle.Italic,
     ),
     paragraph = MaterialTheme.typography.bodyMedium,
@@ -514,7 +511,7 @@ private fun celesteMarkdownTypography() = markdownTypography(
     list = MaterialTheme.typography.bodyMedium,
     textLink = TextLinkStyles(
         style = SpanStyle(
-            color = CelesteBlue,
+            color = CelesteAccent,
             fontWeight = FontWeight.SemiBold,
             textDecoration = TextDecoration.Underline,
         ),

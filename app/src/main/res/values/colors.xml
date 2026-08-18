@@ -1,8 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <color name="celeste_paper">#FCFCFD</color>
-    <color name="celeste_ink">#111113</color>
-    <color name="celeste_blue">#3756C8</color>
-    <color name="celeste_glow_blue_translucent">#527AA6FF</color>
-    <color name="celeste_amber">#FFC57A</color>
+    <color name="celeste_canvas">#171718</color>
+    <color name="celeste_surface">#232325</color>
+    <color name="celeste_text_primary">#F4F4F5</color>
+    <color name="celeste_hairline">#404044</color>
+    <color name="celeste_accent">#4C9EFF</color>
 </resources>

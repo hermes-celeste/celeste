@@ -2,7 +2,7 @@ package dev.hazydreams.hermesceleste.ui
 
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Typography
-import androidx.compose.material3.lightColorScheme
+import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.TextStyle
@@ -12,34 +12,35 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.sp
 import dev.hazydreams.hermesceleste.R
 
-val CelestePaper = Color(0xFFFCFCFD)
-val CelesteInk = Color(0xFF111113)
-val CelestePanel = Color(0xFFFFFFFF)
-val CelestePanelRaised = Color(0xFFF6F6F9)
-val CelesteGlowBlue = Color(0xFF7AA6FF)
-val CelesteBlue = Color(0xFF3756C8)
-val CelesteAmber = Color(0xFFFFC57A)
-val CelesteAmberText = Color(0xFF8A651F)
-val CelesteSuccess = Color(0xFF39B987)
-val CelesteMuted = Color(0xFF6E6E73)
-val CelesteHairline = Color(0xFFE3E3E8)
-val CelesteSoftBlue = Color(0xFFF2F5FC)
-val CelesteError = Color(0xFFB74747)
+val CelesteCanvas = Color(0xFF171718)
+val CelesteSurfacePrimary = Color(0xFF232325)
+val CelesteSurfaceRaised = Color(0xFF2B2B2E)
+val CelesteSurfaceSelected = Color(0xFF343438)
+val CelesteTextPrimary = Color(0xFFF4F4F5)
+val CelesteTextMuted = Color(0xFFA5A5AB)
+val CelesteHairline = Color(0xFF404044)
+val CelesteAccent = Color(0xFF4C9EFF)
+val CelesteAccentContent = Color(0xFF07131F)
+val CelesteSuccess = Color(0xFF62C99A)
+val CelesteWarning = Color(0xFFE1B36B)
+val CelesteError = Color(0xFFFF8585)
 
-private val CelesteColors = lightColorScheme(
-    primary = CelesteInk,
-    onPrimary = CelestePaper,
-    secondary = CelesteAmberText,
-    tertiary = CelesteAmber,
-    background = CelestePaper,
-    onBackground = CelesteInk,
-    surface = CelestePanel,
-    onSurface = CelesteInk,
-    surfaceVariant = CelestePanelRaised,
-    onSurfaceVariant = CelesteMuted,
+private val CelesteColors = darkColorScheme(
+    primary = CelesteAccent,
+    onPrimary = CelesteAccentContent,
+    secondary = CelesteTextMuted,
+    onSecondary = CelesteCanvas,
+    tertiary = CelesteWarning,
+    onTertiary = CelesteCanvas,
+    background = CelesteCanvas,
+    onBackground = CelesteTextPrimary,
+    surface = CelesteSurfacePrimary,
+    onSurface = CelesteTextPrimary,
+    surfaceVariant = CelesteSurfaceRaised,
+    onSurfaceVariant = CelesteTextMuted,
     outline = CelesteHairline,
     error = CelesteError,
-    onError = CelestePaper,
+    onError = CelesteCanvas,
 )
 
 private val CelesteFontFamily = FontFamily(

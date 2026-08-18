@@ -31,7 +31,7 @@ private val previewSessions = listOf(
     StoredSession(
         id = "visual-layer",
         title = "Visual direction and interaction language",
-        preview = "A luminous contained-light interface with clear hierarchy and atmosphere attached to state.",
+        preview = "A neutral dark interface with clear conversational hierarchy and restrained state treatment.",
         startedAt = 1_786_017_600.0,
         messageCount = 12,
         source = "desktop",
