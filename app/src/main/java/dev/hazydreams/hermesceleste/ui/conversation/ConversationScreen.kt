@@ -68,19 +68,16 @@ import androidx.compose.ui.unit.sp
 import dev.hazydreams.hermesceleste.TurnState
 import dev.hazydreams.hermesceleste.network.ConversationMessage
 import dev.hazydreams.hermesceleste.network.StoredSession
-import dev.hazydreams.hermesceleste.ui.CelesteActivityFrame
-import dev.hazydreams.hermesceleste.ui.CelesteAmber
-import dev.hazydreams.hermesceleste.ui.CelesteAmberText
-import dev.hazydreams.hermesceleste.ui.CelesteBackdrop
-import dev.hazydreams.hermesceleste.ui.CelesteBlue
+import dev.hazydreams.hermesceleste.ui.CelesteAccent
+import dev.hazydreams.hermesceleste.ui.CelesteAccentContent
 import dev.hazydreams.hermesceleste.ui.CelesteError
 import dev.hazydreams.hermesceleste.ui.CelesteHairline
-import dev.hazydreams.hermesceleste.ui.CelesteInk
-import dev.hazydreams.hermesceleste.ui.CelesteLightTone
-import dev.hazydreams.hermesceleste.ui.CelesteMuted
 import dev.hazydreams.hermesceleste.ui.CelestePanel
-import dev.hazydreams.hermesceleste.ui.CelestePaper
-import dev.hazydreams.hermesceleste.ui.CelesteSurface
+import dev.hazydreams.hermesceleste.ui.CelesteScreen
+import dev.hazydreams.hermesceleste.ui.CelesteSurfacePrimary
+import dev.hazydreams.hermesceleste.ui.CelesteSurfaceRaised
+import dev.hazydreams.hermesceleste.ui.CelesteTextMuted
+import dev.hazydreams.hermesceleste.ui.CelesteTextPrimary
 import dev.hazydreams.hermesceleste.ui.StatusMessage
 import kotlinx.coroutines.launch
 
@@ -123,7 +120,6 @@ internal fun ConversationScreen(
         22.dp,
         safeDrawingInsets.asPaddingValues().calculateTopPadding() + 6.dp,
     )
-    val activeTurn = turnState == TurnState.Running || turnState == TurnState.Synchronizing
 
     LaunchedEffect(listState, summary.id) {
         snapshotFlow {
@@ -143,90 +139,84 @@ internal fun ConversationScreen(
         }
     }
 
-    CelesteBackdrop {
-        CelesteActivityFrame(
-            visible = activeTurn,
-            moving = turnState == TurnState.Running,
-            modifier = Modifier.fillMaxSize(),
+    CelesteScreen {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .windowInsetsPadding(safeDrawingInsets.only(WindowInsetsSides.Horizontal))
+                .padding(top = headerTopPadding),
         ) {
-            Column(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .windowInsetsPadding(safeDrawingInsets.only(WindowInsetsSides.Horizontal))
-                    .padding(top = headerTopPadding),
-            ) {
-                ConversationHeader(
-                    title = summary.title.ifBlank { "Conversation" },
-                    turnState = turnState,
-                    onBack = onBack,
-                )
+            ConversationHeader(
+                title = summary.title.ifBlank { "Conversation" },
+                turnState = turnState,
+                onBack = onBack,
+            )
 
-                if (loadingMessage != null || errorMessage != null) {
-                    Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 22.dp, vertical = 10.dp),
-                        verticalArrangement = Arrangement.spacedBy(8.dp),
-                    ) {
-                        loadingMessage?.let { StatusMessage(it, CelesteBlue, showSpinner = true) }
-                        errorMessage?.let { StatusMessage(it, CelesteError) }
-                    }
-                }
-
-                Box(
+            if (loadingMessage != null || errorMessage != null) {
+                Column(
                     modifier = Modifier
-                        .weight(1f)
-                        .fillMaxWidth(),
+                        .fillMaxWidth()
+                        .padding(horizontal = 22.dp, vertical = 10.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
-                    LazyColumn(
-                        state = listState,
-                        modifier = Modifier.fillMaxSize(),
-                        contentPadding = PaddingValues(horizontal = 20.dp, vertical = 22.dp),
-                        verticalArrangement = Arrangement.spacedBy(20.dp),
-                    ) {
-                        itemsIndexed(
-                            items = messages,
-                            key = { index, _ -> transcriptKeys[index] },
-                        ) { _, message ->
-                            MessageBubble(message)
-                        }
-                        if (streamingText.isNotBlank()) {
-                            item(key = streamingTranscriptKey(summary.id)) {
-                                MessageBubble(
-                                    ConversationMessage(role = "assistant", text = streamingText, pending = true),
-                                    streaming = true,
-                                )
-                            }
+                    loadingMessage?.let { StatusMessage(it, CelesteAccent, showSpinner = true) }
+                    errorMessage?.let { StatusMessage(it, CelesteError) }
+                }
+            }
+
+            Box(
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxWidth(),
+            ) {
+                LazyColumn(
+                    state = listState,
+                    modifier = Modifier.fillMaxSize(),
+                    contentPadding = PaddingValues(horizontal = 20.dp, vertical = 22.dp),
+                    verticalArrangement = Arrangement.spacedBy(20.dp),
+                ) {
+                    itemsIndexed(
+                        items = messages,
+                        key = { index, _ -> transcriptKeys[index] },
+                    ) { _, message ->
+                        MessageBubble(message)
+                    }
+                    if (streamingText.isNotBlank()) {
+                        item(key = streamingTranscriptKey(summary.id)) {
+                            MessageBubble(
+                                ConversationMessage(role = "assistant", text = streamingText, pending = true),
+                                streaming = true,
+                            )
                         }
                     }
-
-                    JumpToLatestButton(
-                        visible = jumpToLatestVisibleOverride ?: jumpToLatestVisible.value,
-                        onClick = {
-                            followLatest = true
-                            latestTranscriptIndex(visibleMessageCount)?.let { latestIndex ->
-                                coroutineScope.launch { listState.animateScrollToLatest(latestIndex) }
-                            }
-                        },
-                        modifier = Modifier
-                            .align(Alignment.BottomCenter)
-                            .padding(bottom = 12.dp),
-                    )
                 }
 
-                ConversationComposer(
-                    draft = draft,
-                    turnState = turnState,
-                    onDraftChange = onDraftChange,
-                    onSend = {
+                JumpToLatestButton(
+                    visible = jumpToLatestVisibleOverride ?: jumpToLatestVisible.value,
+                    onClick = {
                         followLatest = true
-                        onSend()
-                        focusManager.clearFocus()
+                        latestTranscriptIndex(visibleMessageCount)?.let { latestIndex ->
+                            coroutineScope.launch { listState.animateScrollToLatest(latestIndex) }
+                        }
                     },
-                    onInterrupt = onInterrupt,
-                    onReconnect = onReconnect,
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter)
+                        .padding(bottom = 12.dp),
                 )
             }
+
+            ConversationComposer(
+                draft = draft,
+                turnState = turnState,
+                onDraftChange = onDraftChange,
+                onSend = {
+                    followLatest = true
+                    onSend()
+                    focusManager.clearFocus()
+                },
+                onInterrupt = onInterrupt,
+                onReconnect = onReconnect,
+            )
         }
     }
 }
@@ -280,11 +270,10 @@ private fun JumpToLatestButton(
     modifier: Modifier = Modifier,
 ) {
     if (visible) {
-        CelesteSurface(
+        CelestePanel(
             modifier = modifier.size(48.dp),
-            tone = CelesteLightTone.Cool,
             shape = CircleShape,
-            containerColor = CelestePaper,
+            containerColor = CelesteSurfaceRaised,
         ) {
             IconButton(
                 onClick = onClick,
@@ -294,7 +283,7 @@ private fun JumpToLatestButton(
                     imageVector = JumpToLatestIcon,
                     contentDescription = "Jump to latest message",
                     modifier = Modifier.size(22.dp),
-                    tint = CelesteMuted,
+                    tint = CelesteTextMuted,
                 )
             }
         }
@@ -317,7 +306,7 @@ private fun ConversationHeader(
             onClick = onBack,
             contentPadding = PaddingValues(horizontal = 8.dp, vertical = 8.dp),
         ) {
-            Text("‹", color = CelesteInk, fontSize = 26.sp, lineHeight = 26.sp)
+            Text("‹", color = CelesteTextPrimary, fontSize = 26.sp, lineHeight = 26.sp)
         }
         Column(modifier = Modifier.weight(1f)) {
             Text(
@@ -336,7 +325,7 @@ private fun ConversationHeader(
                 Spacer(Modifier.size(6.dp))
                 Text(
                     text = turnStateLabel(turnState),
-                    color = if (turnState == TurnState.Running) CelesteBlue else CelesteMuted,
+                    color = if (turnState == TurnState.Running) CelesteAccent else CelesteTextMuted,
                     fontSize = 11.sp,
                 )
             }
@@ -344,12 +333,12 @@ private fun ConversationHeader(
         if (turnState == TurnState.Running || turnState == TurnState.Synchronizing) {
             Box(
                 modifier = Modifier
-                    .background(CelesteInk, RoundedCornerShape(18.dp))
+                    .background(CelesteTextPrimary, RoundedCornerShape(18.dp))
                     .padding(horizontal = 12.dp, vertical = 7.dp),
             ) {
                 Text(
                     text = "BUSY ON",
-                    color = CelestePanel,
+                    color = CelesteSurfacePrimary,
                     fontSize = 9.sp,
                     fontWeight = FontWeight.Bold,
                     letterSpacing = 0.6.sp,
@@ -377,11 +366,10 @@ private fun ConversationComposer(
             .imePadding()
             .padding(horizontal = 12.dp, vertical = 12.dp),
     ) {
-        CelesteSurface(
+        CelestePanel(
             modifier = Modifier.fillMaxWidth(),
-            tone = if (activeTurn) CelesteLightTone.Warm else CelesteLightTone.Cool,
-            emphasized = activeTurn,
             shape = RoundedCornerShape(28.dp),
+            borderColor = if (activeTurn) CelesteAccent.copy(alpha = 0.55f) else CelesteHairline,
             contentPadding = PaddingValues(4.dp),
         ) {
             Row(
@@ -401,7 +389,7 @@ private fun ConversationComposer(
                                 TurnState.Synchronizing -> "Synchronizing…"
                                 TurnState.Reconnecting -> "Keep drafting while Hermes reconnects…"
                             },
-                            color = CelesteMuted,
+                            color = CelesteTextMuted,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
                         )
@@ -423,7 +411,7 @@ private fun ConversationComposer(
                         focusedContainerColor = Color.Transparent,
                         unfocusedContainerColor = Color.Transparent,
                         disabledContainerColor = Color.Transparent,
-                        cursorColor = CelesteBlue,
+                        cursorColor = CelesteAccent,
                     ),
                 )
                 Spacer(Modifier.width(4.dp))
@@ -434,8 +422,8 @@ private fun ConversationComposer(
                             .width(58.dp)
                             .height(46.dp),
                         shape = RoundedCornerShape(23.dp),
-                        border = BorderStroke(1.dp, CelesteAmber),
-                        colors = ButtonDefaults.outlinedButtonColors(contentColor = CelesteAmberText),
+                        border = BorderStroke(1.dp, CelesteHairline),
+                        colors = ButtonDefaults.outlinedButtonColors(contentColor = CelesteTextPrimary),
                         contentPadding = PaddingValues(0.dp),
                     ) {
                         Text("Stop", fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
@@ -447,8 +435,8 @@ private fun ConversationComposer(
                             .width(58.dp)
                             .height(46.dp),
                         shape = RoundedCornerShape(23.dp),
-                        border = BorderStroke(1.dp, CelesteBlue),
-                        colors = ButtonDefaults.outlinedButtonColors(contentColor = CelesteBlue),
+                        border = BorderStroke(1.dp, CelesteAccent),
+                        colors = ButtonDefaults.outlinedButtonColors(contentColor = CelesteAccent),
                         contentPadding = PaddingValues(0.dp),
                     ) {
                         Text("Retry", fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
@@ -460,10 +448,10 @@ private fun ConversationComposer(
                         modifier = Modifier.size(46.dp),
                         shape = CircleShape,
                         colors = ButtonDefaults.buttonColors(
-                            containerColor = CelesteInk,
-                            contentColor = CelestePaper,
+                            containerColor = CelesteAccent,
+                            contentColor = CelesteAccentContent,
                             disabledContainerColor = CelesteHairline,
-                            disabledContentColor = CelesteMuted,
+                            disabledContentColor = CelesteTextMuted,
                         ),
                         contentPadding = PaddingValues(0.dp),
                     ) {
@@ -484,9 +472,9 @@ private fun turnStateLabel(turnState: TurnState): String = when (turnState) {
 }
 
 private fun turnStateColor(turnState: TurnState): Color = when (turnState) {
-    TurnState.Idle -> CelesteBlue
-    TurnState.Running -> CelesteAmberText
-    TurnState.Synchronizing -> CelesteBlue
+    TurnState.Idle -> CelesteAccent
+    TurnState.Running -> CelesteAccent
+    TurnState.Synchronizing -> CelesteAccent
     TurnState.Reconnecting -> CelesteError
 }
 

@@ -43,16 +43,15 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import dev.hazydreams.hermesceleste.network.DashboardProfile
 import dev.hazydreams.hermesceleste.network.StoredSession
-import dev.hazydreams.hermesceleste.ui.CelesteBackdrop
-import dev.hazydreams.hermesceleste.ui.CelesteBlue
+import dev.hazydreams.hermesceleste.ui.CelesteScreen
+import dev.hazydreams.hermesceleste.ui.CelesteAccent
+import dev.hazydreams.hermesceleste.ui.CelesteAccentContent
 import dev.hazydreams.hermesceleste.ui.CelesteError
 import dev.hazydreams.hermesceleste.ui.CelesteHairline
-import dev.hazydreams.hermesceleste.ui.CelesteInk
-import dev.hazydreams.hermesceleste.ui.CelesteLightTone
-import dev.hazydreams.hermesceleste.ui.CelesteMuted
-import dev.hazydreams.hermesceleste.ui.CelesteOrb
+import dev.hazydreams.hermesceleste.ui.CelesteTextPrimary
+import dev.hazydreams.hermesceleste.ui.CelesteTextMuted
+import dev.hazydreams.hermesceleste.ui.CelesteSurfacePrimary
 import dev.hazydreams.hermesceleste.ui.CelestePanel
-import dev.hazydreams.hermesceleste.ui.CelesteSurface
 import dev.hazydreams.hermesceleste.ui.StatusMessage
 
 @Composable
@@ -69,7 +68,7 @@ internal fun SessionListScreen(
 ) {
     var profileMenuExpanded by remember { mutableStateOf(false) }
 
-    CelesteBackdrop {
+    CelesteScreen {
         Column(
             modifier = Modifier
                 .fillMaxSize()
@@ -91,7 +90,7 @@ internal fun SessionListScreen(
                     modifier = Modifier.align(Alignment.CenterEnd),
                     contentPadding = PaddingValues(horizontal = 8.dp, vertical = 8.dp),
                 ) {
-                    Text("Settings", color = CelesteInk, fontWeight = FontWeight.SemiBold)
+                    Text("Settings", color = CelesteTextPrimary, fontWeight = FontWeight.SemiBold)
                 }
             }
 
@@ -113,8 +112,8 @@ internal fun SessionListScreen(
                     shape = RoundedCornerShape(23.dp),
                     border = BorderStroke(1.dp, CelesteHairline),
                     colors = ButtonDefaults.outlinedButtonColors(
-                        containerColor = CelestePanel,
-                        contentColor = CelesteInk,
+                        containerColor = CelesteSurfacePrimary,
+                        contentColor = CelesteTextPrimary,
                     ),
                 ) {
                     Text(
@@ -125,7 +124,7 @@ internal fun SessionListScreen(
                 DropdownMenu(
                     expanded = profileMenuExpanded,
                     onDismissRequest = { profileMenuExpanded = false },
-                    containerColor = CelestePanel,
+                    containerColor = CelesteSurfacePrimary,
                 ) {
                     profiles.forEach { profile ->
                         DropdownMenuItem(
@@ -146,7 +145,7 @@ internal fun SessionListScreen(
                     modifier = Modifier.padding(horizontal = 24.dp, vertical = 8.dp),
                     verticalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
-                    loadingMessage?.let { StatusMessage(it, CelesteBlue, showSpinner = true) }
+                    loadingMessage?.let { StatusMessage(it, CelesteAccent, showSpinner = true) }
                     errorMessage?.let { StatusMessage(it, CelesteError) }
                 }
             }
@@ -203,11 +202,10 @@ private fun ConversationCard(
     enabled: Boolean,
     onClick: () -> Unit,
 ) {
-    CelesteSurface(
+    CelestePanel(
         modifier = Modifier
             .fillMaxWidth()
             .clickable(enabled = enabled, onClick = onClick),
-        tone = CelesteLightTone.Cool,
         contentPadding = PaddingValues(horizontal = 16.dp, vertical = 15.dp),
     ) {
         Column {
@@ -221,7 +219,7 @@ private fun ConversationCard(
                 Spacer(Modifier.height(6.dp))
                 Text(
                     text = session.preview,
-                    color = CelesteMuted,
+                    color = CelesteTextMuted,
                     style = MaterialTheme.typography.bodyMedium,
                     maxLines = 2,
                     overflow = TextOverflow.Ellipsis,
@@ -234,7 +232,7 @@ private fun ConversationCard(
                 } else {
                     "${session.messageCount} MESSAGES"
                 },
-                color = CelesteMuted,
+                color = CelesteTextMuted,
                 fontSize = 9.sp,
                 fontWeight = FontWeight.SemiBold,
                 letterSpacing = 0.7.sp,
@@ -257,13 +255,11 @@ private fun EmptyConversationState(
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center,
     ) {
-        CelesteOrb(modifier = Modifier.size(76.dp))
-        Spacer(Modifier.height(28.dp))
         Text("No conversations yet", style = MaterialTheme.typography.titleLarge)
         Spacer(Modifier.height(8.dp))
         Text(
             text = "Start a new conversation to connect with your Hermes agent.",
-            color = CelesteMuted,
+            color = CelesteTextMuted,
             style = MaterialTheme.typography.bodyMedium,
             textAlign = TextAlign.Center,
         )
@@ -284,10 +280,10 @@ private fun NewConversationButton(
         modifier = modifier.height(48.dp),
         shape = RoundedCornerShape(24.dp),
         colors = ButtonDefaults.buttonColors(
-            containerColor = CelesteInk,
-            contentColor = CelestePanel,
+            containerColor = CelesteAccent,
+            contentColor = CelesteAccentContent,
             disabledContainerColor = CelesteHairline,
-            disabledContentColor = CelesteMuted,
+            disabledContentColor = CelesteTextMuted,
         ),
         contentPadding = PaddingValues(horizontal = 20.dp),
     ) {

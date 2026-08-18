@@ -22,13 +22,10 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import dev.hazydreams.hermesceleste.network.ConversationMessage
-import dev.hazydreams.hermesceleste.ui.CelesteAmberText
-import dev.hazydreams.hermesceleste.ui.CelesteBlue
-import dev.hazydreams.hermesceleste.ui.CelesteInk
-import dev.hazydreams.hermesceleste.ui.CelesteLightTone
-import dev.hazydreams.hermesceleste.ui.CelesteMuted
-import dev.hazydreams.hermesceleste.ui.CelesteSoftBlue
-import dev.hazydreams.hermesceleste.ui.CelesteSurface
+import dev.hazydreams.hermesceleste.ui.CelesteAccent
+import dev.hazydreams.hermesceleste.ui.CelesteTextMuted
+import dev.hazydreams.hermesceleste.ui.CelesteSurfaceSelected
+import dev.hazydreams.hermesceleste.ui.CelestePanel
 
 internal const val STREAMING_TRANSCRIPT_KEY = "streaming:assistant"
 
@@ -64,7 +61,7 @@ private fun UserMessage(message: ConversationMessage, streaming: Boolean) {
         Column(
             modifier = Modifier
                 .fillMaxWidth(0.78f)
-                .background(CelesteSoftBlue, RoundedCornerShape(20.dp))
+                .background(CelesteSurfaceSelected, RoundedCornerShape(20.dp))
                 .padding(horizontal = 16.dp, vertical = 13.dp),
         ) {
             if (message.text.isNotBlank()) {
@@ -95,11 +92,9 @@ private fun AssistantMessage(message: ConversationMessage, streaming: Boolean) {
 
 @Composable
 private fun ToolMessage(message: ConversationMessage) {
-    CelesteSurface(
+    CelestePanel(
         modifier = Modifier
             .fillMaxWidth(),
-        tone = CelesteLightTone.Cool,
-        emphasized = message.pending,
         shape = RoundedCornerShape(16.dp),
         contentPadding = androidx.compose.foundation.layout.PaddingValues(
             horizontal = 15.dp,
@@ -109,14 +104,14 @@ private fun ToolMessage(message: ConversationMessage) {
         Column {
             MessageLabel(
                 message.toolName?.replace('_', ' ') ?: "Tool",
-                CelesteBlue,
+                CelesteAccent,
                 message.pending,
             )
             if (message.text.isNotBlank()) {
                 Spacer(Modifier.height(6.dp))
                 Text(
                     text = message.text,
-                    color = CelesteMuted,
+                    color = CelesteTextMuted,
                     style = MaterialTheme.typography.bodyMedium,
                 )
             }
@@ -136,7 +131,7 @@ private fun MessageLabel(label: String, color: Color, pending: Boolean) {
         )
         if (pending) {
             Spacer(Modifier.size(7.dp))
-            Box(Modifier.size(6.dp).background(CelesteAmberText, CircleShape))
+            Box(Modifier.size(6.dp).background(CelesteAccent, CircleShape))
         }
     }
 }
