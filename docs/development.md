@@ -10,7 +10,9 @@ scripts/celeste-env ./gradlew --no-daemon tasks
 
 Use the checked-in Gradle wrapper, not a system Gradle installation. Keep `distributionSha256Sum` pinned in `gradle/wrapper/gradle-wrapper.properties`.
 
-The project currently uses Java 17, a single Android `:app` module, Kotlin, Jetpack Compose, kotlinx.serialization, coroutines, and OkHttp. Build versions and dependency coordinates belong in Gradle files, not this document. No iOS target is configured yet.
+Gradle and the Compose screenshot host require JDK 21 or newer. The project toolchain and GitHub Actions use Temurin 21, while Android source and emitted bytecode remain targeted to Java 17. A newer build host does not authorize Java 21 application APIs or a higher Android runtime requirement.
+
+The project currently uses a single Android `:app` module, Kotlin, Jetpack Compose, kotlinx.serialization, coroutines, and OkHttp. Build versions and dependency coordinates belong in Gradle files, not this document. No iOS target is configured yet.
 
 ## Portability boundary
 
