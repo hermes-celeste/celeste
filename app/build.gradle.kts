@@ -73,7 +73,7 @@ dependencies {
     implementation("androidx.lifecycle:lifecycle-viewmodel-ktx:2.11.0")
     implementation("com.squareup.okhttp3:okhttp")
     implementation("com.mikepenz:multiplatform-markdown-renderer-m3:0.43.0")
-    implementation("org.jetbrains:markdown:0.7.5")
+    implementation("org.jetbrains:markdown:0.7.8")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.11.0")
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.11.0")
 
