@@ -56,7 +56,7 @@ android {
 
 dependencies {
     val composeBom = platform("androidx.compose:compose-bom:2026.08.00")
-    val okhttpBom = platform("com.squareup.okhttp3:okhttp-bom:5.4.0")
+    val okhttpBom = platform("com.squareup.okhttp3:okhttp-bom:5.5.0")
 
     implementation(composeBom)
     androidTestImplementation(composeBom)
