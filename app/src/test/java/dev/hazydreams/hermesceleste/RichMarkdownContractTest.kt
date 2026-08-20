@@ -8,6 +8,7 @@ import org.intellij.markdown.MarkdownTokenTypes
 import org.intellij.markdown.ast.ASTNode
 import org.intellij.markdown.flavours.gfm.GFMElementTypes
 import org.intellij.markdown.flavours.gfm.GFMFlavourDescriptor
+import org.intellij.markdown.parser.CancellationToken
 import org.intellij.markdown.parser.EmptyStreamingMarkdownFile
 import org.intellij.markdown.parser.MarkdownParser
 import org.junit.Assert.assertEquals
@@ -19,7 +20,7 @@ import org.junit.Test
 class RichMarkdownContractTest {
     @Test
     fun parsesTheSupportedGitHubFlavoredMarkdownBlocks() {
-        val markdown = """
+        val markdown: CharSequence = """
             # Heading
 
             Paragraph with **strong**, *emphasis*, ~~strikethrough~~, [link](https://example.com), and `inline code`.
@@ -44,7 +45,7 @@ class RichMarkdownContractTest {
             | Ready | Tested |
         """.trimIndent()
 
-        val nodeTypes = MarkdownParser(GFMFlavourDescriptor())
+        val nodeTypes = MarkdownParser(GFMFlavourDescriptor(), cancellationToken = CancellationToken.NonCancellable)
             .buildMarkdownTreeFromString(markdown)
             .walk()
             .map(ASTNode::type)
@@ -95,8 +96,9 @@ class RichMarkdownContractTest {
 
     @Test
     fun malformedMarkdownStillProducesAReadableSourceRange() {
-        val source = "Before **unfinished emphasis\n\n[broken link](https://example.com\n\n```kotlin\nval answer = 42"
-        val root = MarkdownParser(GFMFlavourDescriptor()).buildMarkdownTreeFromString(source)
+        val source: CharSequence = "Before **unfinished emphasis\n\n[broken link](https://example.com\n\n```kotlin\nval answer = 42"
+        val root = MarkdownParser(GFMFlavourDescriptor(), cancellationToken = CancellationToken.NonCancellable)
+            .buildMarkdownTreeFromString(source)
 
         assertTrue(root.children.isNotEmpty())
         assertEquals(0, root.startOffset)
