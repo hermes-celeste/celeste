@@ -65,9 +65,22 @@ class TranscriptItemKeysTest {
 
     @Test
     fun jumpToLatestAppearsOnlyWhenContentContinuesBelowTheViewport() {
-        assertEquals(false, shouldShowJumpToLatest(canScrollForward = false, visibleMessageCount = 4))
-        assertEquals(false, shouldShowJumpToLatest(canScrollForward = true, visibleMessageCount = 0))
-        assertEquals(true, shouldShowJumpToLatest(canScrollForward = true, visibleMessageCount = 4))
+        assertEquals(
+            false,
+            shouldShowJumpToLatest(canScrollForward = false, visibleMessageCount = 4, followLatest = false),
+        )
+        assertEquals(
+            false,
+            shouldShowJumpToLatest(canScrollForward = true, visibleMessageCount = 0, followLatest = false),
+        )
+        assertEquals(
+            false,
+            shouldShowJumpToLatest(canScrollForward = true, visibleMessageCount = 4, followLatest = true),
+        )
+        assertEquals(
+            true,
+            shouldShowJumpToLatest(canScrollForward = true, visibleMessageCount = 4, followLatest = false),
+        )
     }
 
     @Test

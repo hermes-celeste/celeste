@@ -113,6 +113,7 @@ internal fun ConversationScreen(
             shouldShowJumpToLatest(
                 canScrollForward = listState.canScrollForward,
                 visibleMessageCount = visibleMessageCount,
+                followLatest = followLatest,
             )
         }
     }
@@ -268,7 +269,8 @@ private suspend fun LazyListState.animateScrollToLatest(latestIndex: Int) {
 internal fun shouldShowJumpToLatest(
     canScrollForward: Boolean,
     visibleMessageCount: Int,
-): Boolean = canScrollForward && visibleMessageCount > 0
+    followLatest: Boolean,
+): Boolean = !followLatest && canScrollForward && visibleMessageCount > 0
 
 @Composable
 private fun JumpToLatestButton(
@@ -383,7 +385,7 @@ private fun ConversationComposer(
                             text = when (turnState) {
                                 TurnState.Idle -> "Message Hermes…"
                                 TurnState.Running -> "Message Hermes…"
-                                TurnState.Synchronizing -> "Message Hermes…"
+                                TurnState.Synchronizing -> "Synchronizing…"
                                 TurnState.Reconnecting -> "Keep drafting while Hermes reconnects…"
                             },
                             color = CelesteTextMuted,
