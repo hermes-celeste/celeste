@@ -1,8 +1,8 @@
 package dev.hazydreams.hermesceleste.ui.conversation
 
 import androidx.compose.foundation.background
-import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -10,6 +10,9 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.layout.wrapContentWidth
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
@@ -54,20 +57,32 @@ internal fun MessageBubble(message: ConversationMessage, streaming: Boolean = fa
 
 @Composable
 private fun UserMessage(message: ConversationMessage, streaming: Boolean) {
-    Row(
+    BoxWithConstraints(
         modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.End,
+        contentAlignment = Alignment.CenterEnd,
     ) {
+        val richContent = containsRichMarkdown(message.text)
+        val maximumPillWidth = maxWidth * 0.8f
         Column(
-            modifier = Modifier
-                .fillMaxWidth(0.78f)
-                .background(CelesteSurfaceSelected, RoundedCornerShape(20.dp))
-                .padding(horizontal = 16.dp, vertical = 13.dp),
+            modifier = (if (richContent) {
+                Modifier.width(maximumPillWidth)
+            } else {
+                Modifier
+                    .widthIn(max = maximumPillWidth)
+                    .wrapContentWidth()
+            })
+                .background(CelesteSurfaceSelected, RoundedCornerShape(18.dp))
+                .padding(horizontal = 15.dp, vertical = 11.dp),
         ) {
             if (message.text.isNotBlank()) {
                 RichMarkdown(
                     content = message.text,
                     streaming = streaming,
+                    widthPolicy = if (richContent) {
+                        MarkdownWidthPolicy.Fill
+                    } else {
+                        MarkdownWidthPolicy.WrapContent
+                    },
                 )
             }
         }
