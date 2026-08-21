@@ -17,7 +17,7 @@ import kotlinx.serialization.json.put
 data class CreatedSession(
     val runtimeSessionId: String,
     val storedSessionId: String,
-    val profile: String?,
+    val profile: String,
 )
 
 suspend fun GatewayConnection.createSession(
@@ -43,10 +43,10 @@ suspend fun GatewayConnection.createSession(
         runtimeSessionId = runtimeId,
         storedSessionId = result.string("stored_session_id")
             ?.takeIf(String::isNotBlank)
-            ?: runtimeId,
-        profile = result.string("profile")
-            ?: result.string("profile_id")
-            ?: info?.string("profile_name"),
+            ?: throw IOException("Hermes created a conversation without a stored identity."),
+        profile = info?.string("profile_name")
+            ?.takeIf(String::isNotBlank)
+            ?: throw IOException("Hermes created a conversation without a profile identity."),
     )
 }
 
@@ -78,9 +78,8 @@ suspend fun GatewayConnection.resumeStoredSession(
     return ResumedSession(
         runtimeSessionId = runtimeId,
         storedSessionId = result.string("resumed")
-            ?: result.string("stored_session_id")
-            ?: result.string("session_key")
-            ?: storedSessionId,
+            ?.takeIf(String::isNotBlank)
+            ?: throw IOException("Hermes returned no resumed session identity."),
         messages = decodeGatewayMessages(result["messages"]?.jsonArray.orEmpty()),
         running = running,
         status = status,

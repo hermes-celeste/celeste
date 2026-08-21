@@ -730,10 +730,9 @@ internal class CelesteController(
                 if (gateway !== newGateway) {
                     throw IllegalStateException("The Hermes connection changed while creating the conversation.")
                 }
-                val returnedProfile = created.profile?.takeIf(String::isNotBlank)
-                if (returnedProfile != null && !returnedProfile.equals(selectedProfile, ignoreCase = true)) {
+                if (!created.profile.equals(selectedProfile, ignoreCase = true)) {
                     throw IllegalStateException(
-                        "Hermes created this conversation in $returnedProfile instead of $selectedProfile.",
+                        "Hermes created this conversation in ${created.profile} instead of $selectedProfile.",
                     )
                 }
                 currentRuntimeSessionId = created.runtimeSessionId
@@ -1127,7 +1126,7 @@ internal class CelesteController(
                 }
             }
 
-            "tool.start", "tool_call" -> {
+            "tool.start" -> {
                 if (mutableState.value.streamingText.isNotBlank()) finalizeAssistant(keepRunning = true)
                 val name = event.payload.string("name") ?: "Tool"
                 val input = event.payload.string("args_text")
@@ -1145,7 +1144,7 @@ internal class CelesteController(
                 )
             }
 
-            "tool.complete", "tool_result" -> {
+            "tool.complete" -> {
                 val name = event.payload.string("name") ?: "Tool"
                 val output = event.payload.string("output")
                     ?: event.payload["result"]?.toString().orEmpty()

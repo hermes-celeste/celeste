@@ -44,7 +44,7 @@ Do not derive protocol truth from animation or view-local state.
 
 `DashboardClient` handles short HTTP operations and creates a persistent `GatewayConnection`. Its private cookie jar keeps authenticated HTTP and WebSocket ticket minting in one process-owned boundary. The client can export and restore only Hermes session cookies through a redacted value type; it rejects material that does not match the normalized endpoint host and cookie path.
 
-Session listing prefers the authenticated dashboard REST route so Celeste receives authoritative pinned, model, profile, and source metadata. Only a missing REST route falls back to the legacy disposable WebSocket contract. `DashboardClient.resumeSession` also uses a disposable, minimally decoded resume path for the live contract test; the production conversation flow uses `GatewayConnection.resumeStoredSession` over the lifecycle-owned persistent gateway. Keep the discovery, test-only resume, and lifecycle-owned paths distinct when changing readiness or decoding behavior.
+Session listing uses the authenticated dashboard REST route so Celeste receives authoritative pinned, last-active, model, profile, and source metadata. Celeste requests the 50 most recently active sessions and retains every pinned row backfilled by Hermes. Time-based hiding requires an on-demand path to older history and must not make existing conversations unreachable. A missing required route is an incompatible dashboard, not a signal to switch transports. `DashboardClient.resumeSession` uses a disposable, minimally decoded resume path for the live contract test; the production conversation flow uses `GatewayConnection.resumeStoredSession` over the lifecycle-owned persistent gateway. Keep the discovery, test-only resume, and lifecycle-owned paths distinct when changing readiness or decoding behavior.
 
 ### Saved connection
 
@@ -64,7 +64,7 @@ Provider cookies may rotate while Hermes refreshes a session. Celeste snapshots 
 2. Restore origin-bound encrypted authentication material when automatic login remains enabled, otherwise prefill manual connection fields.
 3. Normalize and probe the dashboard base URL.
 4. Establish an in-memory credential: no credential for open loopback, a static machine token, or an authenticated cookie session.
-5. List sessions and profiles over HTTP, with a missing session-list route falling back to legacy JSON-RPC.
+5. List sessions and profiles over the current required HTTP routes.
 6. Keep connection progress visible while opening a non-persisted draft runtime through the persistent gateway; publish the connected empty composer only after the runtime is ready. Resume durable history only when the user selects it from the drawer.
 7. Publish the draft into the catalog only after the first `prompt.submit` crosses Hermes' persistence boundary.
 8. Reduce gateway events into the transcript and turn state.

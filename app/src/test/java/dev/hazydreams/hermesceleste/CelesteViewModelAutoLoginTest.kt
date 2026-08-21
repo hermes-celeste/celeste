@@ -475,7 +475,7 @@ class CelesteViewModelAutoLoginTest {
                 buildJsonObject {
                     put("session_id", "runtime-draft-$createSessionCalls")
                     put("stored_session_id", "stored-draft-$createSessionCalls")
-                    put("profile", "default")
+                    put("info", buildJsonObject { put("profile_name", "default") })
                 }
             } else {
                 JsonObject(emptyMap())
