@@ -118,111 +118,7 @@ No commit is needed when the baseline is clean and unchanged.
 
 ---
 
-### Task 2: Specify shared disposable WebSocket behavior with tests
-
-> Superseded: current Celeste discovers sessions through required REST routes and no longer opens a disposable `session.list` WebSocket. Keep focused coverage for the remaining disposable `session.resume` contract instead of preserving obsolete shared plumbing.
-
-**Objective:** Lock down the existing session-list and disposable-resume WebSocket behavior before extracting shared plumbing.
-
-**Files:**
-- Modify: `app/src/test/java/dev/hazydreams/hermesceleste/network/DashboardClientTest.kt`
-- Read: `app/src/main/java/dev/hazydreams/hermesceleste/network/DashboardClient.kt`
-
-**Step 1: Add focused tests**
-
-Cover both operations for:
-
-- expected JSON-RPC response ID filtering;
-- cancellation closing/canceling the socket;
-- 401/403 → `AuthenticationRejected`;
-- 429 → `RateLimited`;
-- other upgrade/transport failure → `TransportUnavailable`;
-- malformed response → `InvalidDashboardResponse`;
-- operation-specific user-facing failure messages.
-
-Use synthetic endpoints and credentials only.
-
-**Step 2: Run the focused tests**
-
-Run:
-
-```bash
-scripts/celeste-env ./gradlew --no-daemon testDebugUnitTest --tests 'dev.hazydreams.hermesceleste.network.DashboardClientTest'
-```
-
-Expected: the new tests pass against current behavior or expose an undocumented difference that must be resolved before extraction.
-
-**Step 3: Commit**
-
-```bash
-git add app/src/test/java/dev/hazydreams/hermesceleste/network/DashboardClientTest.kt
-git commit -m "test: define disposable gateway behavior"
-```
-
----
-
-### Task 3: Extract one disposable WebSocket request helper
-
-**Objective:** Remove duplicated socket lifecycle, completion, cancellation, and failure mapping from `DashboardClient` without changing operation semantics.
-
-**Files:**
-- Modify: `app/src/main/java/dev/hazydreams/hermesceleste/network/DashboardClient.kt`
-- Test: `app/src/test/java/dev/hazydreams/hermesceleste/network/DashboardClientTest.kt`
-
-**Step 1: Introduce a private helper**
-
-Use a focused shape such as:
-
-```kotlin
-private suspend fun <T> requestSingleWebSocketResponse(
-    request: Request,
-    frame: JsonObject,
-    expectedId: String,
-    operation: String,
-    decode: (JsonElement) -> T,
-): T
-```
-
-The helper owns:
-
-- `suspendCancellableCoroutine`;
-- one completion guard;
-- socket cancellation;
-- response-ID filtering;
-- close/failure completion;
-- shared HTTP status classification.
-
-It must not own session-list or session-resume decoding.
-
-**Step 2: Reduce the operation functions**
-
-Keep `requestSessionList` and `requestSessionResume` responsible only for:
-
-- constructing their JSON-RPC request;
-- naming the operation;
-- decoding the typed result.
-
-**Step 3: Run focused tests**
-
-Run:
-
-```bash
-scripts/celeste-env ./gradlew --no-daemon testDebugUnitTest --tests 'dev.hazydreams.hermesceleste.network.DashboardClientTest'
-git diff --check
-```
-
-Expected: all focused tests pass and the two operation functions no longer duplicate socket plumbing.
-
-**Step 4: Commit**
-
-```bash
-git add app/src/main/java/dev/hazydreams/hermesceleste/network/DashboardClient.kt app/src/test/java/dev/hazydreams/hermesceleste/network/DashboardClientTest.kt
-git commit -m "refactor: share disposable gateway requests"
-```
-
----
-
-### Task 4: Share canonical session-message decoding
+### Task 2: Share canonical session-message decoding
 
 **Objective:** Reuse one decoder for message roles, tool names, text, and deterministic identity while preserving separate disposable and persistent transports.
 
@@ -271,7 +167,7 @@ git commit -m "refactor: share gateway message decoding"
 
 ---
 
-### Task 5: Consolidate definitive authentication rejection
+### Task 3: Consolidate definitive authentication rejection
 
 **Objective:** Express saved-auth invalidation once at the application-state boundary while preserving distinct cold-restore and active-reconnect lifecycle work.
 
@@ -329,7 +225,7 @@ git commit -m "refactor: centralize authentication recovery"
 
 ---
 
-### Task 6: Split Compose screens by existing ownership
+### Task 4: Split Compose screens by existing ownership
 
 **Objective:** Make UI ownership navigable without changing routing, state ownership, visuals, or introducing a navigation framework.
 
@@ -383,7 +279,7 @@ git commit -m "refactor: split Compose screen ownership"
 
 ---
 
-### Task 7: Compact the Gateway settings contract
+### Task 5: Compact the Gateway settings contract
 
 **Objective:** Replace the long Gateway settings parameter list with coherent immutable screen state and actions after the screen has its own file.
 
@@ -452,12 +348,12 @@ git commit -m "refactor: compact Gateway screen state"
 
 ---
 
-### Task 8: Run the full non-packaging verification gate
+### Task 6: Run the full non-packaging verification gate
 
 **Objective:** Prove the cleanup preserved behavior and repository policy.
 
 **Files:**
-- Verify all files changed by Tasks 2–7
+- Verify all files changed by Tasks 2–5
 
 **Step 1: Unit and protocol tests**
 
