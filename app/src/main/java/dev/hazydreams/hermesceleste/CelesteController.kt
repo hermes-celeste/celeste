@@ -551,22 +551,12 @@ internal class CelesteController(
             ?: loaded.profiles.firstOrNull(DashboardProfile::isDefault)?.name
             ?: loaded.profiles.firstOrNull()?.name
             ?: "default"
-        mutableState.value = mutableState.value.copy(
-            connectionPhase = ConnectionPhase.Restoring,
-            savedAuthMode = currentDescriptor?.authMode,
-            sessions = null,
+        startConnectedDashboardDraft(
+            sessions = loaded.sessions,
             profiles = loaded.profiles,
             selectedProfile = selectedProfile,
-            activeSummary = null,
-            messages = emptyList(),
             password = password,
             sessionToken = sessionToken,
-            loadingMessage = "Connecting to Hermes…",
-            errorMessage = errorMessage,
-        )
-        startNewConversation(
-            clearDraft = true,
-            initialSessions = loaded.sessions,
             connectionWarning = errorMessage,
         )
     }
@@ -633,38 +623,101 @@ internal class CelesteController(
         }
     }
 
-    fun createNewConversation() = startNewConversation(clearDraft = true)
-
-    private fun startNewConversation(
-        clearDraft: Boolean,
-        initialSessions: List<StoredSession>? = null,
-        connectionWarning: String? = null,
+    private fun startConnectedDashboardDraft(
+        sessions: List<StoredSession>,
+        profiles: List<DashboardProfile>,
+        selectedProfile: String,
+        password: String,
+        sessionToken: String,
+        connectionWarning: String?,
     ) {
         val snapshot = mutableState.value
         val connection = snapshot.probe ?: return
         val activeCredential = credential ?: return
-        val selectedProfile = snapshot.selectedProfile
-        val preparingConnectedDashboard = initialSessions != null && snapshot.sessions == null
         closeGateway()
         mutableState.value = snapshot.copy(
-            connectionPhase = if (preparingConnectedDashboard) {
-                ConnectionPhase.Restoring
-            } else {
-                snapshot.connectionPhase
+            connectionPhase = ConnectionPhase.Restoring,
+            savedAuthMode = currentDescriptor?.authMode,
+            sessions = null,
+            profiles = profiles,
+            selectedProfile = selectedProfile,
+            activeSummary = null,
+            messages = emptyList(),
+            streamingText = "",
+            draft = "",
+            password = password,
+            sessionToken = sessionToken,
+            turnState = TurnState.Synchronizing,
+            loadingMessage = "Connecting to Hermes…",
+            errorMessage = connectionWarning,
+        )
+        createDraftRuntime(
+            connection = connection,
+            activeCredential = activeCredential,
+            selectedProfile = selectedProfile,
+            onRuntimeReady = { summary ->
+                completeDraftRuntime(
+                    summary = summary,
+                    sessions = sessions,
+                    connectionWarning = connectionWarning,
+                )
             },
+            onRuntimeFailure = { error ->
+                mutableState.value = mutableState.value.copy(
+                    connectionPhase = ConnectionPhase.RestoreFailed,
+                    turnState = TurnState.Reconnecting,
+                    loadingMessage = null,
+                    errorMessage = error.message ?: "Could not create a Hermes conversation.",
+                )
+            },
+        )
+    }
+
+    fun createNewConversation() = startUserConversation(clearDraft = true)
+
+    private fun startUserConversation(clearDraft: Boolean) {
+        val snapshot = mutableState.value
+        val connection = snapshot.probe ?: return
+        val activeCredential = credential ?: return
+        val selectedProfile = snapshot.selectedProfile
+        closeGateway()
+        mutableState.value = snapshot.copy(
             activeSummary = null,
             messages = emptyList(),
             streamingText = "",
             draft = if (clearDraft) "" else snapshot.draft,
             turnState = TurnState.Synchronizing,
-            loadingMessage = if (preparingConnectedDashboard) {
-                "Connecting to Hermes…"
-            } else {
-                "Starting a new $selectedProfile conversation…"
-            },
-            errorMessage = connectionWarning,
+            loadingMessage = "Starting a new $selectedProfile conversation…",
+            errorMessage = null,
         )
+        createDraftRuntime(
+            connection = connection,
+            activeCredential = activeCredential,
+            selectedProfile = selectedProfile,
+            onRuntimeReady = { summary ->
+                completeDraftRuntime(
+                    summary = summary,
+                    sessions = mutableState.value.sessions,
+                    connectionWarning = null,
+                )
+            },
+            onRuntimeFailure = { error ->
+                mutableState.value = mutableState.value.copy(
+                    turnState = TurnState.Reconnecting,
+                    loadingMessage = null,
+                    errorMessage = error.message ?: "Could not create a Hermes conversation.",
+                )
+            },
+        )
+    }
 
+    private fun createDraftRuntime(
+        connection: DashboardProbeResult,
+        activeCredential: GatewayCredential,
+        selectedProfile: String,
+        onRuntimeReady: (StoredSession) -> Unit,
+        onRuntimeFailure: (Throwable) -> Unit,
+    ) {
         val newGateway = dashboard.createGateway(connection.baseUrl, activeCredential)
         gateway = newGateway
         observeGateway(newGateway)
@@ -699,14 +752,7 @@ internal class CelesteController(
                 val events = bufferedEvents.toList()
                 bufferedEvents.clear()
                 reconciling = false
-                mutableState.value = mutableState.value.copy(
-                    connectionPhase = ConnectionPhase.Connected,
-                    sessions = initialSessions ?: mutableState.value.sessions,
-                    activeSummary = summary,
-                    turnState = TurnState.Idle,
-                    loadingMessage = null,
-                    errorMessage = connectionWarning,
-                )
+                onRuntimeReady(summary)
                 events.forEach(::applyEvent)
             }.onSuccess {
                 if (gateway !== newGateway) return@onSuccess
@@ -721,18 +767,24 @@ internal class CelesteController(
                     )
                     return@onFailure
                 }
-                mutableState.value = mutableState.value.copy(
-                    connectionPhase = if (preparingConnectedDashboard) {
-                        ConnectionPhase.RestoreFailed
-                    } else {
-                        mutableState.value.connectionPhase
-                    },
-                    turnState = TurnState.Reconnecting,
-                    loadingMessage = null,
-                    errorMessage = error.message ?: "Could not create a Hermes conversation.",
-                )
+                onRuntimeFailure(error)
             }
         }
+    }
+
+    private fun completeDraftRuntime(
+        summary: StoredSession,
+        sessions: List<StoredSession>?,
+        connectionWarning: String?,
+    ) {
+        mutableState.value = mutableState.value.copy(
+            connectionPhase = ConnectionPhase.Connected,
+            sessions = sessions,
+            activeSummary = summary,
+            turnState = TurnState.Idle,
+            loadingMessage = null,
+            errorMessage = connectionWarning,
+        )
     }
 
     fun sendMessage() {
@@ -817,7 +869,7 @@ internal class CelesteController(
 
     fun reconnectNow() {
         if (mutableState.value.activeSummary == null) {
-            if (mutableState.value.sessions != null) startNewConversation(clearDraft = false)
+            if (mutableState.value.sessions != null) startUserConversation(clearDraft = false)
             return
         }
         if (gateway == null) return
@@ -951,16 +1003,13 @@ internal class CelesteController(
         if (connectionAttempt != submitted.connectionAttempt) return
         val snapshot = mutableState.value
         if (snapshot.sessions == null) return
-        val visibleSummary = submitted.summary.copy(
-            preview = submitted.summary.preview.ifBlank { submitted.firstPrompt },
-            messageCount = maxOf(submitted.summary.messageCount, submitted.projectedMessageCount),
-        )
         val isActive = isActiveSession(submitted)
         if (isActive) currentSessionPublished = true
-        mutableState.value = snapshot.copy(
-            activeSummary = if (isActive) visibleSummary else snapshot.activeSummary,
-            sessions = listOf(visibleSummary) + snapshot.sessions
-                .filterNot { it.id == visibleSummary.id },
+        mutableState.value = snapshot.withPublishedSummary(
+            summary = submitted.summary,
+            fallbackPreview = submitted.firstPrompt,
+            projectedMessageCount = submitted.projectedMessageCount,
+            makeActive = isActive,
         )
     }
 
@@ -969,17 +1018,30 @@ internal class CelesteController(
         val snapshot = mutableState.value
         val summary = snapshot.activeSummary ?: return
         val firstUserText = snapshot.messages.firstOrNull { it.role == "user" }?.text.orEmpty()
-        val visibleSummary = summary.copy(
-            preview = summary.preview.ifBlank { firstUserText },
-            messageCount = maxOf(
-                summary.messageCount,
-                snapshot.messages.count { it.role == "user" || it.role == "assistant" },
-            ),
-        )
         currentSessionPublished = true
-        mutableState.value = snapshot.copy(
-            activeSummary = visibleSummary,
-            sessions = listOf(visibleSummary) + snapshot.sessions.orEmpty()
+        mutableState.value = snapshot.withPublishedSummary(
+            summary = summary,
+            fallbackPreview = firstUserText,
+            projectedMessageCount = snapshot.messages.count {
+                it.role == "user" || it.role == "assistant"
+            },
+            makeActive = true,
+        )
+    }
+
+    private fun CelesteUiState.withPublishedSummary(
+        summary: StoredSession,
+        fallbackPreview: String,
+        projectedMessageCount: Int,
+        makeActive: Boolean,
+    ): CelesteUiState {
+        val visibleSummary = summary.copy(
+            preview = summary.preview.ifBlank { fallbackPreview },
+            messageCount = maxOf(summary.messageCount, projectedMessageCount),
+        )
+        return copy(
+            activeSummary = if (makeActive) visibleSummary else activeSummary,
+            sessions = listOf(visibleSummary) + sessions.orEmpty()
                 .filterNot { it.id == visibleSummary.id },
         )
     }

@@ -259,6 +259,8 @@ class CelesteViewModelTest {
             listOf("stored-new-3", "stored-42"),
             viewModel.state.value.sessions?.map { it.id },
         )
+        assertEquals("Persist this conversation", viewModel.state.value.sessions?.first()?.preview)
+        assertEquals(1, viewModel.state.value.sessions?.first()?.messageCount)
 
         gateway.resumePayload = Json.parseToJsonElement(
             """{"session_id":"runtime-resumed","resumed":"stored-new-3","running":false,"status":"idle","inflight":null,"messages":[]}""",
@@ -309,6 +311,8 @@ class CelesteViewModelTest {
             listOf("stored-a-new-1", "stored-42"),
             viewModel.state.value.sessions?.map { it.id },
         )
+        assertEquals("Persist conversation A", viewModel.state.value.sessions?.first()?.preview)
+        assertEquals(1, viewModel.state.value.sessions?.first()?.messageCount)
         assertEquals(emptyList<ConversationMessage>(), viewModel.state.value.messages)
         viewModel.controller.close()
     }
