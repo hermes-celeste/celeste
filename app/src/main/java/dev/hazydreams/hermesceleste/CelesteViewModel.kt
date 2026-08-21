@@ -16,7 +16,6 @@ internal class CelesteViewModel(
     dashboard: DashboardService = DashboardClient(),
     connectionStore: ConnectionStore = InMemoryConnectionStore(),
     clientSource: String = "android",
-    currentEpochSeconds: () -> Double = { System.currentTimeMillis() / 1_000.0 },
     reconnectDelayMillis: (attempt: Int, wasRunning: Boolean) -> Long = { attempt, wasRunning ->
         if (wasRunning && attempt == 0) 100L else min(5_000L, 1_000L shl attempt.coerceAtMost(2))
     },
@@ -27,7 +26,6 @@ internal class CelesteViewModel(
         connectionStore = connectionStore,
         clientSource = clientSource,
         normalizeDashboardUrl = DashboardUrlPolicy::normalize,
-        currentEpochSeconds = currentEpochSeconds,
         reconnectDelayMillis = reconnectDelayMillis,
     )
 

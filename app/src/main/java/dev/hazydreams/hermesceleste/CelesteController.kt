@@ -97,13 +97,6 @@ private data class SubmittedSession(
     val projectedMessageCount: Int,
 )
 
-private const val RECENT_SESSION_WINDOW_SECONDS = 14 * 24 * 60 * 60
-
-internal fun List<StoredSession>.visibleSessionCatalog(nowEpochSeconds: Double): List<StoredSession> {
-    val cutoff = nowEpochSeconds - RECENT_SESSION_WINDOW_SECONDS
-    return filter { session -> session.pinned == true || session.lastActiveAt >= cutoff }
-}
-
 /**
  * Owns Celeste's portable application and session state.
  *
@@ -118,7 +111,6 @@ internal class CelesteController(
     private val connectionStore: ConnectionStore,
     private val clientSource: String,
     private val normalizeDashboardUrl: (String) -> String,
-    private val currentEpochSeconds: () -> Double,
     private val reconnectDelayMillis: (attempt: Int, wasRunning: Boolean) -> Long = { attempt, wasRunning ->
         if (wasRunning && attempt == 0) 100L else min(5_000L, 1_000L shl attempt.coerceAtMost(2))
     },
@@ -526,7 +518,6 @@ internal class CelesteController(
         selectedCredential: GatewayCredential,
     ): LoadedDashboard {
         val sessions = dashboard.listSessions(baseUrl, selectedCredential)
-            .visibleSessionCatalog(currentEpochSeconds())
         val profiles = dashboard.listProfiles(baseUrl, selectedCredential)
         return LoadedDashboard(selectedCredential, sessions, profiles)
     }
