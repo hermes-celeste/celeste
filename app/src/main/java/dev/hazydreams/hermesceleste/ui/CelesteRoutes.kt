@@ -72,6 +72,9 @@ internal fun CelesteRoutes(ui: CelesteUiState, controller: CelesteController) {
                             selectedSessionId = activeSummary?.id,
                             loadingMessage = ui.loadingMessage,
                             errorMessage = ui.errorMessage,
+                            hasMoreSessions = ui.hasMoreSessions,
+                            isLoadingMoreSessions = ui.isLoadingMoreSessions,
+                            sessionPageError = ui.sessionPageError,
                             onProfileSelected = controller::selectProfile,
                             onNewConversation = {
                                 drawerScope.launch {
@@ -85,6 +88,7 @@ internal fun CelesteRoutes(ui: CelesteUiState, controller: CelesteController) {
                                     controller.openSession(session)
                                 }
                             },
+                            onLoadMoreSessions = controller::loadMoreSessions,
                             onSettings = {
                                 drawerScope.launch {
                                     drawerState.close()

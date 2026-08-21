@@ -95,24 +95,31 @@ class DashboardClientTest {
     fun listsDashboardSessionsFromTheAuthoritativeRestCatalog() = runTest {
         server.enqueue(sessionListRest())
 
-        val sessions = DashboardClient().listSessions(
+        val page = DashboardClient().listSessions(
             baseUrl = server.url("/").toString().trimEnd('/'),
             credential = GatewayCredential.StaticToken("private-token"),
         )
 
+        val sessions = page.sessions
         assertEquals(3, sessions.size)
+        assertEquals(3, page.total)
+        assertEquals(15, page.limit)
+        assertEquals(0, page.offset)
+        assertFalse(page.hasMore)
         assertEquals("This conversation", sessions.first().title)
         assertEquals("desktop", sessions.first().source)
         assertEquals("work", sessions.first().profile)
         assertEquals("hermes-4", sessions.first().model)
         assertEquals(true, sessions.first().pinned)
+        assertTrue(sessions.first().unread)
         assertEquals(456.75, sessions.first().lastActiveAt, 0.0)
         assertEquals(100.0, sessions[1].lastActiveAt, 0.0)
         assertEquals("cron", sessions.last().source)
         assertEquals(false, sessions.last().pinned)
         val request = server.takeRequest()
         assertEquals("/api/sessions", request.url.encodedPath)
-        assertEquals("50", request.url.queryParameter("limit"))
+        assertEquals("15", request.url.queryParameter("limit"))
+        assertEquals("0", request.url.queryParameter("offset"))
         assertEquals("0", request.url.queryParameter("min_messages"))
         assertEquals("exclude", request.url.queryParameter("archived"))
         assertEquals("recent", request.url.queryParameter("order"))
@@ -121,7 +128,7 @@ class DashboardClientTest {
 
     @Test
     fun capsSessionDiscoveryAtFifty() = runTest {
-        server.enqueue(sessionListRest())
+        server.enqueue(sessionListRest(limit = 50))
 
         DashboardClient().listSessions(
             baseUrl = server.url("/").toString().trimEnd('/'),
@@ -130,6 +137,76 @@ class DashboardClientTest {
         )
 
         assertEquals("50", server.takeRequest().url.queryParameter("limit"))
+    }
+
+    @Test
+    fun requestsTheSelectedCatalogOffsetAndPreservesServerPagingMetadata() = runTest {
+        server.enqueue(
+            sessionListRest(
+                total = 41,
+                limit = 15,
+                offset = 15,
+            ),
+        )
+
+        val page = DashboardClient().listSessions(
+            baseUrl = server.url("/").toString().trimEnd('/'),
+            credential = GatewayCredential.None,
+            limit = 15,
+            offset = 15,
+        )
+
+        assertEquals(41, page.total)
+        assertEquals(15, page.limit)
+        assertEquals(15, page.offset)
+        assertTrue(page.hasMore)
+        val request = server.takeRequest()
+        assertEquals("15", request.url.queryParameter("limit"))
+        assertEquals("15", request.url.queryParameter("offset"))
+    }
+
+    @Test
+    fun rejectsPagingMetadataForADifferentWindow() = runTest {
+        server.enqueue(
+            sessionListRest(
+                total = 41,
+                limit = 15,
+                offset = 0,
+            ),
+        )
+
+        val failure = runCatching {
+            DashboardClient().listSessions(
+                baseUrl = server.url("/").toString().trimEnd('/'),
+                credential = GatewayCredential.None,
+                limit = 15,
+                offset = 15,
+            )
+        }.exceptionOrNull()
+
+        assertTrue(failure is InvalidDashboardResponse)
+    }
+
+    @Test
+    fun marksAStoredSessionReadWithItsProfileContext() = runTest {
+        server.enqueue(MockResponse.Builder().code(200).body("""{"ok":true}""").build())
+        val baseUrl = server.url("/").toString().trimEnd('/')
+
+        DashboardClient().markSessionRead(
+            baseUrl = baseUrl,
+            credential = GatewayCredential.StaticToken("private-token"),
+            sessionId = "stored/session 42",
+            profile = "work",
+        )
+
+        val request = server.takeRequest()
+        assertEquals("PATCH", request.method)
+        assertEquals("/api/sessions/stored%2Fsession%2042", request.url.encodedPath)
+        assertEquals("private-token", request.headers["X-Hermes-Session-Token"])
+        assertEquals(
+            Json.parseToJsonElement("""{"unread":false,"profile":"work"}"""),
+            Json.parseToJsonElement(request.body?.utf8().orEmpty()),
+        )
     }
 
     @Test
@@ -146,7 +223,7 @@ class DashboardClientTest {
         val baseUrl = server.url("/").toString().trimEnd('/')
 
         client.passwordLogin(baseUrl, "password", "test-user", "not-logged")
-        val sessions = client.listSessions(baseUrl, GatewayCredential.CookieSession)
+        val sessions = client.listSessions(baseUrl, GatewayCredential.CookieSession).sessions
 
         assertEquals(3, sessions.size)
         val login = server.takeRequest()
@@ -647,11 +724,15 @@ class DashboardClientTest {
         assertEquals("ticket-two", requests[4].url.queryParameter("ticket"))
     }
 
-    private fun sessionListRest(): MockResponse =
+    private fun sessionListRest(
+        total: Int = 3,
+        limit: Int = 15,
+        offset: Int = 0,
+    ): MockResponse =
         MockResponse.Builder()
             .code(200)
             .body(
-                """{"sessions":[{"id":"s1","title":"This conversation","preview":"perfect. lets build that.","started_at":123.5,"last_active":456.75,"message_count":42,"source":"desktop","profile":"work","model":"hermes-4","pinned":true},{"id":"s2","title":"Older chat","preview":"hello","started_at":100,"message_count":2,"source":"cli","profile":"default","model":null,"pinned":false},{"id":"cron-1","title":"Morning brief","preview":"","started_at":90,"message_count":1,"source":"cron","profile":"default","model":"hermes-4","pinned":false}],"total":3,"limit":50,"offset":0}""",
+                """{"sessions":[{"id":"s1","title":"This conversation","preview":"perfect. lets build that.","started_at":123.5,"last_active":456.75,"message_count":42,"source":"desktop","profile":"work","model":"hermes-4","pinned":true,"unread":true},{"id":"s2","title":"Older chat","preview":"hello","started_at":100,"message_count":2,"source":"cli","profile":"default","model":null,"pinned":false,"unread":false},{"id":"cron-1","title":"Morning brief","preview":"","started_at":90,"message_count":1,"source":"cron","profile":"default","model":"hermes-4","pinned":false,"unread":false}],"total":$total,"limit":$limit,"offset":$offset}""",
             )
             .build()
 

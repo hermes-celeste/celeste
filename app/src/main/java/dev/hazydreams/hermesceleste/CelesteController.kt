@@ -17,6 +17,7 @@ import dev.hazydreams.hermesceleste.network.GatewayConnectionState
 import dev.hazydreams.hermesceleste.network.GatewayCredential
 import dev.hazydreams.hermesceleste.network.GatewayEvent
 import dev.hazydreams.hermesceleste.network.ResumedSession
+import dev.hazydreams.hermesceleste.network.SessionCatalogPage
 import dev.hazydreams.hermesceleste.network.StoredSession
 import dev.hazydreams.hermesceleste.network.boolean
 import dev.hazydreams.hermesceleste.network.createSession
@@ -26,6 +27,7 @@ import dev.hazydreams.hermesceleste.network.string
 import dev.hazydreams.hermesceleste.network.submitPrompt
 import kotlin.math.min
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
@@ -65,6 +67,11 @@ internal data class CelesteUiState(
     val password: String = "",
     val sessionToken: String = "",
     val sessions: List<StoredSession>? = null,
+    val sessionCatalogTotal: Int = 0,
+    val nextSessionOffset: Int = 0,
+    val hasMoreSessions: Boolean = false,
+    val isLoadingMoreSessions: Boolean = false,
+    val sessionPageError: String? = null,
     val profiles: List<DashboardProfile> = listOf(DashboardProfile(name = "default", isDefault = true)),
     val selectedProfile: String = "default",
     val activeSummary: StoredSession? = null,
@@ -78,7 +85,7 @@ internal data class CelesteUiState(
 
 private data class LoadedDashboard(
     val credential: GatewayCredential,
-    val sessions: List<StoredSession>,
+    val sessionPage: SessionCatalogPage,
     val profiles: List<DashboardProfile>,
 )
 
@@ -96,6 +103,18 @@ private data class SubmittedSession(
     val firstPrompt: String,
     val projectedMessageCount: Int,
 )
+
+internal fun mergeSessionCatalog(
+    existing: List<StoredSession>,
+    incoming: List<StoredSession>,
+): List<StoredSession> {
+    val remaining = LinkedHashMap<String, StoredSession>()
+    incoming.forEach { session -> remaining[session.id] = session }
+    return buildList {
+        existing.forEach { session -> add(remaining.remove(session.id) ?: session) }
+        addAll(remaining.values)
+    }
+}
 
 /**
  * Owns Celeste's portable application and session state.
@@ -132,7 +151,10 @@ internal class CelesteController(
     private var reconnectJob: Job? = null
     private var foregroundCheckJob: Job? = null
     private var connectionJob: Job? = null
+    private var sessionPageJob: Job? = null
+    private val sessionMetadataJobs = mutableSetOf<Job>()
     private var connectionAttempt = 0L
+    private var sessionPageAttempt = 0L
     private val connectionStoreMutex = Mutex()
     private var currentDescriptor: SavedConnectionDescriptor? = null
     private var reconnectAttempts = 0
@@ -187,6 +209,11 @@ internal class CelesteController(
         mutableState.value = mutableState.value.copy(
             connectionPhase = ConnectionPhase.ManualSetup,
             sessions = null,
+            sessionCatalogTotal = 0,
+            nextSessionOffset = 0,
+            hasMoreSessions = false,
+            isLoadingMoreSessions = false,
+            sessionPageError = null,
             activeSummary = null,
             messages = emptyList(),
             streamingText = "",
@@ -326,6 +353,11 @@ internal class CelesteController(
         mutableState.value = snapshot.copy(
             connectionPhase = ConnectionPhase.ManualSetup,
             sessions = null,
+            sessionCatalogTotal = 0,
+            nextSessionOffset = 0,
+            hasMoreSessions = false,
+            isLoadingMoreSessions = false,
+            sessionPageError = null,
             activeSummary = null,
             messages = emptyList(),
             streamingText = "",
@@ -517,15 +549,21 @@ internal class CelesteController(
         baseUrl: String,
         selectedCredential: GatewayCredential,
     ): LoadedDashboard {
-        val sessions = dashboard.listSessions(baseUrl, selectedCredential)
+        val sessionPage = dashboard.listSessions(
+            baseUrl = baseUrl,
+            credential = selectedCredential,
+            limit = SESSION_PAGE_SIZE,
+            offset = 0,
+        )
         val profiles = dashboard.listProfiles(baseUrl, selectedCredential)
-        return LoadedDashboard(selectedCredential, sessions, profiles)
+        return LoadedDashboard(selectedCredential, sessionPage, profiles)
     }
 
     private suspend fun invalidateReusableAuthentication(
         descriptor: SavedConnectionDescriptor?,
         probe: DashboardProbeResult? = null,
     ) {
+        invalidateConnectionBoundWork()
         credential = null
         currentDescriptor = null
         dashboard.clearAuthentication()
@@ -552,7 +590,7 @@ internal class CelesteController(
             ?: loaded.profiles.firstOrNull()?.name
             ?: "default"
         startConnectedDashboardDraft(
-            sessions = loaded.sessions,
+            sessionPage = loaded.sessionPage,
             profiles = loaded.profiles,
             selectedProfile = selectedProfile,
             password = password,
@@ -576,10 +614,45 @@ internal class CelesteController(
     )
 
     private fun beginConnectionAttempt(): Long {
-        connectionAttempt += 1
         connectionJob?.cancel()
         connectionJob = null
+        return invalidateConnectionBoundWork()
+    }
+
+    private fun invalidateConnectionBoundWork(): Long {
+        connectionAttempt += 1
+        cancelSessionPageLoad()
+        cancelSessionMetadataUpdates()
         return connectionAttempt
+    }
+
+    private fun cancelSessionPageLoad() {
+        sessionPageAttempt += 1
+        sessionPageJob?.cancel()
+        sessionPageJob = null
+    }
+
+    private fun cancelSessionMetadataUpdates() {
+        sessionMetadataJobs.toList().forEach(Job::cancel)
+        sessionMetadataJobs.clear()
+    }
+
+    private fun launchSessionMetadataUpdate(block: suspend () -> Unit) {
+        val attempt = connectionAttempt
+        lateinit var job: Job
+        job = controllerScope.launch(start = CoroutineStart.LAZY) {
+            try {
+                if (isCurrentConnectionAttempt(attempt)) block()
+            } catch (error: CancellationException) {
+                throw error
+            } catch (_: Throwable) {
+                // Metadata acknowledgement must never block opening the conversation.
+            } finally {
+                sessionMetadataJobs.remove(job)
+            }
+        }
+        sessionMetadataJobs += job
+        job.start()
     }
 
     private fun isCurrentConnectionAttempt(attempt: Long): Boolean = connectionAttempt == attempt
@@ -587,18 +660,34 @@ internal class CelesteController(
     fun openSession(summary: StoredSession) {
         val connection = mutableState.value.probe ?: return
         val activeCredential = credential ?: return
+        val visibleSummary = if (summary.unread) summary.copy(unread = false) else summary
+        cancelSessionPageLoad()
         closeGateway()
         currentSessionCanResume = true
         currentSessionPublished = true
         mutableState.value = mutableState.value.copy(
-            activeSummary = summary,
+            activeSummary = visibleSummary,
+            sessions = mutableState.value.sessions?.map { session ->
+                if (session.id == summary.id) visibleSummary else session
+            },
             messages = emptyList(),
             streamingText = "",
             draft = "",
             turnState = TurnState.Synchronizing,
             loadingMessage = "Opening ${summary.title.ifBlank { "conversation" }}…",
             errorMessage = null,
+            isLoadingMoreSessions = false,
         )
+        if (summary.unread) {
+            launchSessionMetadataUpdate {
+                dashboard.markSessionRead(
+                    baseUrl = connection.baseUrl,
+                    credential = activeCredential,
+                    sessionId = summary.id,
+                    profile = summary.profile,
+                )
+            }
+        }
 
         val newGateway = dashboard.createGateway(connection.baseUrl, activeCredential)
         gateway = newGateway
@@ -624,7 +713,7 @@ internal class CelesteController(
     }
 
     private fun startConnectedDashboardDraft(
-        sessions: List<StoredSession>,
+        sessionPage: SessionCatalogPage,
         profiles: List<DashboardProfile>,
         selectedProfile: String,
         password: String,
@@ -639,6 +728,11 @@ internal class CelesteController(
             connectionPhase = ConnectionPhase.Restoring,
             savedAuthMode = currentDescriptor?.authMode,
             sessions = null,
+            sessionCatalogTotal = 0,
+            nextSessionOffset = 0,
+            hasMoreSessions = false,
+            isLoadingMoreSessions = false,
+            sessionPageError = null,
             profiles = profiles,
             selectedProfile = selectedProfile,
             activeSummary = null,
@@ -658,7 +752,7 @@ internal class CelesteController(
             onRuntimeReady = { summary ->
                 completeDraftRuntime(
                     summary = summary,
-                    sessions = sessions,
+                    sessionPage = sessionPage,
                     connectionWarning = connectionWarning,
                 )
             },
@@ -697,7 +791,7 @@ internal class CelesteController(
             onRuntimeReady = { summary ->
                 completeDraftRuntime(
                     summary = summary,
-                    sessions = mutableState.value.sessions,
+                    sessionPage = null,
                     connectionWarning = null,
                 )
             },
@@ -773,17 +867,85 @@ internal class CelesteController(
 
     private fun completeDraftRuntime(
         summary: StoredSession,
-        sessions: List<StoredSession>?,
+        sessionPage: SessionCatalogPage?,
         connectionWarning: String?,
     ) {
-        mutableState.value = mutableState.value.copy(
+        val snapshot = mutableState.value
+        mutableState.value = snapshot.copy(
             connectionPhase = ConnectionPhase.Connected,
-            sessions = sessions,
+            sessions = sessionPage?.sessions ?: snapshot.sessions,
+            sessionCatalogTotal = sessionPage?.total ?: snapshot.sessionCatalogTotal,
+            nextSessionOffset = sessionPage?.nextOffset ?: snapshot.nextSessionOffset,
+            hasMoreSessions = sessionPage?.hasMore ?: snapshot.hasMoreSessions,
+            isLoadingMoreSessions = false,
+            sessionPageError = null,
             activeSummary = summary,
             turnState = TurnState.Idle,
             loadingMessage = null,
             errorMessage = connectionWarning,
         )
+    }
+
+    fun loadMoreSessions() {
+        val snapshot = mutableState.value
+        val connection = snapshot.probe ?: return
+        val activeCredential = credential ?: return
+        if (
+            snapshot.sessions == null ||
+            !snapshot.hasMoreSessions ||
+            snapshot.isLoadingMoreSessions ||
+            snapshot.loadingMessage != null
+        ) {
+            return
+        }
+        val requestedOffset = snapshot.nextSessionOffset
+        val connectionGeneration = connectionAttempt
+        val pageAttempt = sessionPageAttempt
+        mutableState.value = snapshot.copy(
+            isLoadingMoreSessions = true,
+            sessionPageError = null,
+        )
+        sessionPageJob = controllerScope.launch {
+            try {
+                val page = dashboard.listSessions(
+                    baseUrl = connection.baseUrl,
+                    credential = activeCredential,
+                    limit = SESSION_PAGE_SIZE,
+                    offset = requestedOffset,
+                )
+                if (
+                    !isCurrentConnectionAttempt(connectionGeneration) ||
+                    sessionPageAttempt != pageAttempt
+                ) {
+                    return@launch
+                }
+                val current = mutableState.value
+                val nextOffset = page.nextOffset
+                mutableState.value = current.copy(
+                    sessions = mergeSessionCatalog(current.sessions.orEmpty(), page.sessions),
+                    sessionCatalogTotal = page.total,
+                    nextSessionOffset = nextOffset,
+                    hasMoreSessions = page.hasMore && nextOffset > requestedOffset,
+                    isLoadingMoreSessions = false,
+                    sessionPageError = null,
+                )
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: Throwable) {
+                if (
+                    !isCurrentConnectionAttempt(connectionGeneration) ||
+                    sessionPageAttempt != pageAttempt
+                ) {
+                    return@launch
+                }
+                mutableState.value = mutableState.value.copy(
+                    isLoadingMoreSessions = false,
+                    sessionPageError = error.message ?: "Could not load older conversations.",
+                )
+            } finally {
+                if (sessionPageJob === coroutineContext[Job]) sessionPageJob = null
+            }
+        }
     }
 
     fun sendMessage() {
@@ -1034,14 +1196,22 @@ internal class CelesteController(
         projectedMessageCount: Int,
         makeActive: Boolean,
     ): CelesteUiState {
+        val alreadyVisible = sessions.orEmpty().any { it.id == summary.id }
         val visibleSummary = summary.copy(
             preview = summary.preview.ifBlank { fallbackPreview },
             messageCount = maxOf(summary.messageCount, projectedMessageCount),
         )
+        val nextTotal = if (sessions != null && !alreadyVisible) {
+            sessionCatalogTotal + 1
+        } else {
+            sessionCatalogTotal
+        }
         return copy(
             activeSummary = if (makeActive) visibleSummary else activeSummary,
             sessions = listOf(visibleSummary) + sessions.orEmpty()
                 .filterNot { it.id == visibleSummary.id },
+            sessionCatalogTotal = nextTotal,
+            hasMoreSessions = nextSessionOffset < nextTotal,
         )
     }
 
@@ -1310,6 +1480,8 @@ internal class CelesteController(
         resourcesReleased = true
         connectionJob?.cancel()
         connectionJob = null
+        cancelSessionPageLoad()
+        cancelSessionMetadataUpdates()
         closeGateway()
         dashboard.clearAuthentication()
     }
@@ -1320,6 +1492,8 @@ internal class CelesteController(
     }
 
     companion object {
+        private const val SESSION_PAGE_SIZE = 15
+
         internal fun unpersistedInflightText(
             inflight: String,
             messages: List<ConversationMessage>,

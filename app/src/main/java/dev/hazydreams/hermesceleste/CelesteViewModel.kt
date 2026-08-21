@@ -47,6 +47,8 @@ internal class CelesteViewModel(
 
     fun loadSessions() = controller.loadSessions()
 
+    fun loadMoreSessions() = controller.loadMoreSessions()
+
     fun retrySavedConnection() = controller.retrySavedConnection()
 
     fun useAnotherConnection() = controller.useAnotherConnection()

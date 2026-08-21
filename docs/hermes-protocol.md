@@ -33,13 +33,14 @@ Transport security and sensitive data rules live in [`security.md`](security.md)
 | `POST /auth/logout` | Best-effort provider session revocation and cookie clearing; returns a `302` login redirect |
 | `POST /api/auth/ws-ticket` | Mint a short-lived, one-use WebSocket ticket from the cookie session |
 | `GET /api/profiles` | Read the server’s profile catalog |
-| `GET /api/sessions` | Read recent, pinned, and scheduled stored-conversation metadata |
+| `GET /api/sessions` | Read recent, pinned, scheduled, and unread stored-conversation metadata |
+| `PATCH /api/sessions/{session_id}` | Update authoritative conversation metadata such as the read watermark |
 
 Static-token profile requests use `X-Hermes-Session-Token`. Cookie-authenticated requests use the client’s private cookie jar. Celeste may Keystore-encrypt unexpired Hermes access, refresh, and provider cookies for the exact normalized endpoint; it never persists PKCE cookies, one-use WebSocket tickets, or passwords.
 
 Current Hermes requires `GET /api/profiles`. A missing route, authentication rejection, rate limiting, other HTTP or transport failure, or malformed response remains a failure.
 
-Session discovery requires `GET /api/sessions` with archived sessions excluded, a limit of 50, and server-side recent ordering by `last_active` with `started_at` as the data fallback. Hermes may backfill pinned sessions beyond the requested limit. Its compact rows are authoritative for profile, source, model, and pinned state; `source: "cron"` identifies a scheduled run. Missing routes, authentication rejection, rate limiting, other HTTP or transport failures, and malformed responses remain failures instead of silently changing transports.
+Session discovery requires `GET /api/sessions` with archived sessions excluded, 15-row `limit` and `offset` pages, and server-side recent ordering by `last_active` with `started_at` as the data fallback. The response's `total`, `limit`, and `offset` metadata controls exhaustion; advance by the requested page window rather than by response length because Hermes may append pinned sessions beyond that window. Deduplicate this pinned backfill by stable stored session ID while preserving the progressively loaded catalog. Compact rows are authoritative for profile, source, model, pinned, and unread state; `source: "cron"` identifies a scheduled run. Opening an unread row sends `PATCH /api/sessions/{session_id}` with `unread: false` and its profile context. A failed read acknowledgement does not block opening the conversation; later authoritative metadata may restore unread state. Missing routes, authentication rejection, rate limiting, other HTTP or transport failures, and malformed responses remain failures instead of silently changing transports.
 
 The shared HTTP client does not follow redirects. Reverse proxies must expose the expected routes directly under the normalized base path.
 

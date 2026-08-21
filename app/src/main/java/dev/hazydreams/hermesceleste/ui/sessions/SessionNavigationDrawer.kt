@@ -18,9 +18,11 @@ import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
@@ -29,10 +31,13 @@ import androidx.compose.material3.ModalDrawerSheet
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -60,6 +65,7 @@ import dev.hazydreams.hermesceleste.ui.CelesteSurfaceSelected
 import dev.hazydreams.hermesceleste.ui.CelesteTextMuted
 import dev.hazydreams.hermesceleste.ui.CelesteTextPrimary
 import dev.hazydreams.hermesceleste.ui.StatusMessage
+import kotlinx.coroutines.flow.distinctUntilChanged
 
 @Composable
 internal fun SessionNavigationDrawer(
@@ -69,9 +75,13 @@ internal fun SessionNavigationDrawer(
     selectedSessionId: String?,
     loadingMessage: String?,
     errorMessage: String?,
+    hasMoreSessions: Boolean,
+    isLoadingMoreSessions: Boolean,
+    sessionPageError: String?,
     onProfileSelected: (String) -> Unit,
     onNewConversation: () -> Unit,
     onSessionSelected: (StoredSession) -> Unit,
+    onLoadMoreSessions: () -> Unit,
     onSettings: () -> Unit,
 ) {
     var profileMenuExpanded by remember { mutableStateOf(false) }
@@ -81,6 +91,31 @@ internal fun SessionNavigationDrawer(
     val enabled = loadingMessage == null
     val sections = sessions.toSessionSections()
     val showProfile = profiles.size > 1
+    val listState = rememberLazyListState()
+    val currentLoadMore by rememberUpdatedState(onLoadMoreSessions)
+
+    LaunchedEffect(
+        listState,
+        enabled,
+        hasMoreSessions,
+        isLoadingMoreSessions,
+        sessionPageError,
+        sessions.size,
+    ) {
+        snapshotFlow {
+            shouldRequestNextSessionPage(
+                isScrollInProgress = listState.isScrollInProgress,
+                lastVisibleIndex = listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: -1,
+                totalItemCount = listState.layoutInfo.totalItemsCount,
+                enabled = enabled,
+                hasMoreSessions = hasMoreSessions,
+                isLoadingMoreSessions = isLoadingMoreSessions,
+                hasPageError = sessionPageError != null,
+            )
+        }.distinctUntilChanged().collect { shouldLoad ->
+            if (shouldLoad) currentLoadMore()
+        }
+    }
 
     ModalDrawerSheet(
         modifier = Modifier
@@ -164,6 +199,7 @@ internal fun SessionNavigationDrawer(
                 }
             } else {
                 LazyColumn(
+                    state = listState,
                     modifier = Modifier
                         .weight(1f)
                         .fillMaxWidth(),
@@ -230,6 +266,34 @@ internal fun SessionNavigationDrawer(
                                     ),
                                     onClick = { onSessionSelected(session) },
                                 )
+                            }
+                        }
+                    }
+                    if (isLoadingMoreSessions) {
+                        item(key = "session-page-loading") {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(48.dp)
+                                    .semantics { contentDescription = "Loading older conversations" },
+                                horizontalArrangement = Arrangement.Center,
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(18.dp),
+                                    color = CelesteAccent,
+                                    strokeWidth = 2.dp,
+                                )
+                            }
+                        }
+                    } else if (sessionPageError != null) {
+                        item(key = "session-page-error") {
+                            TextButton(
+                                onClick = onLoadMoreSessions,
+                                enabled = enabled && hasMoreSessions,
+                                modifier = Modifier.fillMaxWidth(),
+                            ) {
+                                Text("Retry loading older conversations")
                             }
                         }
                     }
@@ -351,7 +415,11 @@ private fun DrawerSessionRow(
             .fillMaxWidth()
             .semantics {
                 this.selected = selected
-                if (selected) stateDescription = "Current conversation"
+                val states = buildList {
+                    if (selected) add("Current conversation")
+                    if (session.unread) add("Unread")
+                }
+                if (states.isNotEmpty()) stateDescription = states.joinToString(", ")
             }
             .clickable(enabled = enabled, onClick = onClick),
         shape = RoundedCornerShape(if (selected) 22.dp else 12.dp),
@@ -359,27 +427,54 @@ private fun DrawerSessionRow(
         borderColor = Color.Transparent,
         contentPadding = PaddingValues(horizontal = 13.dp, vertical = 9.dp),
     ) {
-        Column {
-            Text(
-                text = session.title.ifBlank { "Untitled conversation" },
-                style = MaterialTheme.typography.bodyLarge,
-                fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
-            metadata?.let {
-                Spacer(Modifier.height(2.dp))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(modifier = Modifier.weight(1f)) {
                 Text(
-                    text = it,
-                    color = CelesteTextMuted,
-                    style = MaterialTheme.typography.labelSmall,
+                    text = session.title.ifBlank { "Untitled conversation" },
+                    style = MaterialTheme.typography.bodyLarge,
+                    fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
+                )
+                metadata?.let {
+                    Spacer(Modifier.height(2.dp))
+                    Text(
+                        text = it,
+                        color = CelesteTextMuted,
+                        style = MaterialTheme.typography.labelSmall,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+            }
+            if (session.unread) {
+                Spacer(Modifier.size(10.dp))
+                Box(
+                    modifier = Modifier
+                        .size(7.dp)
+                        .background(CelesteAccent, CircleShape),
                 )
             }
         }
     }
 }
+
+internal fun shouldRequestNextSessionPage(
+    isScrollInProgress: Boolean,
+    lastVisibleIndex: Int,
+    totalItemCount: Int,
+    enabled: Boolean,
+    hasMoreSessions: Boolean,
+    isLoadingMoreSessions: Boolean,
+    hasPageError: Boolean,
+): Boolean =
+    isScrollInProgress &&
+        enabled &&
+        hasMoreSessions &&
+        !isLoadingMoreSessions &&
+        !hasPageError &&
+        totalItemCount > 0 &&
+        lastVisibleIndex >= totalItemCount - 3
 
 private val NewConversationIcon: ImageVector by lazy {
     ImageVector.Builder(
