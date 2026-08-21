@@ -296,16 +296,6 @@ internal fun SessionNavigationDrawer(
                                 Text("Retry loading older conversations")
                             }
                         }
-                    } else if (hasMoreSessions) {
-                        item(key = "session-page-more") {
-                            TextButton(
-                                onClick = onLoadMoreSessions,
-                                enabled = enabled,
-                                modifier = Modifier.fillMaxWidth(),
-                            ) {
-                                Text("Load older conversations")
-                            }
-                        }
                     }
                 }
             }

@@ -637,28 +637,16 @@ internal class CelesteController(
         sessionMetadataJobs.clear()
     }
 
-    private fun launchSessionMetadataUpdate(
-        connection: DashboardProbeResult,
-        block: suspend () -> Unit,
-    ) {
+    private fun launchSessionMetadataUpdate(block: suspend () -> Unit) {
         val attempt = connectionAttempt
-        val descriptor = currentDescriptor
         lateinit var job: Job
         job = controllerScope.launch(start = CoroutineStart.LAZY) {
             try {
                 if (isCurrentConnectionAttempt(attempt)) block()
             } catch (error: CancellationException) {
                 throw error
-            } catch (error: Throwable) {
-                if (error is AuthenticationRejected && isCurrentConnectionAttempt(attempt)) {
-                    sessionMetadataJobs.remove(job)
-                    closeGateway()
-                    invalidateReusableAuthentication(
-                        descriptor = descriptor,
-                        probe = connection,
-                    )
-                }
-                // Transient metadata failures must never block opening the conversation.
+            } catch (_: Throwable) {
+                // Metadata acknowledgement must never block opening the conversation.
             } finally {
                 sessionMetadataJobs.remove(job)
             }
@@ -691,7 +679,7 @@ internal class CelesteController(
             isLoadingMoreSessions = false,
         )
         if (summary.unread) {
-            launchSessionMetadataUpdate(connection) {
+            launchSessionMetadataUpdate {
                 dashboard.markSessionRead(
                     baseUrl = connection.baseUrl,
                     credential = activeCredential,
@@ -889,8 +877,8 @@ internal class CelesteController(
             sessionCatalogTotal = sessionPage?.total ?: snapshot.sessionCatalogTotal,
             nextSessionOffset = sessionPage?.nextOffset ?: snapshot.nextSessionOffset,
             hasMoreSessions = sessionPage?.hasMore ?: snapshot.hasMoreSessions,
-            isLoadingMoreSessions = if (sessionPage == null) snapshot.isLoadingMoreSessions else false,
-            sessionPageError = if (sessionPage == null) snapshot.sessionPageError else null,
+            isLoadingMoreSessions = false,
+            sessionPageError = null,
             activeSummary = summary,
             turnState = TurnState.Idle,
             loadingMessage = null,
@@ -906,9 +894,7 @@ internal class CelesteController(
             snapshot.sessions == null ||
             !snapshot.hasMoreSessions ||
             snapshot.isLoadingMoreSessions ||
-            snapshot.loadingMessage != null ||
-            sessionMetadataJobs.isNotEmpty() ||
-            (!currentSessionPublished && snapshot.turnState != TurnState.Idle)
+            snapshot.loadingMessage != null
         ) {
             return
         }
@@ -935,13 +921,8 @@ internal class CelesteController(
                 }
                 val current = mutableState.value
                 val nextOffset = page.nextOffset
-                val mergedSessions = mergeSessionCatalog(current.sessions.orEmpty(), page.sessions)
-                val refreshedActiveSummary = current.activeSummary?.let { active ->
-                    page.sessions.firstOrNull { it.id == active.id } ?: active
-                }
                 mutableState.value = current.copy(
-                    sessions = mergedSessions,
-                    activeSummary = refreshedActiveSummary,
+                    sessions = mergeSessionCatalog(current.sessions.orEmpty(), page.sessions),
                     sessionCatalogTotal = page.total,
                     nextSessionOffset = nextOffset,
                     hasMoreSessions = page.hasMore && nextOffset > requestedOffset,
@@ -955,16 +936,6 @@ internal class CelesteController(
                     !isCurrentConnectionAttempt(connectionGeneration) ||
                     sessionPageAttempt != pageAttempt
                 ) {
-                    return@launch
-                }
-                if (error is AuthenticationRejected) {
-                    val descriptor = currentDescriptor
-                    if (sessionPageJob === coroutineContext[Job]) sessionPageJob = null
-                    closeGateway()
-                    invalidateReusableAuthentication(
-                        descriptor = descriptor,
-                        probe = connection,
-                    )
                     return@launch
                 }
                 mutableState.value = mutableState.value.copy(
@@ -987,8 +958,6 @@ internal class CelesteController(
         if (text.isBlank() || snapshot.turnState != TurnState.Idle) return
 
         val localId = nextLocalMessageId("local")
-        val shouldPublish = !currentSessionPublished
-        if (shouldPublish) cancelSessionPageLoad()
         val submittedSession = SubmittedSession(
             gateway = activeGateway,
             connectionAttempt = connectionAttempt,
@@ -999,6 +968,7 @@ internal class CelesteController(
                 it.role == "user" || it.role == "assistant"
             } + 1,
         )
+        val shouldPublish = !currentSessionPublished
         mutableState.value = snapshot.copy(
             messages = snapshot.messages + ConversationMessage(
                 role = "user",
@@ -1010,7 +980,6 @@ internal class CelesteController(
             draft = "",
             turnState = TurnState.Running,
             errorMessage = null,
-            isLoadingMoreSessions = if (shouldPublish) false else snapshot.isLoadingMoreSessions,
         )
         // prompt.submit creates the durable row before work begins. From this point on,
         // uncertain delivery must reconcile by stored ID and must never create/resend.
@@ -1232,20 +1201,17 @@ internal class CelesteController(
             preview = summary.preview.ifBlank { fallbackPreview },
             messageCount = maxOf(summary.messageCount, projectedMessageCount),
         )
-        val insertedIntoCatalog = sessions != null && !alreadyVisible
-        val nextTotal = if (insertedIntoCatalog) sessionCatalogTotal + 1 else sessionCatalogTotal
-        val nextOffset = if (insertedIntoCatalog) {
-            (nextSessionOffset + 1).coerceAtMost(nextTotal)
+        val nextTotal = if (sessions != null && !alreadyVisible) {
+            sessionCatalogTotal + 1
         } else {
-            nextSessionOffset
+            sessionCatalogTotal
         }
         return copy(
             activeSummary = if (makeActive) visibleSummary else activeSummary,
             sessions = listOf(visibleSummary) + sessions.orEmpty()
                 .filterNot { it.id == visibleSummary.id },
             sessionCatalogTotal = nextTotal,
-            nextSessionOffset = nextOffset,
-            hasMoreSessions = nextOffset < nextTotal,
+            hasMoreSessions = nextSessionOffset < nextTotal,
         )
     }
 
