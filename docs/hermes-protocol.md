@@ -64,12 +64,14 @@ Celeste currently uses:
 | Method | Identity | Purpose |
 | --- | --- | --- |
 | `session.list` | none | Compatibility fallback for stored-conversation discovery; also used as a foreground health check |
-| `session.create` | profile | Start a new profile-scoped runtime |
+| `session.create` | profile | Start a non-persisted profile-scoped draft runtime |
 | `session.resume` | stored session ID | Attach to durable history and recover runtime state |
 | `prompt.submit` | runtime session ID | Persist and begin a user turn |
 | `session.interrupt` | runtime session ID | Stop active work before reconciling history |
 
 Creation and resume include `source: "android"` and a terminal column count. Treat these as protocol inputs, not UI labels.
+
+Hermes does not insert a durable session row during `session.create`. The row is created lazily by the first `prompt.submit`. Celeste may therefore prepare the empty composer on launch, but it must keep that draft out of the conversation catalog until prompt submission succeeds or authoritative reconciliation confirms the submission.
 
 ## Event projection
 

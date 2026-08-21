@@ -18,7 +18,6 @@ import dev.hazydreams.hermesceleste.ui.gateway.GatewaySettingsActions
 import dev.hazydreams.hermesceleste.ui.gateway.GatewaySettingsScreen
 import dev.hazydreams.hermesceleste.ui.gateway.GatewaySettingsUiState
 import dev.hazydreams.hermesceleste.ui.gateway.SettingsScreen
-import dev.hazydreams.hermesceleste.ui.sessions.SessionListScreen
 import dev.hazydreams.hermesceleste.ui.sessions.SessionNavigationDrawer
 
 private val previewSessions = listOf(
@@ -244,28 +243,6 @@ fun RestoreFailedPreviewScreenshot() {
 }
 
 @PreviewTest
-@Preview(name = "03 · Conversations", widthDp = 390, heightDp = 844, showBackground = true)
-@Composable
-fun SessionListPreviewScreenshot() {
-    HermesCelesteTheme {
-        SessionListScreen(
-            sessions = previewSessions,
-            profiles = listOf(
-                DashboardProfile(name = "default", isDefault = true),
-                DashboardProfile(name = "work", model = "Hermes 4"),
-            ),
-            selectedProfile = "work",
-            loadingMessage = null,
-            errorMessage = null,
-            onProfileSelected = {},
-            onNewConversation = {},
-            onSessionSelected = {},
-            onSettings = {},
-        )
-    }
-}
-
-@PreviewTest
 @Preview(name = "18 · Navigation drawer", widthDp = 390, heightDp = 844, showBackground = true)
 @Composable
 fun NavigationDrawerPreviewScreenshot() {
@@ -291,39 +268,12 @@ fun NavigationDrawerPreviewScreenshot() {
 }
 
 @PreviewTest
-@Preview(name = "14 · Empty conversations", widthDp = 390, heightDp = 844, showBackground = true)
-@Composable
-fun EmptySessionListPreviewScreenshot() {
-    HermesCelesteTheme {
-        SessionListScreen(
-            sessions = emptyList(),
-            profiles = listOf(DashboardProfile(name = "default", isDefault = true)),
-            selectedProfile = "default",
-            loadingMessage = null,
-            errorMessage = null,
-            onProfileSelected = {},
-            onNewConversation = {},
-            onSessionSelected = {},
-            onSettings = {},
-        )
-    }
-}
-
-@PreviewTest
 @Preview(name = "04 · New conversation", widthDp = 390, heightDp = 844, showBackground = true)
 @Composable
 fun NewConversationPreviewScreenshot() {
     HermesCelesteTheme {
         PreviewConversation(
-            summary = StoredSession(
-                id = "new-work-chat",
-                title = "New conversation",
-                preview = "",
-                startedAt = 0.0,
-                messageCount = 0,
-                source = "android",
-                profile = "work",
-            ),
+            summary = null,
             messages = emptyList(),
             turnState = TurnState.Idle,
         )
@@ -466,7 +416,7 @@ private val richPreviewMessages = listOf(
 
 @Composable
 private fun PreviewConversation(
-    summary: StoredSession = previewSessions[1],
+    summary: StoredSession? = previewSessions[1],
     messages: List<ConversationMessage> = previewMessages,
     streamingText: String = "",
     draft: String = "",
@@ -476,7 +426,8 @@ private fun PreviewConversation(
     jumpToLatestVisible: Boolean? = null,
 ) {
     ConversationScreen(
-        summary = summary,
+        conversationKey = summary?.id ?: "local-draft",
+        title = summary?.title ?: "New conversation",
         messages = messages,
         streamingText = streamingText,
         draft = draft,

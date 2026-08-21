@@ -27,7 +27,7 @@ Compose renders `CelesteUiState` and emits user intent to `CelesteController`. T
 
 ### Application controller
 
-`CelesteController` coordinates cold-start restoration, the selected dashboard, in-memory credential, profile/session selection, persistent gateway, transcript projection, draft, and turn state. It is the boundary between UI intent and protocol operations. The host supplies its coroutine scope, `DashboardService`, `ConnectionStore`, client source, and mandatory dashboard URL admission function; the controller owns and cancels a child scope. Restoration stops after loading the session list; only explicit user intent opens a conversation.
+`CelesteController` coordinates cold-start restoration, the selected dashboard, in-memory credential, profile/session selection, persistent gateway, transcript projection, draft, and turn state. It is the boundary between UI intent and protocol operations. The host supplies its coroutine scope, `DashboardService`, `ConnectionStore`, client source, and mandatory dashboard URL admission function; the controller owns and cancels a child scope. After loading the session catalog, restoration keeps the connection surface visible while it opens a non-persisted Hermes draft runtime. Only a ready runtime publishes the connected empty composer, and the draft stays out of the catalog until the first prompt makes it durable.
 
 The Android `CelesteViewModel` constructs the controller with `viewModelScope`, Android's connection store, and the `android` client source. `MainActivity` forwards foreground/background events. A future platform host must provide equivalent lifetime and platform dependencies rather than reproduce controller behavior.
 
@@ -64,10 +64,11 @@ Provider cookies may rotate while Hermes refreshes a session. Celeste snapshots 
 2. Restore origin-bound encrypted authentication material when automatic login remains enabled, otherwise prefill manual connection fields.
 3. Normalize and probe the dashboard base URL.
 4. Establish an in-memory credential: no credential for open loopback, a static machine token, or an authenticated cookie session.
-5. List sessions and profiles over HTTP without selecting a conversation, with a missing session-list route falling back to legacy JSON-RPC.
-6. Create or resume a session through a persistent gateway only after user selection.
-7. Reduce gateway events into the transcript and turn state.
-8. On interruption, disconnect, or foreground recovery, ask the server for authoritative state before continuing.
+5. List sessions and profiles over HTTP, with a missing session-list route falling back to legacy JSON-RPC.
+6. Keep connection progress visible while opening a non-persisted draft runtime through the persistent gateway; publish the connected empty composer only after the runtime is ready. Resume durable history only when the user selects it from the drawer.
+7. Publish the draft into the catalog only after the first `prompt.submit` crosses Hermes' persistence boundary.
+8. Reduce gateway events into the transcript and turn state.
+9. On interruption, disconnect, or foreground recovery, ask the server for authoritative state before continuing.
 
 The dashboard remains the source of truth throughout this flow. Celeste holds a screen projection and unsent draft, not a competing history database.
 
@@ -97,6 +98,7 @@ Do not substitute one for the other because they happen to match in a test fixtu
 - Wait for `gateway.ready` before reporting a gateway as connected or sending RPCs.
 - Buffer events while a session snapshot is being resumed, apply the snapshot first, then replay buffered events. This prevents a stale snapshot from overwriting newer stream events.
 - Once `prompt.submit` begins, uncertain delivery is reconciled by stored session ID. Never automatically resend the prompt.
+- Bind asynchronous draft creation and first-prompt publication to their originating gateway and stored ID. A stale completion may update its own catalog row but must never replace the active conversation.
 - A newly created blank runtime may not yet be resumable. If it disconnects before the first prompt, recreate only that untouched empty session and preserve the draft.
 - On foreground, health-check the persistent socket. Replace and reconcile a stale connection rather than trusting an apparently open transport.
 - Ignore events carrying a different non-empty runtime session ID.
@@ -108,7 +110,7 @@ Do not substitute one for the other because they happen to match in a test fixtu
 
 - Tool completion currently pairs with the most recent pending tool by tool name, not by a tool-call ID. Concurrent tools with the same name are ambiguous.
 - Interim/final assistant merging and completion deduplication are text- and prefix-based projection rules, not protocol identity guarantees.
-- The synthetic summary for a newly created conversation is not refreshed from `session.list` while that conversation remains active.
+- The projected summary for a newly persisted conversation is not refreshed from `session.list` while that conversation remains active.
 
 Regression coverage for these invariants belongs to `CelesteController` and `HermesGateway`; see [`testing.md`](testing.md) for the current host-test locations.
 

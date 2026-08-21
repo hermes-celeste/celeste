@@ -47,8 +47,6 @@ internal class CelesteViewModel(
 
     fun loadSessions() = controller.loadSessions()
 
-    fun leaveSessionList() = controller.leaveSessionList()
-
     fun retrySavedConnection() = controller.retrySavedConnection()
 
     fun useAnotherConnection() = controller.useAnotherConnection()
@@ -60,8 +58,6 @@ internal class CelesteViewModel(
     fun openSession(summary: StoredSession) = controller.openSession(summary)
 
     fun createNewConversation() = controller.createNewConversation()
-
-    fun leaveConversation() = controller.leaveConversation()
 
     fun sendMessage() = controller.sendMessage()
 
