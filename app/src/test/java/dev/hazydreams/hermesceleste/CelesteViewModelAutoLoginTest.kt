@@ -1,5 +1,8 @@
 package dev.hazydreams.hermesceleste
 
+import java.io.IOException
+
+import dev.hazydreams.hermesceleste.connection.ConnectionStore
 import dev.hazydreams.hermesceleste.connection.InMemoryConnectionStore
 import dev.hazydreams.hermesceleste.connection.ReusableSecret
 import dev.hazydreams.hermesceleste.connection.SavedAuthMode
@@ -18,6 +21,7 @@ import dev.hazydreams.hermesceleste.network.GatewayEvent
 import dev.hazydreams.hermesceleste.network.InvalidDashboardResponse
 import dev.hazydreams.hermesceleste.network.StoredSession
 import dev.hazydreams.hermesceleste.network.TransportUnavailable
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -27,6 +31,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.resetMain
+import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
 import kotlinx.serialization.json.JsonElement
@@ -75,6 +80,80 @@ class CelesteViewModelAutoLoginTest {
         assertEquals("stored-draft-1", state.activeSummary?.id)
         assertEquals(1, dashboard.createSessionCalls)
         assertEquals(1, dashboard.probeCalls)
+    }
+
+    @Test
+    fun coldLaunchDoesNotExposeConnectedContentBeforeTheDraftIsReady() = runTest {
+        val descriptor = SavedConnectionDescriptor(
+            baseUrl = "https://hermes.example.net",
+            authMode = SavedAuthMode.Open,
+            expectsSecret = false,
+        )
+        val store = InMemoryConnectionStore(StoredConnection(descriptor, null))
+        val draftGate = CompletableDeferred<Unit>()
+        val dashboard = AutoLoginDashboard(openProbe).apply {
+            createSessionGate = draftGate
+        }
+
+        val viewModel = CelesteViewModel(dashboard = dashboard, connectionStore = store)
+        runCurrent()
+
+        assertEquals(ConnectionPhase.Restoring, viewModel.state.value.connectionPhase)
+        assertNull(viewModel.state.value.sessions)
+        assertNull(viewModel.state.value.activeSummary)
+
+        draftGate.complete(Unit)
+        advanceUntilIdle()
+
+        assertEquals(ConnectionPhase.Connected, viewModel.state.value.connectionPhase)
+        assertEquals(listOf("stored-1"), viewModel.state.value.sessions?.map { it.id })
+        assertEquals("stored-draft-1", viewModel.state.value.activeSummary?.id)
+    }
+
+    @Test
+    fun persistenceWarningSurvivesDraftStartup() = runTest {
+        val dashboard = AutoLoginDashboard(openProbe)
+        val viewModel = CelesteViewModel(
+            dashboard = dashboard,
+            connectionStore = ReplaceFailingConnectionStore(),
+        )
+        advanceUntilIdle()
+
+        viewModel.updateDashboardUrl("https://hermes.example.net")
+        viewModel.findDashboard()
+        advanceUntilIdle()
+        viewModel.loadSessions()
+        advanceUntilIdle()
+
+        assertEquals(ConnectionPhase.Connected, viewModel.state.value.connectionPhase)
+        assertEquals(
+            "Connected, but Celeste could not remember this connection.",
+            viewModel.state.value.errorMessage,
+        )
+    }
+
+    @Test
+    fun rejectedLandingDraftReturnsToAuthentication() = runTest {
+        val store = InMemoryConnectionStore()
+        val dashboard = AutoLoginDashboard(passwordProbe).apply {
+            gatewayConnectFailure = AuthenticationRejected("Hermes rejected the saved session.")
+        }
+        val viewModel = CelesteViewModel(dashboard = dashboard, connectionStore = store)
+        advanceUntilIdle()
+
+        viewModel.updateDashboardUrl("https://hermes.example.net")
+        viewModel.findDashboard()
+        advanceUntilIdle()
+        viewModel.updateUsername("celeste")
+        viewModel.updatePassword("synthetic-password")
+        viewModel.loadSessions()
+        advanceUntilIdle()
+
+        assertEquals(ConnectionPhase.AuthenticationRequired, viewModel.state.value.connectionPhase)
+        assertNull(viewModel.state.value.sessions)
+        assertNull(viewModel.state.value.activeSummary)
+        assertNull(store.load()?.secret)
+        assertFalse(store.load()?.descriptor?.autoLoginEnabled ?: true)
     }
 
     @Test
@@ -311,6 +390,8 @@ class CelesteViewModelAutoLoginTest {
         var logoutCalls = 0
         var clearAuthenticationCalls = 0
         var createSessionCalls = 0
+        var createSessionGate: CompletableDeferred<Unit>? = null
+        var gatewayConnectFailure: Throwable? = null
         var onLogout: (suspend () -> Unit)? = null
 
         override suspend fun probe(rawBaseUrl: String): DashboardProbeResult {
@@ -380,6 +461,7 @@ class CelesteViewModelAutoLoginTest {
             override val events: SharedFlow<GatewayEvent> = MutableSharedFlow()
 
             override suspend fun connect() {
+                gatewayConnectFailure?.let { throw it }
                 mutableState.value = GatewayConnectionState.Connected
             }
 
@@ -388,6 +470,7 @@ class CelesteViewModelAutoLoginTest {
                 params: JsonObject,
                 timeoutMillis: Long,
             ): JsonElement = if (method == "session.create") {
+                createSessionGate?.await()
                 createSessionCalls += 1
                 buildJsonObject {
                     put("session_id", "runtime-draft-$createSessionCalls")
@@ -402,6 +485,21 @@ class CelesteViewModelAutoLoginTest {
                 mutableState.value = GatewayConnectionState.Closed
             }
         }
+    }
+
+    private class ReplaceFailingConnectionStore : ConnectionStore {
+        override suspend fun load(): StoredConnection? = null
+
+        override suspend fun replace(
+            descriptor: SavedConnectionDescriptor,
+            secret: ReusableSecret?,
+        ) {
+            throw IOException("Synthetic persistence failure")
+        }
+
+        override suspend fun clearSecret() = Unit
+
+        override suspend fun forget() = Unit
     }
 
     private companion object {

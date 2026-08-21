@@ -15,6 +15,7 @@ import dev.hazydreams.hermesceleste.network.GatewayConnectionState
 import dev.hazydreams.hermesceleste.network.GatewayCredential
 import dev.hazydreams.hermesceleste.network.GatewayEvent
 import dev.hazydreams.hermesceleste.network.StoredSession
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Dispatchers
@@ -26,6 +27,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.resetMain
+import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
 import kotlinx.serialization.json.Json
@@ -271,6 +273,83 @@ class CelesteViewModelTest {
     }
 
     @Test
+    fun firstPromptPublicationStaysWithItsOriginatingSession() = runTest {
+        val firstGateway = FakeGateway("a-").apply {
+            promptGate = CompletableDeferred()
+        }
+        val secondGateway = FakeGateway("b-")
+        val gateways = ArrayDeque(listOf(firstGateway, secondGateway))
+        val dashboard = FakeDashboard(firstGateway).apply {
+            gatewayFactory = { gateways.removeFirst() }
+        }
+        val viewModel = CelesteViewModel(
+            dashboard = dashboard,
+            reconnectDelayMillis = { _, _ -> 0L },
+        )
+        viewModel.updateDashboardUrl("http://hermes.test:9119")
+        viewModel.findDashboard()
+        viewModel.loadSessions()
+        advanceUntilIdle()
+
+        assertEquals("stored-a-new-1", viewModel.state.value.activeSummary?.id)
+        viewModel.updateDraft("Persist conversation A")
+        viewModel.sendMessage()
+        runCurrent()
+
+        viewModel.createNewConversation()
+        advanceUntilIdle()
+        assertEquals("stored-b-new-1", viewModel.state.value.activeSummary?.id)
+        assertEquals(listOf("stored-42"), viewModel.state.value.sessions?.map { it.id })
+
+        firstGateway.promptGate?.complete(Unit)
+        advanceUntilIdle()
+
+        assertEquals("stored-b-new-1", viewModel.state.value.activeSummary?.id)
+        assertEquals(
+            listOf("stored-a-new-1", "stored-42"),
+            viewModel.state.value.sessions?.map { it.id },
+        )
+        assertEquals(emptyList<ConversationMessage>(), viewModel.state.value.messages)
+        viewModel.controller.close()
+    }
+
+    @Test
+    fun staleLaunchDraftCannotOverwriteASelectedConversation() = runTest {
+        val launchGateway = FakeGateway("launch-").apply {
+            createGate = CompletableDeferred()
+        }
+        val selectedGateway = FakeGateway("selected-")
+        val gateways = ArrayDeque(listOf(launchGateway, selectedGateway))
+        val dashboard = FakeDashboard(launchGateway).apply {
+            gatewayFactory = { gateways.removeFirst() }
+        }
+        val viewModel = CelesteViewModel(
+            dashboard = dashboard,
+            reconnectDelayMillis = { _, _ -> 0L },
+        )
+        viewModel.updateDashboardUrl("http://hermes.test:9119")
+        viewModel.findDashboard()
+        viewModel.loadSessions()
+        runCurrent()
+
+        assertEquals(ConnectionPhase.Restoring, viewModel.state.value.connectionPhase)
+        assertNull(viewModel.state.value.sessions)
+        viewModel.openSession(dashboard.session)
+        advanceUntilIdle()
+
+        assertEquals("stored-42", viewModel.state.value.activeSummary?.id)
+        assertEquals(TurnState.Idle, viewModel.state.value.turnState)
+
+        launchGateway.createGate?.complete(Unit)
+        advanceUntilIdle()
+
+        assertEquals("stored-42", viewModel.state.value.activeSummary?.id)
+        assertEquals(TurnState.Idle, viewModel.state.value.turnState)
+        assertNull(viewModel.state.value.errorMessage)
+        viewModel.controller.close()
+    }
+
+    @Test
     fun portableControllerUsesTheHostClientSource() = runTest {
         val gateway = FakeGateway()
         val dashboard = FakeDashboard(gateway)
@@ -381,6 +460,7 @@ class CelesteViewModelTest {
     ) : DashboardService {
         var profileFailure: Throwable? = null
         var clearAuthenticationCount = 0
+        var gatewayFactory: () -> GatewayConnection = { gateway }
 
         val session = StoredSession(
             id = "stored-42",
@@ -437,10 +517,12 @@ class CelesteViewModelTest {
         override fun createGateway(
             baseUrl: String,
             credential: GatewayCredential,
-        ): GatewayConnection = gateway
+        ): GatewayConnection = gatewayFactory()
     }
 
-    private class FakeGateway : GatewayConnection {
+    private class FakeGateway(
+        private val idPrefix: String = "",
+    ) : GatewayConnection {
         private val mutableState = MutableStateFlow<GatewayConnectionState>(GatewayConnectionState.Idle)
         private val mutableEvents = MutableSharedFlow<GatewayEvent>(extraBufferCapacity = 32)
         override val state: StateFlow<GatewayConnectionState> = mutableState
@@ -453,6 +535,8 @@ class CelesteViewModelTest {
         var closeCount = 0
         var failHealthCheck = false
         var connectFailure: Throwable? = null
+        var createGate: CompletableDeferred<Unit>? = null
+        var promptGate: CompletableDeferred<Unit>? = null
         var resumePayload: JsonObject = resumePayload(messages = emptyList(), running = false)
 
         override suspend fun connect() {
@@ -471,10 +555,11 @@ class CelesteViewModelTest {
             return when (method) {
                 "session.resume" -> resumePayload
                 "session.create" -> {
+                    createGate?.await()
                     createCount += 1
                     buildJsonObject {
-                        put("session_id", "runtime-new-$createCount")
-                        put("stored_session_id", "stored-new-$createCount")
+                        put("session_id", "runtime-${idPrefix}new-$createCount")
+                        put("stored_session_id", "stored-${idPrefix}new-$createCount")
                         put("profile", params["profile"]?.jsonPrimitive?.content ?: "default")
                     }
                 }
@@ -485,7 +570,10 @@ class CelesteViewModelTest {
                     }
                     buildJsonObject { put("sessions", "healthy") }
                 }
-                "prompt.submit" -> buildJsonObject { put("status", "streaming") }
+                "prompt.submit" -> {
+                    promptGate?.await()
+                    buildJsonObject { put("status", "streaming") }
+                }
                 "session.interrupt" -> buildJsonObject { put("status", "interrupting") }
                 else -> buildJsonObject {}
             }
