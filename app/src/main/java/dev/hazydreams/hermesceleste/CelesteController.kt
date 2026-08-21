@@ -877,8 +877,8 @@ internal class CelesteController(
             sessionCatalogTotal = sessionPage?.total ?: snapshot.sessionCatalogTotal,
             nextSessionOffset = sessionPage?.nextOffset ?: snapshot.nextSessionOffset,
             hasMoreSessions = sessionPage?.hasMore ?: snapshot.hasMoreSessions,
-            isLoadingMoreSessions = false,
-            sessionPageError = null,
+            isLoadingMoreSessions = if (sessionPage == null) snapshot.isLoadingMoreSessions else false,
+            sessionPageError = if (sessionPage == null) snapshot.sessionPageError else null,
             activeSummary = summary,
             turnState = TurnState.Idle,
             loadingMessage = null,
@@ -936,6 +936,16 @@ internal class CelesteController(
                     !isCurrentConnectionAttempt(connectionGeneration) ||
                     sessionPageAttempt != pageAttempt
                 ) {
+                    return@launch
+                }
+                if (error is AuthenticationRejected) {
+                    val descriptor = currentDescriptor
+                    if (sessionPageJob === coroutineContext[Job]) sessionPageJob = null
+                    closeGateway()
+                    invalidateReusableAuthentication(
+                        descriptor = descriptor,
+                        probe = connection,
+                    )
                     return@launch
                 }
                 mutableState.value = mutableState.value.copy(
@@ -1201,17 +1211,20 @@ internal class CelesteController(
             preview = summary.preview.ifBlank { fallbackPreview },
             messageCount = maxOf(summary.messageCount, projectedMessageCount),
         )
-        val nextTotal = if (sessions != null && !alreadyVisible) {
-            sessionCatalogTotal + 1
+        val insertedIntoCatalog = sessions != null && !alreadyVisible
+        val nextTotal = if (insertedIntoCatalog) sessionCatalogTotal + 1 else sessionCatalogTotal
+        val nextOffset = if (insertedIntoCatalog) {
+            (nextSessionOffset + 1).coerceAtMost(nextTotal)
         } else {
-            sessionCatalogTotal
+            nextSessionOffset
         }
         return copy(
             activeSummary = if (makeActive) visibleSummary else activeSummary,
             sessions = listOf(visibleSummary) + sessions.orEmpty()
                 .filterNot { it.id == visibleSummary.id },
             sessionCatalogTotal = nextTotal,
-            hasMoreSessions = nextSessionOffset < nextTotal,
+            nextSessionOffset = nextOffset,
+            hasMoreSessions = nextOffset < nextTotal,
         )
     }
 

@@ -298,6 +298,71 @@ class CelesteViewModelTest {
     }
 
     @Test
+    fun rejectedNextPageInvalidatesReusableAuthentication() = runTest {
+        val dashboard = FakeDashboard(FakeGateway()).apply {
+            sessionPages[0] = SessionCatalogPage(
+                sessions = listOf(session),
+                total = 30,
+                limit = 15,
+                offset = 0,
+            )
+            sessionPageFailures[15] = AuthenticationRejected("expired")
+        }
+        val viewModel = CelesteViewModel(dashboard = dashboard)
+        advanceUntilIdle()
+        viewModel.updateDashboardUrl("http://hermes.test:9119")
+        viewModel.findDashboard()
+        viewModel.loadSessions()
+        advanceUntilIdle()
+
+        viewModel.loadMoreSessions()
+        advanceUntilIdle()
+
+        assertEquals(ConnectionPhase.AuthenticationRequired, viewModel.state.value.connectionPhase)
+        assertNull(viewModel.state.value.sessions)
+        assertNull(viewModel.state.value.sessionPageError)
+    }
+
+    @Test
+    fun newDraftPreservesAnInFlightPageAndPreventsDuplicateRequest() = runTest {
+        val dashboard = FakeDashboard(FakeGateway()).apply {
+            sessionPages[0] = SessionCatalogPage(
+                sessions = listOf(session),
+                total = 30,
+                limit = 15,
+                offset = 0,
+            )
+            sessionPages[15] = SessionCatalogPage(
+                sessions = listOf(session.copy(id = "older")),
+                total = 30,
+                limit = 15,
+                offset = 15,
+            )
+            nextPageGate = CompletableDeferred()
+        }
+        val viewModel = CelesteViewModel(dashboard = dashboard)
+        advanceUntilIdle()
+        viewModel.updateDashboardUrl("http://hermes.test:9119")
+        viewModel.findDashboard()
+        viewModel.loadSessions()
+        advanceUntilIdle()
+
+        viewModel.loadMoreSessions()
+        runCurrent()
+        viewModel.createNewConversation()
+        runCurrent()
+
+        assertTrue(viewModel.state.value.isLoadingMoreSessions)
+        viewModel.loadMoreSessions()
+        assertEquals(listOf(15 to 0, 15 to 15), dashboard.sessionPageRequests)
+
+        dashboard.nextPageGate?.complete(Unit)
+        advanceUntilIdle()
+        assertEquals(listOf("stored-42", "older"), viewModel.state.value.sessions?.map { it.id })
+        assertFalse(viewModel.state.value.isLoadingMoreSessions)
+    }
+
+    @Test
     fun openingUnreadSessionClearsTheDotAndAcknowledgesHermesWithoutBlocking() = runTest {
         val gateway = FakeGateway()
         val dashboard = FakeDashboard(gateway).apply {
@@ -501,6 +566,9 @@ class CelesteViewModelTest {
         )
         assertEquals("Persist this conversation", viewModel.state.value.sessions?.first()?.preview)
         assertEquals(1, viewModel.state.value.sessions?.first()?.messageCount)
+        assertEquals(2, viewModel.state.value.sessionCatalogTotal)
+        assertEquals(2, viewModel.state.value.nextSessionOffset)
+        assertFalse(viewModel.state.value.hasMoreSessions)
 
         gateway.resumePayload = Json.parseToJsonElement(
             """{"session_id":"runtime-resumed","resumed":"stored-new-3","running":false,"status":"idle","inflight":null,"messages":[]}""",
