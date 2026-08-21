@@ -68,7 +68,18 @@ data class StoredSession(
     val model: String? = null,
     val pinned: Boolean? = null,
     val lastActiveAt: Double = startedAt,
+    val unread: Boolean = false,
 )
+
+data class SessionCatalogPage(
+    val sessions: List<StoredSession>,
+    val total: Int,
+    val limit: Int,
+    val offset: Int,
+) {
+    val nextOffset: Int get() = (offset + limit).coerceAtMost(total)
+    val hasMore: Boolean get() = nextOffset < total
+}
 
 data class DashboardProfile(
     val name: String,
@@ -127,8 +138,16 @@ interface DashboardService {
     suspend fun listSessions(
         baseUrl: String,
         credential: GatewayCredential,
-        limit: Int = 50,
-    ): List<StoredSession>
+        limit: Int = 15,
+        offset: Int = 0,
+    ): SessionCatalogPage
+
+    suspend fun markSessionRead(
+        baseUrl: String,
+        credential: GatewayCredential,
+        sessionId: String,
+        profile: String,
+    )
 
     suspend fun listProfiles(
         baseUrl: String,
@@ -334,10 +353,12 @@ class DashboardClient(
         baseUrl: String,
         credential: GatewayCredential,
         limit: Int,
-    ): List<StoredSession> {
+        offset: Int,
+    ): SessionCatalogPage {
         val boundedLimit = limit.coerceIn(1, 50)
+        val boundedOffset = offset.coerceAtLeast(0)
         return withContext(Dispatchers.IO) {
-            requestRestSessionList(baseUrl, credential, boundedLimit)
+            requestRestSessionList(baseUrl, credential, boundedLimit, boundedOffset)
         }
     }
 
@@ -345,10 +366,11 @@ class DashboardClient(
         baseUrl: String,
         credential: GatewayCredential,
         limit: Int,
-    ): List<StoredSession> {
+        offset: Int,
+    ): SessionCatalogPage {
         val url = "$baseUrl/api/sessions".toHttpUrl().newBuilder()
             .addQueryParameter("limit", limit.toString())
-            .addQueryParameter("offset", "0")
+            .addQueryParameter("offset", offset.toString())
             .addQueryParameter("min_messages", "0")
             .addQueryParameter("archived", "exclude")
             .addQueryParameter("order", "recent")
@@ -367,10 +389,56 @@ class DashboardClient(
             ?: throw InvalidDashboardResponse("Hermes returned no session list.")
         val rows = root["sessions"] as? JsonArray
             ?: throw InvalidDashboardResponse("Hermes returned no session list.")
-        return rows.map { row ->
+        val total = root["total"]?.jsonPrimitive?.intOrNull
+            ?.takeIf { it >= 0 }
+            ?: throw InvalidDashboardResponse("Hermes returned invalid session paging metadata.")
+        val responseLimit = root["limit"]?.jsonPrimitive?.intOrNull
+            ?.takeIf { it == limit }
+            ?: throw InvalidDashboardResponse("Hermes returned invalid session paging metadata.")
+        val responseOffset = root["offset"]?.jsonPrimitive?.intOrNull
+            ?.takeIf { it == offset }
+            ?: throw InvalidDashboardResponse("Hermes returned invalid session paging metadata.")
+        val sessions = rows.map { row ->
             decodeSession(row)
                 ?: throw InvalidDashboardResponse("Hermes returned an invalid session entry.")
         }
+        return SessionCatalogPage(
+            sessions = sessions,
+            total = total,
+            limit = responseLimit,
+            offset = responseOffset,
+        )
+    }
+
+    override suspend fun markSessionRead(
+        baseUrl: String,
+        credential: GatewayCredential,
+        sessionId: String,
+        profile: String,
+    ) = withContext(Dispatchers.IO) {
+        require(sessionId.isNotBlank()) { "Choose a Hermes session to mark read." }
+        require(profile.isNotBlank()) { "A Hermes profile is required." }
+        val url = "$baseUrl/api/sessions".toHttpUrl().newBuilder()
+            .addPathSegment(sessionId)
+            .build()
+        val body = buildJsonObject {
+            put("unread", false)
+            put("profile", profile)
+        }.toString().toRequestBody(JSON_MEDIA_TYPE)
+        executeJson(
+            Request.Builder()
+                .url(url)
+                .header("Accept", "application/json")
+                .apply {
+                    if (credential is GatewayCredential.StaticToken) {
+                        header("X-Hermes-Session-Token", credential.value.trim())
+                    }
+                }
+                .patch(body)
+                .build(),
+            "Hermes read state",
+        )
+        Unit
     }
 
     override suspend fun listProfiles(
@@ -660,6 +728,7 @@ class DashboardClient(
             model = row["model"]?.jsonPrimitive?.contentOrNull,
             pinned = (row["pinned"] as? JsonPrimitive)?.booleanOrNull,
             lastActiveAt = row["last_active"]?.jsonPrimitive?.doubleOrNull ?: startedAt,
+            unread = (row["unread"] as? JsonPrimitive)?.booleanOrNull ?: false,
         )
     }
 

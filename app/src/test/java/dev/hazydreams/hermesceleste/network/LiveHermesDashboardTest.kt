@@ -26,7 +26,7 @@ class LiveHermesDashboardTest {
         val client = DashboardClient()
 
         val probe = client.probe(url)
-        val sessions = client.listSessions(probe.baseUrl, credential, limit = 10)
+        val sessions = client.listSessions(probe.baseUrl, credential, limit = 10).sessions
 
         assertTrue("The real Hermes state store returned no sessions", sessions.isNotEmpty())
         val selected = sessions.first()

@@ -30,6 +30,7 @@ private val previewSessions = listOf(
         source = "desktop",
         model = "Hermes 4",
         pinned = true,
+        unread = true,
     ),
     StoredSession(
         id = "visual-layer",
@@ -258,9 +259,13 @@ fun NavigationDrawerPreviewScreenshot() {
                 selectedSessionId = "visual-layer",
                 loadingMessage = null,
                 errorMessage = null,
+                hasMoreSessions = true,
+                isLoadingMoreSessions = true,
+                sessionPageError = null,
                 onProfileSelected = {},
                 onNewConversation = {},
                 onSessionSelected = {},
+                onLoadMoreSessions = {},
                 onSettings = {},
             )
         }

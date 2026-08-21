@@ -14,7 +14,9 @@ import dev.hazydreams.hermesceleste.network.GatewayConnection
 import dev.hazydreams.hermesceleste.network.GatewayConnectionState
 import dev.hazydreams.hermesceleste.network.GatewayCredential
 import dev.hazydreams.hermesceleste.network.GatewayEvent
+import dev.hazydreams.hermesceleste.network.SessionCatalogPage
 import dev.hazydreams.hermesceleste.network.StoredSession
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -194,6 +196,244 @@ class CelesteViewModelTest {
         assertEquals(ConnectionPhase.ManualSetup, viewModel.state.value.connectionPhase)
         assertNull(viewModel.state.value.sessions)
         assertEquals("Hermes rejected profile access.", viewModel.state.value.errorMessage)
+    }
+
+    @Test
+    fun loadsNextSessionPageOnceAndDeduplicatesPinnedBackfill() = runTest {
+        val gateway = FakeGateway()
+        val dashboard = FakeDashboard(gateway)
+        val recent = dashboard.session.copy(id = "recent-1", title = "Recent")
+        val pinned = dashboard.session.copy(
+            id = "pinned-old",
+            title = "Pinned old",
+            pinned = true,
+            unread = true,
+        )
+        dashboard.sessionPages[0] = SessionCatalogPage(
+            sessions = listOf(recent, pinned),
+            total = 30,
+            limit = 15,
+            offset = 0,
+        )
+        dashboard.sessionPages[15] = SessionCatalogPage(
+            sessions = listOf(
+                dashboard.session.copy(id = "recent-16", title = "Older"),
+                pinned.copy(title = "Pinned refreshed", unread = false),
+            ),
+            total = 30,
+            limit = 15,
+            offset = 15,
+        )
+        dashboard.nextPageGate = CompletableDeferred()
+        val viewModel = CelesteViewModel(dashboard = dashboard)
+        advanceUntilIdle()
+        viewModel.updateDashboardUrl("http://hermes.test:9119")
+        viewModel.findDashboard()
+        viewModel.loadSessions()
+        advanceUntilIdle()
+
+        assertEquals(listOf(15 to 0), dashboard.sessionPageRequests)
+        assertEquals(15, viewModel.state.value.nextSessionOffset)
+        assertTrue(viewModel.state.value.hasMoreSessions)
+
+        viewModel.loadMoreSessions()
+        runCurrent()
+        assertTrue(viewModel.state.value.isLoadingMoreSessions)
+        viewModel.loadMoreSessions()
+        dashboard.nextPageGate?.complete(Unit)
+        advanceUntilIdle()
+
+        val state = viewModel.state.value
+        assertEquals(listOf(15 to 0, 15 to 15), dashboard.sessionPageRequests)
+        assertEquals(listOf("recent-1", "pinned-old", "recent-16"), state.sessions?.map { it.id })
+        assertEquals("Pinned refreshed", state.sessions?.first { it.id == "pinned-old" }?.title)
+        assertFalse(state.sessions?.first { it.id == "pinned-old" }?.unread ?: true)
+        assertEquals(30, state.nextSessionOffset)
+        assertFalse(state.hasMoreSessions)
+        assertFalse(state.isLoadingMoreSessions)
+        assertNull(state.sessionPageError)
+    }
+
+    @Test
+    fun failedNextPageKeepsLoadedRowsAndCanRetry() = runTest {
+        val dashboard = FakeDashboard(FakeGateway())
+        val first = dashboard.session.copy(id = "recent-1")
+        val older = dashboard.session.copy(id = "recent-16")
+        dashboard.sessionPages[0] = SessionCatalogPage(
+            sessions = listOf(first),
+            total = 30,
+            limit = 15,
+            offset = 0,
+        )
+        dashboard.sessionPages[15] = SessionCatalogPage(
+            sessions = listOf(older),
+            total = 30,
+            limit = 15,
+            offset = 15,
+        )
+        dashboard.sessionPageFailures[15] = IOException("synthetic older-page failure")
+        val viewModel = CelesteViewModel(dashboard = dashboard)
+        advanceUntilIdle()
+        viewModel.updateDashboardUrl("http://hermes.test:9119")
+        viewModel.findDashboard()
+        viewModel.loadSessions()
+        advanceUntilIdle()
+
+        viewModel.loadMoreSessions()
+        advanceUntilIdle()
+
+        assertEquals(listOf("recent-1"), viewModel.state.value.sessions?.map { it.id })
+        assertEquals("synthetic older-page failure", viewModel.state.value.sessionPageError)
+        assertTrue(viewModel.state.value.hasMoreSessions)
+        assertFalse(viewModel.state.value.isLoadingMoreSessions)
+
+        dashboard.sessionPageFailures.remove(15)
+        viewModel.loadMoreSessions()
+        advanceUntilIdle()
+
+        assertEquals(listOf("recent-1", "recent-16"), viewModel.state.value.sessions?.map { it.id })
+        assertEquals(listOf(15 to 0, 15 to 15, 15 to 15), dashboard.sessionPageRequests)
+        assertNull(viewModel.state.value.sessionPageError)
+        assertFalse(viewModel.state.value.hasMoreSessions)
+    }
+
+    @Test
+    fun openingUnreadSessionClearsTheDotAndAcknowledgesHermesWithoutBlocking() = runTest {
+        val gateway = FakeGateway()
+        val dashboard = FakeDashboard(gateway).apply {
+            session = session.copy(profile = "work", unread = true)
+            sessionPages[0] = SessionCatalogPage(
+                sessions = listOf(session),
+                total = 1,
+                limit = 15,
+                offset = 0,
+            )
+            markReadFailure = IOException("synthetic read acknowledgement failure")
+        }
+        val viewModel = CelesteViewModel(dashboard = dashboard)
+        advanceUntilIdle()
+        viewModel.updateDashboardUrl("http://hermes.test:9119")
+        viewModel.findDashboard()
+        viewModel.loadSessions()
+        advanceUntilIdle()
+
+        viewModel.openSession(dashboard.session)
+        assertFalse(viewModel.state.value.sessions?.single()?.unread ?: true)
+        advanceUntilIdle()
+
+        assertEquals(listOf("stored-42" to "work"), dashboard.markReadRequests)
+        assertEquals("stored-42", viewModel.state.value.activeSummary?.id)
+        assertEquals(TurnState.Idle, viewModel.state.value.turnState)
+        assertNull(viewModel.state.value.errorMessage)
+    }
+
+    @Test
+    fun openingSessionCancelsAStalePageBeforeItCanRestoreUnread() = runTest {
+        val gateway = FakeGateway()
+        val dashboard = FakeDashboard(gateway).apply {
+            session = session.copy(unread = true)
+            sessionPages[0] = SessionCatalogPage(
+                sessions = listOf(session),
+                total = 30,
+                limit = 15,
+                offset = 0,
+            )
+            sessionPages[15] = SessionCatalogPage(
+                sessions = listOf(session, session.copy(id = "older")),
+                total = 30,
+                limit = 15,
+                offset = 15,
+            )
+            nextPageGate = CompletableDeferred()
+            returnPageAfterCancellation = true
+        }
+        val viewModel = CelesteViewModel(dashboard = dashboard)
+        advanceUntilIdle()
+        viewModel.updateDashboardUrl("http://hermes.test:9119")
+        viewModel.findDashboard()
+        viewModel.loadSessions()
+        advanceUntilIdle()
+
+        viewModel.loadMoreSessions()
+        runCurrent()
+        viewModel.openSession(dashboard.session)
+        dashboard.nextPageGate?.complete(Unit)
+        advanceUntilIdle()
+
+        val state = viewModel.state.value
+        assertFalse(state.sessions?.single()?.unread ?: true)
+        assertFalse(state.isLoadingMoreSessions)
+        assertNull(state.sessionPageError)
+    }
+
+    @Test
+    fun authenticationInvalidationCannotPublishAnInFlightPage() = runTest {
+        val gateway = FakeGateway()
+        val dashboard = FakeDashboard(gateway).apply {
+            sessionPages[0] = SessionCatalogPage(
+                sessions = listOf(session),
+                total = 30,
+                limit = 15,
+                offset = 0,
+            )
+            sessionPages[15] = SessionCatalogPage(
+                sessions = listOf(session.copy(id = "older")),
+                total = 30,
+                limit = 15,
+                offset = 15,
+            )
+            nextPageGate = CompletableDeferred()
+        }
+        val viewModel = CelesteViewModel(
+            dashboard = dashboard,
+            reconnectDelayMillis = { _, _ -> 0L },
+        )
+        advanceUntilIdle()
+        viewModel.updateDashboardUrl("http://hermes.test:9119")
+        viewModel.findDashboard()
+        viewModel.loadSessions()
+        advanceUntilIdle()
+
+        viewModel.loadMoreSessions()
+        runCurrent()
+        gateway.connectFailure = AuthenticationRejected("expired")
+        gateway.disconnect("expired")
+        advanceUntilIdle()
+
+        assertEquals(ConnectionPhase.AuthenticationRequired, viewModel.state.value.connectionPhase)
+        assertNull(viewModel.state.value.sessions)
+        dashboard.nextPageGate?.complete(Unit)
+        advanceUntilIdle()
+        assertNull(viewModel.state.value.sessions)
+    }
+
+    @Test
+    fun changingConnectionsCancelsPendingReadAcknowledgement() = runTest {
+        val dashboard = FakeDashboard(FakeGateway()).apply {
+            session = session.copy(unread = true)
+            sessionPages[0] = SessionCatalogPage(
+                sessions = listOf(session),
+                total = 1,
+                limit = 15,
+                offset = 0,
+            )
+            markReadGate = CompletableDeferred()
+        }
+        val viewModel = CelesteViewModel(dashboard = dashboard)
+        advanceUntilIdle()
+        viewModel.updateDashboardUrl("http://hermes.test:9119")
+        viewModel.findDashboard()
+        viewModel.loadSessions()
+        advanceUntilIdle()
+
+        viewModel.openSession(dashboard.session)
+        runCurrent()
+        viewModel.useAnotherConnection()
+        dashboard.markReadGate?.complete(Unit)
+        advanceUntilIdle()
+
+        assertTrue(dashboard.markReadRequests.isEmpty())
+        assertEquals(ConnectionPhase.ManualSetup, viewModel.state.value.connectionPhase)
     }
 
     @Test
@@ -465,8 +705,16 @@ class CelesteViewModelTest {
         var profileFailure: Throwable? = null
         var clearAuthenticationCount = 0
         var gatewayFactory: () -> GatewayConnection = { gateway }
+        var nextPageGate: CompletableDeferred<Unit>? = null
+        var returnPageAfterCancellation = false
+        var markReadGate: CompletableDeferred<Unit>? = null
+        var markReadFailure: Throwable? = null
+        val sessionPages = mutableMapOf<Int, SessionCatalogPage>()
+        val sessionPageFailures = mutableMapOf<Int, Throwable>()
+        val sessionPageRequests = mutableListOf<Pair<Int, Int>>()
+        val markReadRequests = mutableListOf<Pair<String, String>>()
 
-        val session = StoredSession(
+        var session = StoredSession(
             id = "stored-42",
             title = "Shared conversation",
             preview = "",
@@ -498,7 +746,35 @@ class CelesteViewModelTest {
             baseUrl: String,
             credential: GatewayCredential,
             limit: Int,
-        ): List<StoredSession> = listOf(session)
+            offset: Int,
+        ): SessionCatalogPage {
+            sessionPageRequests += limit to offset
+            if (offset > 0) {
+                try {
+                    nextPageGate?.await()
+                } catch (error: CancellationException) {
+                    if (!returnPageAfterCancellation) throw error
+                }
+            }
+            sessionPageFailures[offset]?.let { throw it }
+            return sessionPages[offset] ?: SessionCatalogPage(
+                sessions = listOf(session),
+                total = 1,
+                limit = limit,
+                offset = offset,
+            )
+        }
+
+        override suspend fun markSessionRead(
+            baseUrl: String,
+            credential: GatewayCredential,
+            sessionId: String,
+            profile: String,
+        ) {
+            markReadGate?.await()
+            markReadRequests += sessionId to profile
+            markReadFailure?.let { throw it }
+        }
 
         override suspend fun listProfiles(
             baseUrl: String,

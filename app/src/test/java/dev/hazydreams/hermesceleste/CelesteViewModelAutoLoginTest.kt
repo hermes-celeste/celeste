@@ -19,6 +19,7 @@ import dev.hazydreams.hermesceleste.network.GatewayConnectionState
 import dev.hazydreams.hermesceleste.network.GatewayCredential
 import dev.hazydreams.hermesceleste.network.GatewayEvent
 import dev.hazydreams.hermesceleste.network.InvalidDashboardResponse
+import dev.hazydreams.hermesceleste.network.SessionCatalogPage
 import dev.hazydreams.hermesceleste.network.StoredSession
 import dev.hazydreams.hermesceleste.network.TransportUnavailable
 import kotlinx.coroutines.CompletableDeferred
@@ -414,16 +415,29 @@ class CelesteViewModelAutoLoginTest {
             baseUrl: String,
             credential: GatewayCredential,
             limit: Int,
-        ): List<StoredSession> = listOf(
-            StoredSession(
-                id = "stored-1",
-                title = "Choose me manually",
-                preview = "",
-                startedAt = 1.0,
-                messageCount = 1,
-                source = "desktop",
+            offset: Int,
+        ): SessionCatalogPage = SessionCatalogPage(
+            sessions = listOf(
+                StoredSession(
+                    id = "stored-1",
+                    title = "Choose me manually",
+                    preview = "",
+                    startedAt = 1.0,
+                    messageCount = 1,
+                    source = "desktop",
+                ),
             ),
+            total = 1,
+            limit = limit,
+            offset = offset,
         )
+
+        override suspend fun markSessionRead(
+            baseUrl: String,
+            credential: GatewayCredential,
+            sessionId: String,
+            profile: String,
+        ) = Unit
 
         override suspend fun listProfiles(
             baseUrl: String,
