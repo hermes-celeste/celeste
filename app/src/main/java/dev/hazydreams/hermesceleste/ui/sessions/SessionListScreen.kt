@@ -31,6 +31,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.semantics.contentDescription
@@ -67,6 +68,11 @@ internal fun SessionListScreen(
     onSettings: () -> Unit,
 ) {
     var profileMenuExpanded by remember { mutableStateOf(false) }
+    var pinnedExpanded by rememberSaveable { mutableStateOf(true) }
+    var recentsExpanded by rememberSaveable { mutableStateOf(true) }
+    var scheduledExpanded by rememberSaveable { mutableStateOf(true) }
+    val sections = sessions.toSessionSections()
+    val showProfile = profiles.size > 1
 
     CelesteScreen {
         Column(
@@ -166,18 +172,67 @@ internal fun SessionListScreen(
                             top = 12.dp,
                             bottom = 104.dp,
                         ),
-                        verticalArrangement = Arrangement.spacedBy(12.dp),
+                        verticalArrangement = Arrangement.spacedBy(4.dp),
                     ) {
-                        items(
-                            items = sessions,
-                            key = { session -> session.id },
-                        ) { session ->
-                            ConversationCard(
-                                session = session,
-                                showProfile = profiles.size > 1,
-                                enabled = loadingMessage == null,
-                                onClick = { onSessionSelected(session) },
-                            )
+                        if (sections.pinned.isNotEmpty()) {
+                            item(key = "pinned-header") {
+                                SessionSectionHeader(
+                                    label = "Pinned",
+                                    expanded = pinnedExpanded,
+                                    onToggle = { pinnedExpanded = !pinnedExpanded },
+                                )
+                            }
+                            if (pinnedExpanded) {
+                                items(sections.pinned, key = { session -> "pinned-${session.id}" }) { session ->
+                                    ConversationCard(
+                                        session = session,
+                                        metadata = session.compactMetadata(showProfile),
+                                        enabled = loadingMessage == null,
+                                        onClick = { onSessionSelected(session) },
+                                    )
+                                }
+                            }
+                        }
+                        if (sections.recents.isNotEmpty()) {
+                            item(key = "recents-header") {
+                                SessionSectionHeader(
+                                    label = "Recents",
+                                    expanded = recentsExpanded,
+                                    onToggle = { recentsExpanded = !recentsExpanded },
+                                )
+                            }
+                            if (recentsExpanded) {
+                                items(sections.recents, key = { session -> "recent-${session.id}" }) { session ->
+                                    ConversationCard(
+                                        session = session,
+                                        metadata = session.compactMetadata(showProfile),
+                                        enabled = loadingMessage == null,
+                                        onClick = { onSessionSelected(session) },
+                                    )
+                                }
+                            }
+                        }
+                        if (sections.scheduled.isNotEmpty()) {
+                            item(key = "scheduled-header") {
+                                SessionSectionHeader(
+                                    label = "Scheduled",
+                                    expanded = scheduledExpanded,
+                                    onToggle = { scheduledExpanded = !scheduledExpanded },
+                                )
+                            }
+                            if (scheduledExpanded) {
+                                items(sections.scheduled, key = { session -> "scheduled-${session.id}" }) { session ->
+                                    ConversationCard(
+                                        session = session,
+                                        metadata = session.compactMetadata(
+                                            showProfile = showProfile,
+                                            includeScheduledMarker = false,
+                                        ),
+                                        enabled = loadingMessage == null,
+                                        onClick = { onSessionSelected(session) },
+                                    )
+                                }
+                            }
                         }
                     }
 
@@ -198,7 +253,7 @@ internal fun SessionListScreen(
 @Composable
 private fun ConversationCard(
     session: StoredSession,
-    showProfile: Boolean,
+    metadata: String?,
     enabled: Boolean,
     onClick: () -> Unit,
 ) {
@@ -206,37 +261,25 @@ private fun ConversationCard(
         modifier = Modifier
             .fillMaxWidth()
             .clickable(enabled = enabled, onClick = onClick),
-        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 15.dp),
+        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 13.dp),
     ) {
         Column {
             Text(
                 text = session.title.ifBlank { "Untitled conversation" },
                 style = MaterialTheme.typography.titleMedium,
-                maxLines = 2,
+                maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
-            if (session.preview.isNotBlank()) {
-                Spacer(Modifier.height(6.dp))
+            metadata?.let {
+                Spacer(Modifier.height(3.dp))
                 Text(
-                    text = session.preview,
+                    text = it,
                     color = CelesteTextMuted,
-                    style = MaterialTheme.typography.bodyMedium,
-                    maxLines = 2,
+                    style = MaterialTheme.typography.labelMedium,
+                    maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                 )
             }
-            Spacer(Modifier.height(11.dp))
-            Text(
-                text = if (showProfile) {
-                    "${session.profile.uppercase()}  ·  ${session.messageCount} MESSAGES"
-                } else {
-                    "${session.messageCount} MESSAGES"
-                },
-                color = CelesteTextMuted,
-                fontSize = 9.sp,
-                fontWeight = FontWeight.SemiBold,
-                letterSpacing = 0.7.sp,
-            )
         }
     }
 }

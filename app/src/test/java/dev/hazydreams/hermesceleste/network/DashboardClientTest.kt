@@ -92,7 +92,59 @@ class DashboardClientTest {
     }
 
     @Test
-    fun listsTheDashboardStoredSessionsOverJsonRpc() = runBlocking {
+    fun listsDashboardSessionsFromTheAuthoritativeRestCatalog() = runTest {
+        server.enqueue(sessionListRest())
+
+        val sessions = DashboardClient().listSessions(
+            baseUrl = server.url("/").toString().trimEnd('/'),
+            credential = GatewayCredential.StaticToken("private-token"),
+        )
+
+        assertEquals(3, sessions.size)
+        assertEquals("This conversation", sessions.first().title)
+        assertEquals("desktop", sessions.first().source)
+        assertEquals("work", sessions.first().profile)
+        assertEquals("hermes-4", sessions.first().model)
+        assertEquals(true, sessions.first().pinned)
+        assertEquals("cron", sessions.last().source)
+        assertEquals(false, sessions.last().pinned)
+        val request = server.takeRequest()
+        assertEquals("/api/sessions", request.url.encodedPath)
+        assertEquals("200", request.url.queryParameter("limit"))
+        assertEquals("0", request.url.queryParameter("min_messages"))
+        assertEquals("exclude", request.url.queryParameter("archived"))
+        assertEquals("recent", request.url.queryParameter("order"))
+        assertEquals("private-token", request.headers["X-Hermes-Session-Token"])
+    }
+
+    @Test
+    fun passwordSessionUsesItsCookieForRestSessionDiscovery() = runTest {
+        server.enqueue(
+            MockResponse.Builder()
+                .code(200)
+                .addHeader("Set-Cookie", "hermes_session_at=access; Path=/; HttpOnly")
+                .body("""{"ok":true,"next":"/"}""")
+                .build(),
+        )
+        server.enqueue(sessionListRest())
+        val client = DashboardClient()
+        val baseUrl = server.url("/").toString().trimEnd('/')
+
+        client.passwordLogin(baseUrl, "password", "test-user", "not-logged")
+        val sessions = client.listSessions(baseUrl, GatewayCredential.CookieSession)
+
+        assertEquals(3, sessions.size)
+        val login = server.takeRequest()
+        val listing = server.takeRequest()
+        assertEquals("/auth/password-login", login.url.encodedPath)
+        assertTrue(login.body?.utf8().orEmpty().contains("\"username\":\"test-user\""))
+        assertEquals("/api/sessions", listing.url.encodedPath)
+        assertEquals("hermes_session_at=access", listing.headers["Cookie"])
+    }
+
+    @Test
+    fun missingRestSessionCatalogFallsBackToJsonRpc() = runBlocking {
+        server.enqueue(MockResponse.Builder().code(404).body("not found").build())
         server.enqueue(sessionListWebSocket())
 
         val sessions = DashboardClient().listSessions(
@@ -101,44 +153,48 @@ class DashboardClientTest {
         )
 
         assertEquals(2, sessions.size)
-        assertEquals("This conversation", sessions.first().title)
-        assertEquals("desktop", sessions.first().source)
-        assertEquals("work", sessions.first().profile)
+        assertEquals(null, sessions.first().model)
+        assertEquals(null, sessions.first().pinned)
+        val rest = server.takeRequest()
         val upgrade = server.takeRequest()
+        assertEquals("/api/sessions", rest.url.encodedPath)
         assertEquals("/api/ws", upgrade.url.encodedPath)
         assertEquals("private-token", upgrade.url.queryParameter("token"))
     }
 
     @Test
-    fun passwordSessionMintsOneTimeTicketBeforeListing() = runBlocking {
-        server.enqueue(
-            MockResponse.Builder()
-                .code(200)
-                .addHeader("Set-Cookie", "hermes_session_at=access; Path=/; HttpOnly")
-                .body("""{"ok":true,"next":"/"}""")
-                .build(),
-        )
-        server.enqueue(
-            MockResponse.Builder()
-                .code(200)
-                .body("""{"ticket":"single-use-ticket","ttl_seconds":30}""")
-                .build(),
-        )
-        server.enqueue(sessionListWebSocket())
-        val client = DashboardClient()
+    fun restSessionCatalogFailuresDoNotMasqueradeAsLegacyServers() {
         val baseUrl = server.url("/").toString().trimEnd('/')
+        listOf(
+            401 to AuthenticationRejected::class.java,
+            403 to AuthenticationRejected::class.java,
+            429 to RateLimited::class.java,
+            500 to TransportUnavailable::class.java,
+        ).forEach { (status, expectedType) ->
+            val before = server.requestCount
+            server.enqueue(MockResponse.Builder().code(status).build())
 
-        client.passwordLogin(baseUrl, "password", "test-user", "not-logged")
-        val sessions = client.listSessions(baseUrl, GatewayCredential.CookieSession)
+            val failure = runCatching {
+                runBlocking { DashboardClient().listSessions(baseUrl, GatewayCredential.None) }
+            }.exceptionOrNull()
 
-        assertEquals(2, sessions.size)
-        val login = server.takeRequest()
-        val ticket = server.takeRequest()
-        val upgrade = server.takeRequest()
-        assertEquals("/auth/password-login", login.url.encodedPath)
-        assertTrue(login.body?.utf8().orEmpty().contains("\"username\":\"test-user\""))
-        assertEquals("hermes_session_at=access", ticket.headers["Cookie"])
-        assertEquals("single-use-ticket", upgrade.url.queryParameter("ticket"))
+            assertTrue("Expected ${expectedType.simpleName} for HTTP $status", expectedType.isInstance(failure))
+            assertEquals(before + 1, server.requestCount)
+        }
+
+        val before = server.requestCount
+        server.enqueue(MockResponse.Builder().code(200).body("[]").build())
+        assertThrows(InvalidDashboardResponse::class.java) {
+            runBlocking { DashboardClient().listSessions(baseUrl, GatewayCredential.None) }
+        }
+        assertEquals(before + 1, server.requestCount)
+
+        val beforeInvalidRow = server.requestCount
+        server.enqueue(MockResponse.Builder().code(200).body("""{"sessions":[{"title":"missing id"}]}""").build())
+        assertThrows(InvalidDashboardResponse::class.java) {
+            runBlocking { DashboardClient().listSessions(baseUrl, GatewayCredential.None) }
+        }
+        assertEquals(beforeInvalidRow + 1, server.requestCount)
     }
 
     @Test
@@ -421,6 +477,7 @@ class DashboardClientTest {
     @Test
     fun disposableRequestsIgnoreResponsesWithUnexpectedIds() = runBlocking {
         DisposableOperation.entries.forEach { operation ->
+            operation.enqueueLegacySessionListPrelude(server)
             server.enqueue(disposableWebSocket(operation) { webSocket ->
                 webSocket.send(successFrame(operation, id = "another-request"))
                 webSocket.send(successFrame(operation))
@@ -440,6 +497,7 @@ class DashboardClientTest {
         DisposableOperation.entries.forEach { operation ->
             val requestReceived = CompletableDeferred<Unit>()
             val disconnected = CompletableDeferred<Unit>()
+            operation.enqueueLegacySessionListPrelude(server)
             server.enqueue(
                 MockResponse.Builder()
                     .webSocketUpgrade(
@@ -480,6 +538,7 @@ class DashboardClientTest {
                 429 to RateLimited::class.java,
                 500 to TransportUnavailable::class.java,
             ).forEach { (status, expectedType) ->
+                operation.enqueueLegacySessionListPrelude(server)
                 server.enqueue(MockResponse.Builder().code(status).build())
 
                 val failure = runCatching {
@@ -499,6 +558,7 @@ class DashboardClientTest {
     fun disposableRequestsRejectMalformedOperationResponses() = runBlocking {
         val baseUrl = server.url("/").toString().trimEnd('/')
         DisposableOperation.entries.forEach { operation ->
+            operation.enqueueLegacySessionListPrelude(server)
             server.enqueue(disposableWebSocket(operation) { webSocket ->
                 webSocket.send(
                     """{"jsonrpc":"2.0","id":"${operation.requestId}","result":{}}""",
@@ -580,6 +640,14 @@ class DashboardClientTest {
         assertEquals("/api/auth/ws-ticket", requests[3].url.encodedPath)
         assertEquals("ticket-two", requests[4].url.queryParameter("ticket"))
     }
+
+    private fun sessionListRest(): MockResponse =
+        MockResponse.Builder()
+            .code(200)
+            .body(
+                """{"sessions":[{"id":"s1","title":"This conversation","preview":"perfect. lets build that.","started_at":123.5,"message_count":42,"source":"desktop","profile":"work","model":"hermes-4","pinned":true},{"id":"s2","title":"Older chat","preview":"hello","started_at":100,"message_count":2,"source":"cli","profile":"default","model":null,"pinned":false},{"id":"cron-1","title":"Morning brief","preview":"","started_at":90,"message_count":1,"source":"cron","profile":"default","model":"hermes-4","pinned":false}],"total":3,"limit":200,"offset":0}""",
+            )
+            .build()
 
     private fun sessionListWebSocket(): MockResponse =
         MockResponse.Builder()
@@ -676,6 +744,12 @@ class DashboardClientTest {
             invalidResponse = "Hermes returned no runtime session identity.",
         ),
         ;
+
+        fun enqueueLegacySessionListPrelude(server: MockWebServer) {
+            if (this == SessionList) {
+                server.enqueue(MockResponse.Builder().code(404).body("not found").build())
+            }
+        }
 
         suspend fun execute(client: DashboardClient, baseUrl: String): Any = when (this) {
             SessionList -> client.listSessions(baseUrl, GatewayCredential.None)

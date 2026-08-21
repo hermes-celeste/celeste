@@ -29,6 +29,8 @@ private val previewSessions = listOf(
         startedAt = 1_786_104_000.0,
         messageCount = 18,
         source = "desktop",
+        model = "Hermes 4",
+        pinned = true,
     ),
     StoredSession(
         id = "visual-layer",
@@ -38,6 +40,7 @@ private val previewSessions = listOf(
         messageCount = 12,
         source = "desktop",
         profile = "work",
+        model = "Hermes 4",
     ),
     StoredSession(
         id = "dashboard-notes",
@@ -45,7 +48,8 @@ private val previewSessions = listOf(
         preview = "Verified ticketed WebSocket authentication and resumed an existing Hermes conversation.",
         startedAt = 1_785_931_200.0,
         messageCount = 9,
-        source = "cli",
+        source = "cron",
+        model = "Hermes 4",
     ),
     StoredSession(
         id = "release-checklist",
@@ -53,7 +57,10 @@ private val previewSessions = listOf(
         preview = "Secure credentials, emulator coverage, streaming, reconnection, and accessibility remain before release.",
         startedAt = 1_785_844_800.0,
         messageCount = 21,
-        source = "desktop",
+        source = "cron",
+        profile = "work",
+        model = "GPT-5.6",
+        pinned = true,
     ),
 )
 

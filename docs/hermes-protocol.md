@@ -33,10 +33,13 @@ Transport security and sensitive data rules live in [`security.md`](security.md)
 | `POST /auth/logout` | Best-effort provider session revocation and cookie clearing; returns a `302` login redirect |
 | `POST /api/auth/ws-ticket` | Mint a short-lived, one-use WebSocket ticket from the cookie session |
 | `GET /api/profiles` | Read the server’s profile catalog |
+| `GET /api/sessions` | Read recent, pinned, and scheduled stored-conversation metadata |
 
 Static-token profile requests use `X-Hermes-Session-Token`. Cookie-authenticated requests use the client’s private cookie jar. Celeste may Keystore-encrypt unexpired Hermes access, refresh, and provider cookies for the exact normalized endpoint; it never persists PKCE cookies, one-use WebSocket tickets, or passwords.
 
 Current Hermes exposes `GET /api/profiles`. A `404` from that route alone is treated as compatibility with an older single-profile dashboard and yields the `default` profile. Authentication rejection, rate limiting, other HTTP or transport failures, and malformed profile responses remain failures.
+
+Session discovery prefers `GET /api/sessions` with archived sessions excluded and server-side recent ordering. Its compact rows are authoritative for profile, source, model, and pinned state; `source: "cron"` identifies a scheduled run. A `404` from that route alone falls back to the older disposable-WebSocket `session.list` contract. Authentication rejection, rate limiting, other HTTP or transport failures, and malformed session responses remain failures instead of silently changing transports. Legacy rows may omit model and pinned state.
 
 The shared HTTP client does not follow redirects. Reverse proxies must expose the expected routes directly under the normalized base path.
 
@@ -60,7 +63,7 @@ Celeste currently uses:
 
 | Method | Identity | Purpose |
 | --- | --- | --- |
-| `session.list` | none | Read stored conversations; also used as a foreground health check |
+| `session.list` | none | Compatibility fallback for stored-conversation discovery; also used as a foreground health check |
 | `session.create` | profile | Start a new profile-scoped runtime |
 | `session.resume` | stored session ID | Attach to durable history and recover runtime state |
 | `prompt.submit` | runtime session ID | Persist and begin a user turn |
