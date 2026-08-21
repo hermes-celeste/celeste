@@ -637,16 +637,28 @@ internal class CelesteController(
         sessionMetadataJobs.clear()
     }
 
-    private fun launchSessionMetadataUpdate(block: suspend () -> Unit) {
+    private fun launchSessionMetadataUpdate(
+        connection: DashboardProbeResult,
+        block: suspend () -> Unit,
+    ) {
         val attempt = connectionAttempt
+        val descriptor = currentDescriptor
         lateinit var job: Job
         job = controllerScope.launch(start = CoroutineStart.LAZY) {
             try {
                 if (isCurrentConnectionAttempt(attempt)) block()
             } catch (error: CancellationException) {
                 throw error
-            } catch (_: Throwable) {
-                // Metadata acknowledgement must never block opening the conversation.
+            } catch (error: Throwable) {
+                if (error is AuthenticationRejected && isCurrentConnectionAttempt(attempt)) {
+                    sessionMetadataJobs.remove(job)
+                    closeGateway()
+                    invalidateReusableAuthentication(
+                        descriptor = descriptor,
+                        probe = connection,
+                    )
+                }
+                // Transient metadata failures must never block opening the conversation.
             } finally {
                 sessionMetadataJobs.remove(job)
             }
@@ -679,7 +691,7 @@ internal class CelesteController(
             isLoadingMoreSessions = false,
         )
         if (summary.unread) {
-            launchSessionMetadataUpdate {
+            launchSessionMetadataUpdate(connection) {
                 dashboard.markSessionRead(
                     baseUrl = connection.baseUrl,
                     credential = activeCredential,
@@ -894,7 +906,8 @@ internal class CelesteController(
             snapshot.sessions == null ||
             !snapshot.hasMoreSessions ||
             snapshot.isLoadingMoreSessions ||
-            snapshot.loadingMessage != null
+            snapshot.loadingMessage != null ||
+            (!currentSessionPublished && snapshot.turnState != TurnState.Idle)
         ) {
             return
         }
@@ -968,6 +981,8 @@ internal class CelesteController(
         if (text.isBlank() || snapshot.turnState != TurnState.Idle) return
 
         val localId = nextLocalMessageId("local")
+        val shouldPublish = !currentSessionPublished
+        if (shouldPublish) cancelSessionPageLoad()
         val submittedSession = SubmittedSession(
             gateway = activeGateway,
             connectionAttempt = connectionAttempt,
@@ -978,7 +993,6 @@ internal class CelesteController(
                 it.role == "user" || it.role == "assistant"
             } + 1,
         )
-        val shouldPublish = !currentSessionPublished
         mutableState.value = snapshot.copy(
             messages = snapshot.messages + ConversationMessage(
                 role = "user",
@@ -990,6 +1004,7 @@ internal class CelesteController(
             draft = "",
             turnState = TurnState.Running,
             errorMessage = null,
+            isLoadingMoreSessions = if (shouldPublish) false else snapshot.isLoadingMoreSessions,
         )
         // prompt.submit creates the durable row before work begins. From this point on,
         // uncertain delivery must reconcile by stored ID and must never create/resend.

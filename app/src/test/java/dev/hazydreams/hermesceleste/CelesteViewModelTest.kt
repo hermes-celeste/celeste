@@ -363,6 +363,65 @@ class CelesteViewModelTest {
     }
 
     @Test
+    fun firstPromptPublicationSerializesWithAnInFlightPage() = runTest {
+        val gateway = FakeGateway().apply {
+            promptGate = CompletableDeferred()
+        }
+        val dashboard = FakeDashboard(gateway).apply {
+            sessionPages[0] = SessionCatalogPage(
+                sessions = listOf(session),
+                total = 30,
+                limit = 15,
+                offset = 0,
+            )
+            sessionPages[15] = SessionCatalogPage(
+                sessions = listOf(session.copy(id = "stale-older")),
+                total = 31,
+                limit = 15,
+                offset = 15,
+            )
+            sessionPages[16] = SessionCatalogPage(
+                sessions = listOf(session.copy(id = "correct-older")),
+                total = 31,
+                limit = 15,
+                offset = 16,
+            )
+            nextPageGate = CompletableDeferred()
+            returnPageAfterCancellation = true
+        }
+        val viewModel = CelesteViewModel(dashboard = dashboard)
+        advanceUntilIdle()
+        viewModel.updateDashboardUrl("http://hermes.test:9119")
+        viewModel.findDashboard()
+        viewModel.loadSessions()
+        advanceUntilIdle()
+
+        viewModel.loadMoreSessions()
+        runCurrent()
+        viewModel.updateDraft("Publish while paging")
+        viewModel.sendMessage()
+        runCurrent()
+
+        assertFalse(viewModel.state.value.isLoadingMoreSessions)
+        viewModel.loadMoreSessions()
+        assertEquals(listOf(15 to 0, 15 to 15), dashboard.sessionPageRequests)
+
+        dashboard.nextPageGate?.complete(Unit)
+        runCurrent()
+        assertFalse(viewModel.state.value.sessions.orEmpty().any { it.id == "stale-older" })
+
+        gateway.promptGate?.complete(Unit)
+        advanceUntilIdle()
+        assertEquals(31, viewModel.state.value.sessionCatalogTotal)
+        assertEquals(16, viewModel.state.value.nextSessionOffset)
+
+        viewModel.loadMoreSessions()
+        advanceUntilIdle()
+        assertEquals(listOf(15 to 0, 15 to 15, 15 to 16), dashboard.sessionPageRequests)
+        assertTrue(viewModel.state.value.sessions.orEmpty().any { it.id == "correct-older" })
+    }
+
+    @Test
     fun openingUnreadSessionClearsTheDotAndAcknowledgesHermesWithoutBlocking() = runTest {
         val gateway = FakeGateway()
         val dashboard = FakeDashboard(gateway).apply {
@@ -390,6 +449,34 @@ class CelesteViewModelTest {
         assertEquals("stored-42", viewModel.state.value.activeSummary?.id)
         assertEquals(TurnState.Idle, viewModel.state.value.turnState)
         assertNull(viewModel.state.value.errorMessage)
+    }
+
+    @Test
+    fun rejectedReadAcknowledgementInvalidatesReusableAuthentication() = runTest {
+        val dashboard = FakeDashboard(FakeGateway()).apply {
+            session = session.copy(unread = true)
+            sessionPages[0] = SessionCatalogPage(
+                sessions = listOf(session),
+                total = 1,
+                limit = 15,
+                offset = 0,
+            )
+            markReadFailure = AuthenticationRejected("expired")
+        }
+        val viewModel = CelesteViewModel(dashboard = dashboard)
+        advanceUntilIdle()
+        viewModel.updateDashboardUrl("http://hermes.test:9119")
+        viewModel.findDashboard()
+        viewModel.loadSessions()
+        advanceUntilIdle()
+        val authenticationClearsBeforeRejection = dashboard.clearAuthenticationCount
+
+        viewModel.openSession(dashboard.session)
+        advanceUntilIdle()
+
+        assertEquals(ConnectionPhase.AuthenticationRequired, viewModel.state.value.connectionPhase)
+        assertNull(viewModel.state.value.sessions)
+        assertEquals(authenticationClearsBeforeRejection + 1, dashboard.clearAuthenticationCount)
     }
 
     @Test
