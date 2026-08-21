@@ -95,7 +95,7 @@ internal fun ConversationScreen(
     onSend: () -> Unit,
     onInterrupt: () -> Unit,
     onReconnect: () -> Unit,
-    onBack: () -> Unit,
+    onOpenDrawer: () -> Unit,
     initiallyFollowLatest: Boolean = true,
     jumpToLatestVisibleOverride: Boolean? = null,
 ) {
@@ -151,7 +151,7 @@ internal fun ConversationScreen(
             ConversationHeader(
                 title = summary.title.ifBlank { "Conversation" },
                 turnState = turnState,
-                onBack = onBack,
+                onOpenDrawer = onOpenDrawer,
             )
 
             if (loadingMessage != null || errorMessage != null) {
@@ -303,7 +303,7 @@ private fun JumpToLatestButton(
 private fun ConversationHeader(
     title: String,
     turnState: TurnState,
-    onBack: () -> Unit,
+    onOpenDrawer: () -> Unit,
 ) {
     Row(
         modifier = Modifier
@@ -318,12 +318,12 @@ private fun ConversationHeader(
             containerColor = CelesteSurfacePrimary,
         ) {
             IconButton(
-                onClick = onBack,
+                onClick = onOpenDrawer,
                 modifier = Modifier.fillMaxSize(),
             ) {
                 Icon(
-                    imageVector = ConversationListIcon,
-                    contentDescription = "Back to conversations",
+                    imageVector = NavigationDrawerIcon,
+                    contentDescription = "Open conversations",
                     modifier = Modifier.size(22.dp),
                     tint = CelesteTextPrimary,
                 )
@@ -481,7 +481,7 @@ private fun turnStateColor(turnState: TurnState): Color = when (turnState) {
     TurnState.Reconnecting -> CelesteError
 }
 
-private val ConversationListIcon: ImageVector by lazy {
+private val NavigationDrawerIcon: ImageVector by lazy {
     ImageVector.Builder(
         name = "Conversations",
         defaultWidth = 24.dp,

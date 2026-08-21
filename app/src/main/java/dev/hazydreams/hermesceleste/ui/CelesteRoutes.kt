@@ -1,9 +1,13 @@
 package dev.hazydreams.hermesceleste.ui
 
 import androidx.activity.compose.BackHandler
+import androidx.compose.material3.DrawerValue
+import androidx.compose.material3.ModalNavigationDrawer
+import androidx.compose.material3.rememberDrawerState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import dev.hazydreams.hermesceleste.CelesteUiState
@@ -17,6 +21,8 @@ import dev.hazydreams.hermesceleste.ui.gateway.GatewaySettingsScreen
 import dev.hazydreams.hermesceleste.ui.gateway.GatewaySettingsUiState
 import dev.hazydreams.hermesceleste.ui.gateway.SettingsScreen
 import dev.hazydreams.hermesceleste.ui.sessions.SessionListScreen
+import dev.hazydreams.hermesceleste.ui.sessions.SessionNavigationDrawer
+import kotlinx.coroutines.launch
 
 @Composable
 internal fun CelesteRoutes(ui: CelesteUiState, controller: CelesteController) {
@@ -51,21 +57,63 @@ internal fun CelesteRoutes(ui: CelesteUiState, controller: CelesteController) {
 
         CelesteDestination.Content -> when {
             activeSummary != null -> {
-                BackHandler(onBack = controller::leaveConversation)
-                ConversationScreen(
-                    summary = activeSummary,
-                    messages = ui.messages,
-                    streamingText = ui.streamingText,
-                    draft = ui.draft,
-                    turnState = ui.turnState,
-                    loadingMessage = ui.loadingMessage,
-                    errorMessage = ui.errorMessage,
-                    onDraftChange = controller::updateDraft,
-                    onSend = controller::sendMessage,
-                    onInterrupt = controller::interrupt,
-                    onReconnect = controller::reconnectNow,
-                    onBack = controller::leaveConversation,
-                )
+                val drawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
+                val drawerScope = rememberCoroutineScope()
+
+                BackHandler {
+                    if (drawerState.isOpen) {
+                        drawerScope.launch { drawerState.close() }
+                    } else {
+                        controller.leaveConversation()
+                    }
+                }
+                ModalNavigationDrawer(
+                    drawerState = drawerState,
+                    drawerContent = {
+                        SessionNavigationDrawer(
+                            sessions = sessions.orEmpty(),
+                            profiles = ui.profiles,
+                            selectedProfile = ui.selectedProfile,
+                            selectedSessionId = activeSummary.id,
+                            loadingMessage = ui.loadingMessage,
+                            errorMessage = ui.errorMessage,
+                            onProfileSelected = controller::selectProfile,
+                            onNewConversation = {
+                                drawerScope.launch {
+                                    drawerState.close()
+                                    controller.createNewConversation()
+                                }
+                            },
+                            onSessionSelected = { session ->
+                                drawerScope.launch {
+                                    drawerState.close()
+                                    controller.openSession(session)
+                                }
+                            },
+                            onSettings = {
+                                drawerScope.launch {
+                                    drawerState.close()
+                                    destination = CelesteDestination.Settings
+                                }
+                            },
+                        )
+                    },
+                ) {
+                    ConversationScreen(
+                        summary = activeSummary,
+                        messages = ui.messages,
+                        streamingText = ui.streamingText,
+                        draft = ui.draft,
+                        turnState = ui.turnState,
+                        loadingMessage = ui.loadingMessage,
+                        errorMessage = ui.errorMessage,
+                        onDraftChange = controller::updateDraft,
+                        onSend = controller::sendMessage,
+                        onInterrupt = controller::interrupt,
+                        onReconnect = controller::reconnectNow,
+                        onOpenDrawer = { drawerScope.launch { drawerState.open() } },
+                    )
+                }
             }
 
             sessions != null -> SessionListScreen(

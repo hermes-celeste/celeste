@@ -64,7 +64,7 @@ Connection state and active agent work are different signals. A connected idle c
 
 ## Conversation presence and activity
 
-**Status:** neutral dark foundation implemented; conversation-shell and compact session-navigation work remain under issue #36.
+**Status:** neutral dark foundation, conversation shell, and compact session navigation are implemented under issue #36; remaining cross-surface composition and device verification are still open.
 
 When conversation presence is designed:
 
