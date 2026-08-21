@@ -20,7 +20,6 @@ import dev.hazydreams.hermesceleste.ui.gateway.GatewaySettingsActions
 import dev.hazydreams.hermesceleste.ui.gateway.GatewaySettingsScreen
 import dev.hazydreams.hermesceleste.ui.gateway.GatewaySettingsUiState
 import dev.hazydreams.hermesceleste.ui.gateway.SettingsScreen
-import dev.hazydreams.hermesceleste.ui.sessions.SessionListScreen
 import dev.hazydreams.hermesceleste.ui.sessions.SessionNavigationDrawer
 import kotlinx.coroutines.launch
 
@@ -56,16 +55,12 @@ internal fun CelesteRoutes(ui: CelesteUiState, controller: CelesteController) {
         }
 
         CelesteDestination.Content -> when {
-            activeSummary != null -> {
+            sessions != null -> {
                 val drawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
                 val drawerScope = rememberCoroutineScope()
 
-                BackHandler {
-                    if (drawerState.isOpen) {
-                        drawerScope.launch { drawerState.close() }
-                    } else {
-                        controller.leaveConversation()
-                    }
+                BackHandler(enabled = drawerState.isOpen) {
+                    drawerScope.launch { drawerState.close() }
                 }
                 ModalNavigationDrawer(
                     drawerState = drawerState,
@@ -74,7 +69,7 @@ internal fun CelesteRoutes(ui: CelesteUiState, controller: CelesteController) {
                             sessions = sessions.orEmpty(),
                             profiles = ui.profiles,
                             selectedProfile = ui.selectedProfile,
-                            selectedSessionId = activeSummary.id,
+                            selectedSessionId = activeSummary?.id,
                             loadingMessage = ui.loadingMessage,
                             errorMessage = ui.errorMessage,
                             onProfileSelected = controller::selectProfile,
@@ -100,7 +95,8 @@ internal fun CelesteRoutes(ui: CelesteUiState, controller: CelesteController) {
                     },
                 ) {
                     ConversationScreen(
-                        summary = activeSummary,
+                        conversationKey = activeSummary?.id ?: LOCAL_DRAFT_KEY,
+                        title = activeSummary?.title ?: "New conversation",
                         messages = ui.messages,
                         streamingText = ui.streamingText,
                         draft = ui.draft,
@@ -115,18 +111,6 @@ internal fun CelesteRoutes(ui: CelesteUiState, controller: CelesteController) {
                     )
                 }
             }
-
-            sessions != null -> SessionListScreen(
-                sessions = sessions,
-                profiles = ui.profiles,
-                selectedProfile = ui.selectedProfile,
-                loadingMessage = ui.loadingMessage,
-                errorMessage = ui.errorMessage,
-                onProfileSelected = controller::selectProfile,
-                onNewConversation = controller::createNewConversation,
-                onSessionSelected = controller::openSession,
-                onSettings = { destination = CelesteDestination.Settings },
-            )
 
             ui.connectionPhase == ConnectionPhase.CheckingSavedConnection ||
                 ui.connectionPhase == ConnectionPhase.Restoring -> ConnectionLoadingScreen()
@@ -147,6 +131,8 @@ private enum class CelesteDestination {
     Settings,
     Gateway,
 }
+
+private const val LOCAL_DRAFT_KEY = "local-draft"
 
 @Composable
 private fun GatewaySettingsRoute(

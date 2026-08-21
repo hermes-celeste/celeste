@@ -129,6 +129,7 @@ internal class CelesteController(
     private var reconnectAttempts = 0
     private var reconciling = false
     private var currentSessionCanResume = true
+    private var currentSessionPublished = true
     private val bufferedEvents = mutableListOf<GatewayEvent>()
     private var resourcesReleased = false
 
@@ -292,21 +293,6 @@ internal class CelesteController(
             if (!isCurrentConnectionAttempt(attempt)) return@launch
             mutableState.value = mutableState.value.copy(loadingMessage = null)
         }
-    }
-
-    fun leaveSessionList() {
-        beginConnectionAttempt()
-        closeGateway()
-        credential = null
-        mutableState.value = mutableState.value.copy(
-            connectionPhase = ConnectionPhase.ManualSetup,
-            sessions = null,
-            activeSummary = null,
-            messages = emptyList(),
-            streamingText = "",
-            draft = "",
-            errorMessage = null,
-        )
     }
 
     fun retrySavedConnection() {
@@ -570,6 +556,7 @@ internal class CelesteController(
             loadingMessage = null,
             errorMessage = errorMessage,
         )
+        createNewConversation()
     }
 
     private fun manualState(
@@ -600,6 +587,7 @@ internal class CelesteController(
         val activeCredential = credential ?: return
         closeGateway()
         currentSessionCanResume = true
+        currentSessionPublished = true
         mutableState.value = mutableState.value.copy(
             activeSummary = summary,
             messages = emptyList(),
@@ -631,7 +619,9 @@ internal class CelesteController(
         }
     }
 
-    fun createNewConversation() {
+    fun createNewConversation() = startNewConversation(clearDraft = true)
+
+    private fun startNewConversation(clearDraft: Boolean) {
         val snapshot = mutableState.value
         val connection = snapshot.probe ?: return
         val activeCredential = credential ?: return
@@ -641,7 +631,7 @@ internal class CelesteController(
             activeSummary = null,
             messages = emptyList(),
             streamingText = "",
-            draft = "",
+            draft = if (clearDraft) "" else snapshot.draft,
             turnState = TurnState.Synchronizing,
             loadingMessage = "Starting a new $selectedProfile conversation…",
             errorMessage = null,
@@ -668,6 +658,7 @@ internal class CelesteController(
                 currentRuntimeSessionId = created.runtimeSessionId
                 currentStoredSessionId = created.storedSessionId
                 currentSessionCanResume = false
+                currentSessionPublished = false
                 val summary = StoredSession(
                     id = created.storedSessionId,
                     title = "New conversation",
@@ -681,8 +672,6 @@ internal class CelesteController(
                 bufferedEvents.clear()
                 reconciling = false
                 mutableState.value = mutableState.value.copy(
-                    sessions = listOf(summary) + mutableState.value.sessions.orEmpty()
-                        .filterNot { it.id == summary.id },
                     activeSummary = summary,
                     turnState = TurnState.Idle,
                     loadingMessage = null,
@@ -694,25 +683,12 @@ internal class CelesteController(
             }.onFailure { error ->
                 if (gateway === newGateway) closeGateway()
                 mutableState.value = mutableState.value.copy(
-                    turnState = TurnState.Idle,
+                    turnState = TurnState.Reconnecting,
                     loadingMessage = null,
                     errorMessage = error.message ?: "Could not create a Hermes conversation.",
                 )
             }
         }
-    }
-
-    fun leaveConversation() {
-        closeGateway()
-        mutableState.value = mutableState.value.copy(
-            activeSummary = null,
-            messages = emptyList(),
-            streamingText = "",
-            draft = "",
-            turnState = TurnState.Idle,
-            loadingMessage = null,
-            errorMessage = null,
-        )
     }
 
     fun sendMessage() {
@@ -746,6 +722,7 @@ internal class CelesteController(
                             if (message.id == localId) message.copy(pending = false) else message
                         },
                     )
+                    publishCurrentSession()
                 }
                 .onFailure { error ->
                     mutableState.value = mutableState.value.copy(
@@ -779,7 +756,11 @@ internal class CelesteController(
     }
 
     fun reconnectNow() {
-        if (gateway == null || mutableState.value.activeSummary == null) return
+        if (mutableState.value.activeSummary == null) {
+            if (mutableState.value.sessions != null) startNewConversation(clearDraft = false)
+            return
+        }
+        if (gateway == null) return
         reconnectJob?.cancel()
         reconnectJob = null
         reconnectAttempts = 0
@@ -897,6 +878,27 @@ internal class CelesteController(
                 TurnState.Idle
             },
             errorMessage = null,
+        )
+        publishCurrentSession()
+    }
+
+    private fun publishCurrentSession() {
+        if (currentSessionPublished) return
+        val snapshot = mutableState.value
+        val summary = snapshot.activeSummary ?: return
+        val firstUserText = snapshot.messages.firstOrNull { it.role == "user" }?.text.orEmpty()
+        val visibleSummary = summary.copy(
+            preview = summary.preview.ifBlank { firstUserText },
+            messageCount = maxOf(
+                summary.messageCount,
+                snapshot.messages.count { it.role == "user" || it.role == "assistant" },
+            ),
+        )
+        currentSessionPublished = true
+        mutableState.value = snapshot.copy(
+            activeSummary = visibleSummary,
+            sessions = listOf(visibleSummary) + snapshot.sessions.orEmpty()
+                .filterNot { it.id == visibleSummary.id },
         )
     }
 
@@ -1156,6 +1158,7 @@ internal class CelesteController(
         currentRuntimeSessionId = null
         currentStoredSessionId = null
         currentSessionCanResume = true
+        currentSessionPublished = true
         activeGateway?.close()
     }
 

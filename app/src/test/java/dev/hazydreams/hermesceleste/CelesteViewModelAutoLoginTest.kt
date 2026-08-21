@@ -31,6 +31,8 @@ import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -54,7 +56,7 @@ class CelesteViewModelAutoLoginTest {
     }
 
     @Test
-    fun coldLaunchRestoresTheConnectionButDoesNotChooseAConversation() = runTest {
+    fun coldLaunchRestoresIntoAnUnpublishedDraft() = runTest {
         val descriptor = SavedConnectionDescriptor(
             baseUrl = "https://hermes.example.net",
             authMode = SavedAuthMode.Open,
@@ -70,7 +72,8 @@ class CelesteViewModelAutoLoginTest {
         assertEquals(ConnectionPhase.Connected, state.connectionPhase)
         assertEquals("https://hermes.example.net", state.dashboardUrl)
         assertEquals(listOf("stored-1"), state.sessions?.map { it.id })
-        assertNull(state.activeSummary)
+        assertEquals("stored-draft-1", state.activeSummary?.id)
+        assertEquals(1, dashboard.createSessionCalls)
         assertEquals(1, dashboard.probeCalls)
     }
 
@@ -242,7 +245,8 @@ class CelesteViewModelAutoLoginTest {
         assertEquals(ConnectionPhase.Connected, viewModel.state.value.connectionPhase)
         assertEquals("https://new-hermes.example.net", store.load()?.descriptor?.baseUrl)
         assertEquals(SavedAuthMode.Open, viewModel.state.value.savedAuthMode)
-        assertNull(viewModel.state.value.activeSummary)
+        assertEquals("stored-draft-2", viewModel.state.value.activeSummary?.id)
+        assertEquals(2, dashboard.createSessionCalls)
     }
 
     @Test
@@ -306,6 +310,7 @@ class CelesteViewModelAutoLoginTest {
         var restoreAuthenticationCalls = 0
         var logoutCalls = 0
         var clearAuthenticationCalls = 0
+        var createSessionCalls = 0
         var onLogout: (suspend () -> Unit)? = null
 
         override suspend fun probe(rawBaseUrl: String): DashboardProbeResult {
@@ -367,19 +372,36 @@ class CelesteViewModelAutoLoginTest {
         override fun createGateway(
             baseUrl: String,
             credential: GatewayCredential,
-        ): GatewayConnection = IdleGateway
-    }
+        ): GatewayConnection = AutoLoginGateway()
 
-    private data object IdleGateway : GatewayConnection {
-        override val state: StateFlow<GatewayConnectionState> = MutableStateFlow(GatewayConnectionState.Idle)
-        override val events: SharedFlow<GatewayEvent> = MutableSharedFlow()
-        override suspend fun connect() = Unit
-        override suspend fun request(
-            method: String,
-            params: JsonObject,
-            timeoutMillis: Long,
-        ): JsonElement = JsonObject(emptyMap())
-        override fun close() = Unit
+        private inner class AutoLoginGateway : GatewayConnection {
+            private val mutableState = MutableStateFlow<GatewayConnectionState>(GatewayConnectionState.Idle)
+            override val state: StateFlow<GatewayConnectionState> = mutableState
+            override val events: SharedFlow<GatewayEvent> = MutableSharedFlow()
+
+            override suspend fun connect() {
+                mutableState.value = GatewayConnectionState.Connected
+            }
+
+            override suspend fun request(
+                method: String,
+                params: JsonObject,
+                timeoutMillis: Long,
+            ): JsonElement = if (method == "session.create") {
+                createSessionCalls += 1
+                buildJsonObject {
+                    put("session_id", "runtime-draft-$createSessionCalls")
+                    put("stored_session_id", "stored-draft-$createSessionCalls")
+                    put("profile", "default")
+                }
+            } else {
+                JsonObject(emptyMap())
+            }
+
+            override fun close() {
+                mutableState.value = GatewayConnectionState.Closed
+            }
+        }
     }
 
     private companion object {

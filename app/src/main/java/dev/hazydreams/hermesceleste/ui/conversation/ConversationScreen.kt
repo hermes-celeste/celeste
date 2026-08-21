@@ -68,7 +68,6 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import dev.hazydreams.hermesceleste.TurnState
 import dev.hazydreams.hermesceleste.network.ConversationMessage
-import dev.hazydreams.hermesceleste.network.StoredSession
 import dev.hazydreams.hermesceleste.ui.CelesteAccent
 import dev.hazydreams.hermesceleste.ui.CelesteAccentContent
 import dev.hazydreams.hermesceleste.ui.CelesteError
@@ -84,7 +83,8 @@ import kotlinx.coroutines.launch
 
 @Composable
 internal fun ConversationScreen(
-    summary: StoredSession,
+    conversationKey: String,
+    title: String,
     messages: List<ConversationMessage>,
     streamingText: String,
     draft: String,
@@ -102,7 +102,7 @@ internal fun ConversationScreen(
     val listState = rememberLazyListState()
     val coroutineScope = rememberCoroutineScope()
     val isReaderDragging = listState.interactionSource.collectIsDraggedAsState()
-    var followLatest by remember(summary.id, initiallyFollowLatest) {
+    var followLatest by remember(conversationKey, initiallyFollowLatest) {
         mutableStateOf(initiallyFollowLatest)
     }
     val focusManager = LocalFocusManager.current
@@ -123,7 +123,7 @@ internal fun ConversationScreen(
         safeDrawingInsets.asPaddingValues().calculateTopPadding() + 6.dp,
     )
 
-    LaunchedEffect(listState, summary.id) {
+    LaunchedEffect(listState, conversationKey) {
         snapshotFlow {
             ScrollFollowObservation(
                 readerDragging = isReaderDragging.value,
@@ -149,7 +149,7 @@ internal fun ConversationScreen(
                 .padding(top = headerTopPadding),
         ) {
             ConversationHeader(
-                title = summary.title.ifBlank { "Conversation" },
+                title = title.ifBlank { "Conversation" },
                 turnState = turnState,
                 onOpenDrawer = onOpenDrawer,
             )
@@ -184,7 +184,7 @@ internal fun ConversationScreen(
                         MessageBubble(message)
                     }
                     if (streamingText.isNotBlank()) {
-                        item(key = streamingTranscriptKey(summary.id)) {
+                        item(key = streamingTranscriptKey(conversationKey)) {
                             MessageBubble(
                                 ConversationMessage(role = "assistant", text = streamingText, pending = true),
                                 streaming = true,
