@@ -35,7 +35,7 @@ Cleanup pressure is concentrated in three large compilation units rather than sp
 Do not begin the cleanup on a branch that still has known correctness failures. In particular:
 
 1. Preserve typed `AuthenticationRejected` failures from persistent WebSocket 401/403 responses through `HermesGateway.connect()`. The application reconnect policy must receive the type instead of a generic `IOException`.
-2. Replace the broad profile-list fallback only after defining the exact compatibility case it protects. Authentication rejection, rate limiting, transport failure, and malformed responses must not be converted into a successful default profile result.
+2. Remove the broad profile-list fallback. The current `/api/profiles` route is required; authentication rejection, rate limiting, transport failure, missing routes, and malformed responses must remain failures.
 
 These are correctness changes, not cleanup tasks. Implement and verify them separately before refactoring the affected paths.
 
@@ -57,7 +57,7 @@ Do not introduce:
 
 - Product behavior and visible screenshots remain unchanged unless separately approved.
 - Dashboard authentication, cookie restoration, session identity, reconnect, and reconciliation invariants remain covered by tests.
-- Disposable session-list and session-resume WebSockets share lifecycle/error plumbing without merging their documented transport purposes.
+- The disposable session-resume WebSocket retains focused lifecycle and error coverage; session discovery uses the required current REST route.
 - Disposable and persistent session decoding share canonical message identity rules.
 - Authentication-rejection cleanup is expressed once at the application-state boundary while callers retain lifecycle-specific work.
 - `MainActivity.kt` owns Activity setup and top-level routing, not every Celeste screen.
@@ -119,6 +119,8 @@ No commit is needed when the baseline is clean and unchanged.
 ---
 
 ### Task 2: Specify shared disposable WebSocket behavior with tests
+
+> Superseded: current Celeste discovers sessions through required REST routes and no longer opens a disposable `session.list` WebSocket. Keep focused coverage for the remaining disposable `session.resume` contract instead of preserving obsolete shared plumbing.
 
 **Objective:** Lock down the existing session-list and disposable-resume WebSocket behavior before extracting shared plumbing.
 

@@ -158,7 +158,6 @@ class RateLimited(message: String) : DashboardFailure(message)
 class TransportUnavailable(
     message: String,
     cause: Throwable? = null,
-    internal val statusCode: Int? = null,
 ) : DashboardFailure(message, cause)
 
 class InvalidDashboardResponse(message: String, cause: Throwable? = null) : DashboardFailure(message, cause)
@@ -337,19 +336,9 @@ class DashboardClient(
         limit: Int,
     ): List<StoredSession> {
         val boundedLimit = limit.coerceIn(1, 50)
-        val restSessions = try {
-            withContext(Dispatchers.IO) {
-                requestRestSessionList(baseUrl, credential, boundedLimit)
-            }
-        } catch (error: TransportUnavailable) {
-            if (error.statusCode != 404) throw error
-            null
+        return withContext(Dispatchers.IO) {
+            requestRestSessionList(baseUrl, credential, boundedLimit)
         }
-        if (restSessions != null) return restSessions
-
-        val authParameter = resolveWebSocketCredential(baseUrl, credential)
-        val wsUrl = buildWebSocketUrl(baseUrl, authParameter?.first, authParameter?.second)
-        return withTimeout(15_000) { requestSessionList(wsUrl, boundedLimit) }
     }
 
     private fun requestRestSessionList(
@@ -398,14 +387,8 @@ class DashboardClient(
             }
             .get()
             .build()
-        val root = try {
-            executeJson(request, "Hermes profiles")
-        } catch (error: TransportUnavailable) {
-            if (error.statusCode == 404) {
-                return@withContext listOf(DashboardProfile(name = "default", isDefault = true))
-            }
-            throw error
-        } as? JsonObject ?: throw InvalidDashboardResponse("Hermes returned no profile catalog.")
+        val root = executeJson(request, "Hermes profiles") as? JsonObject
+            ?: throw InvalidDashboardResponse("Hermes returned no profile catalog.")
         val rows = root["profiles"] as? JsonArray
             ?: throw InvalidDashboardResponse("Hermes returned no profile catalog.")
         val profiles = rows.map(::decodeProfile).distinctBy(DashboardProfile::name)
@@ -538,26 +521,7 @@ class DashboardClient(
     private fun failureFor(code: Int, operation: String): DashboardFailure = when (code) {
         401, 403 -> AuthenticationRejected("$operation needs sign-in.")
         429 -> RateLimited("$operation was rate-limited. Try again shortly.")
-        else -> TransportUnavailable("$operation returned HTTP $code.", statusCode = code)
-    }
-
-    private suspend fun requestSessionList(wsUrl: String, limit: Int): List<StoredSession> {
-        val frame = buildJsonObject {
-            put("jsonrpc", "2.0")
-            put("id", SESSION_LIST_REQUEST_ID)
-            put("method", "session.list")
-            put("params", buildJsonObject { put("limit", limit) })
-        }
-        return requestSingleWebSocketResponse(
-            request = Request.Builder().url(wsUrl).build(),
-            frame = frame,
-            expectedId = SESSION_LIST_REQUEST_ID,
-            operation = "Hermes session connection",
-        ) { result ->
-            val rows = (result as? JsonObject)?.get("sessions") as? JsonArray
-                ?: throw InvalidDashboardResponse("Hermes returned no session list.")
-            rows.mapNotNull(::decodeSession)
-        }
+        else -> TransportUnavailable("$operation returned HTTP $code.")
     }
 
     private suspend fun requestSessionResume(
@@ -592,8 +556,8 @@ class DashboardClient(
             ResumedSession(
                 runtimeSessionId = runtimeId,
                 storedSessionId = result["resumed"]?.jsonPrimitive?.contentOrNull
-                    ?: result["session_key"]?.jsonPrimitive?.contentOrNull
-                    ?: storedSessionId,
+                    ?.takeIf(String::isNotBlank)
+                    ?: throw InvalidDashboardResponse("Hermes returned no resumed session identity."),
                 messages = decodeGatewayMessages(result["messages"]?.jsonArray.orEmpty()),
             )
         }
@@ -692,9 +656,7 @@ class DashboardClient(
             startedAt = startedAt,
             messageCount = row["message_count"]?.jsonPrimitive?.intOrNull ?: 0,
             source = row["source"]?.jsonPrimitive?.contentOrNull.orEmpty(),
-            profile = row["profile"]?.jsonPrimitive?.contentOrNull
-                ?: row["profile_name"]?.jsonPrimitive?.contentOrNull
-                ?: "default",
+            profile = row["profile"]?.jsonPrimitive?.contentOrNull ?: "default",
             model = row["model"]?.jsonPrimitive?.contentOrNull,
             pinned = (row["pinned"] as? JsonPrimitive)?.booleanOrNull,
             lastActiveAt = row["last_active"]?.jsonPrimitive?.doubleOrNull ?: startedAt,
@@ -743,7 +705,6 @@ class DashboardClient(
     )
 
     private companion object {
-        const val SESSION_LIST_REQUEST_ID = "session-list"
         const val SESSION_RESUME_REQUEST_ID = "session-resume"
         val JSON_MEDIA_TYPE = "application/json; charset=utf-8".toMediaType()
     }

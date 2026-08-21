@@ -564,7 +564,12 @@ class CelesteViewModelTest {
                     buildJsonObject {
                         put("session_id", "runtime-${idPrefix}new-$createCount")
                         put("stored_session_id", "stored-${idPrefix}new-$createCount")
-                        put("profile", params["profile"]?.jsonPrimitive?.content ?: "default")
+                        put(
+                            "info",
+                            buildJsonObject {
+                                put("profile_name", params["profile"]?.jsonPrimitive?.content ?: "default")
+                            },
+                        )
                     }
                 }
                 "session.list" -> {
