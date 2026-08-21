@@ -480,6 +480,78 @@ class CelesteViewModelTest {
     }
 
     @Test
+    fun pendingReadAcknowledgementBlocksPagingUntilItCompletes() = runTest {
+        val dashboard = FakeDashboard(FakeGateway()).apply {
+            session = session.copy(unread = true)
+            sessionPages[0] = SessionCatalogPage(
+                sessions = listOf(session),
+                total = 30,
+                limit = 15,
+                offset = 0,
+            )
+            sessionPages[15] = SessionCatalogPage(
+                sessions = listOf(session.copy(unread = false), session.copy(id = "older")),
+                total = 30,
+                limit = 15,
+                offset = 15,
+            )
+            markReadGate = CompletableDeferred()
+        }
+        val viewModel = CelesteViewModel(dashboard = dashboard)
+        advanceUntilIdle()
+        viewModel.updateDashboardUrl("http://hermes.test:9119")
+        viewModel.findDashboard()
+        viewModel.loadSessions()
+        advanceUntilIdle()
+
+        viewModel.openSession(dashboard.session)
+        runCurrent()
+        viewModel.loadMoreSessions()
+        assertEquals(listOf(15 to 0), dashboard.sessionPageRequests)
+
+        dashboard.markReadGate?.complete(Unit)
+        advanceUntilIdle()
+        viewModel.loadMoreSessions()
+        advanceUntilIdle()
+
+        assertEquals(listOf(15 to 0, 15 to 15), dashboard.sessionPageRequests)
+        assertFalse(viewModel.state.value.sessions?.first { it.id == "stored-42" }?.unread ?: true)
+    }
+
+    @Test
+    fun pageBackfillRefreshesTheMatchingActiveSummary() = runTest {
+        val dashboard = FakeDashboard(FakeGateway()).apply {
+            session = session.copy(title = "Old title", pinned = true)
+            sessionPages[0] = SessionCatalogPage(
+                sessions = listOf(session),
+                total = 30,
+                limit = 15,
+                offset = 0,
+            )
+            sessionPages[15] = SessionCatalogPage(
+                sessions = listOf(session.copy(title = "Refreshed title")),
+                total = 30,
+                limit = 15,
+                offset = 15,
+            )
+        }
+        val viewModel = CelesteViewModel(dashboard = dashboard)
+        advanceUntilIdle()
+        viewModel.updateDashboardUrl("http://hermes.test:9119")
+        viewModel.findDashboard()
+        viewModel.loadSessions()
+        advanceUntilIdle()
+        viewModel.openSession(dashboard.session)
+        advanceUntilIdle()
+
+        viewModel.loadMoreSessions()
+        advanceUntilIdle()
+
+        assertEquals("Refreshed title", viewModel.state.value.sessions?.single()?.title)
+        assertEquals("Refreshed title", viewModel.state.value.activeSummary?.title)
+    }
+
+    @Test
     fun openingSessionCancelsAStalePageBeforeItCanRestoreUnread() = runTest {
         val gateway = FakeGateway()
         val dashboard = FakeDashboard(gateway).apply {

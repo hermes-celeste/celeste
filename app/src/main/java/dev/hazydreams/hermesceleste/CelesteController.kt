@@ -907,6 +907,7 @@ internal class CelesteController(
             !snapshot.hasMoreSessions ||
             snapshot.isLoadingMoreSessions ||
             snapshot.loadingMessage != null ||
+            sessionMetadataJobs.isNotEmpty() ||
             (!currentSessionPublished && snapshot.turnState != TurnState.Idle)
         ) {
             return
@@ -934,8 +935,13 @@ internal class CelesteController(
                 }
                 val current = mutableState.value
                 val nextOffset = page.nextOffset
+                val mergedSessions = mergeSessionCatalog(current.sessions.orEmpty(), page.sessions)
+                val refreshedActiveSummary = current.activeSummary?.let { active ->
+                    page.sessions.firstOrNull { it.id == active.id } ?: active
+                }
                 mutableState.value = current.copy(
-                    sessions = mergeSessionCatalog(current.sessions.orEmpty(), page.sessions),
+                    sessions = mergedSessions,
+                    activeSummary = refreshedActiveSummary,
                     sessionCatalogTotal = page.total,
                     nextSessionOffset = nextOffset,
                     hasMoreSessions = page.hasMore && nextOffset > requestedOffset,
