@@ -65,6 +65,8 @@ data class StoredSession(
     val messageCount: Int,
     val source: String,
     val profile: String = "default",
+    val model: String? = null,
+    val pinned: Boolean? = null,
 )
 
 data class DashboardProfile(
@@ -333,9 +335,52 @@ class DashboardClient(
         credential: GatewayCredential,
         limit: Int,
     ): List<StoredSession> {
+        val boundedLimit = limit.coerceIn(1, 500)
+        val restSessions = try {
+            withContext(Dispatchers.IO) {
+                requestRestSessionList(baseUrl, credential, boundedLimit)
+            }
+        } catch (error: TransportUnavailable) {
+            if (error.statusCode != 404) throw error
+            null
+        }
+        if (restSessions != null) return restSessions
+
         val authParameter = resolveWebSocketCredential(baseUrl, credential)
         val wsUrl = buildWebSocketUrl(baseUrl, authParameter?.first, authParameter?.second)
-        return withTimeout(15_000) { requestSessionList(wsUrl, limit.coerceIn(1, 500)) }
+        return withTimeout(15_000) { requestSessionList(wsUrl, boundedLimit) }
+    }
+
+    private fun requestRestSessionList(
+        baseUrl: String,
+        credential: GatewayCredential,
+        limit: Int,
+    ): List<StoredSession> {
+        val url = "$baseUrl/api/sessions".toHttpUrl().newBuilder()
+            .addQueryParameter("limit", limit.toString())
+            .addQueryParameter("offset", "0")
+            .addQueryParameter("min_messages", "0")
+            .addQueryParameter("archived", "exclude")
+            .addQueryParameter("order", "recent")
+            .build()
+        val request = Request.Builder()
+            .url(url)
+            .header("Accept", "application/json")
+            .apply {
+                if (credential is GatewayCredential.StaticToken) {
+                    header("X-Hermes-Session-Token", credential.value.trim())
+                }
+            }
+            .get()
+            .build()
+        val root = executeJson(request, "Hermes sessions") as? JsonObject
+            ?: throw InvalidDashboardResponse("Hermes returned no session list.")
+        val rows = root["sessions"] as? JsonArray
+            ?: throw InvalidDashboardResponse("Hermes returned no session list.")
+        return rows.map { row ->
+            decodeSession(row)
+                ?: throw InvalidDashboardResponse("Hermes returned an invalid session entry.")
+        }
     }
 
     override suspend fun listProfiles(
@@ -648,6 +693,8 @@ class DashboardClient(
             profile = row["profile"]?.jsonPrimitive?.contentOrNull
                 ?: row["profile_name"]?.jsonPrimitive?.contentOrNull
                 ?: "default",
+            model = row["model"]?.jsonPrimitive?.contentOrNull,
+            pinned = (row["pinned"] as? JsonPrimitive)?.booleanOrNull,
         )
     }
 

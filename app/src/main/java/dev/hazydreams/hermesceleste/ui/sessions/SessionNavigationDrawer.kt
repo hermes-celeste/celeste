@@ -33,6 +33,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -74,7 +75,12 @@ internal fun SessionNavigationDrawer(
     onSettings: () -> Unit,
 ) {
     var profileMenuExpanded by remember { mutableStateOf(false) }
+    var pinnedExpanded by rememberSaveable { mutableStateOf(true) }
+    var recentsExpanded by rememberSaveable { mutableStateOf(true) }
+    var scheduledExpanded by rememberSaveable { mutableStateOf(true) }
     val enabled = loadingMessage == null
+    val sections = sessions.toSessionSections()
+    val showProfile = profiles.size > 1
 
     ModalDrawerSheet(
         modifier = Modifier
@@ -139,14 +145,6 @@ internal fun SessionNavigationDrawer(
                 Spacer(Modifier.height(18.dp))
             }
 
-            Text(
-                text = "Chats",
-                color = CelesteTextMuted,
-                style = MaterialTheme.typography.titleSmall,
-                fontWeight = FontWeight.SemiBold,
-                modifier = Modifier.padding(horizontal = 8.dp, vertical = 5.dp),
-            )
-
             if (sessions.isEmpty()) {
                 Column(
                     modifier = Modifier
@@ -169,19 +167,71 @@ internal fun SessionNavigationDrawer(
                     modifier = Modifier
                         .weight(1f)
                         .fillMaxWidth(),
-                    contentPadding = PaddingValues(top = 3.dp, bottom = 10.dp),
+                    contentPadding = PaddingValues(top = 2.dp, bottom = 10.dp),
                     verticalArrangement = Arrangement.spacedBy(2.dp),
                 ) {
-                    items(
-                        items = sessions,
-                        key = { session -> session.id },
-                    ) { session ->
-                        DrawerSessionRow(
-                            session = session,
-                            selected = session.id == selectedSessionId,
-                            enabled = enabled,
-                            onClick = { onSessionSelected(session) },
-                        )
+                    if (sections.pinned.isNotEmpty()) {
+                        item(key = "pinned-header") {
+                            SessionSectionHeader(
+                                label = "Pinned",
+                                expanded = pinnedExpanded,
+                                onToggle = { pinnedExpanded = !pinnedExpanded },
+                            )
+                        }
+                        if (pinnedExpanded) {
+                            items(sections.pinned, key = { session -> "pinned-${session.id}" }) { session ->
+                                DrawerSessionRow(
+                                    session = session,
+                                    selected = session.id == selectedSessionId,
+                                    enabled = enabled,
+                                    metadata = session.compactMetadata(showProfile),
+                                    onClick = { onSessionSelected(session) },
+                                )
+                            }
+                        }
+                    }
+                    if (sections.recents.isNotEmpty()) {
+                        item(key = "recents-header") {
+                            SessionSectionHeader(
+                                label = "Recents",
+                                expanded = recentsExpanded,
+                                onToggle = { recentsExpanded = !recentsExpanded },
+                            )
+                        }
+                        if (recentsExpanded) {
+                            items(sections.recents, key = { session -> "recent-${session.id}" }) { session ->
+                                DrawerSessionRow(
+                                    session = session,
+                                    selected = session.id == selectedSessionId,
+                                    enabled = enabled,
+                                    metadata = session.compactMetadata(showProfile),
+                                    onClick = { onSessionSelected(session) },
+                                )
+                            }
+                        }
+                    }
+                    if (sections.scheduled.isNotEmpty()) {
+                        item(key = "scheduled-header") {
+                            SessionSectionHeader(
+                                label = "Scheduled",
+                                expanded = scheduledExpanded,
+                                onToggle = { scheduledExpanded = !scheduledExpanded },
+                            )
+                        }
+                        if (scheduledExpanded) {
+                            items(sections.scheduled, key = { session -> "scheduled-${session.id}" }) { session ->
+                                DrawerSessionRow(
+                                    session = session,
+                                    selected = session.id == selectedSessionId,
+                                    enabled = enabled,
+                                    metadata = session.compactMetadata(
+                                        showProfile = showProfile,
+                                        includeScheduledMarker = false,
+                                    ),
+                                    onClick = { onSessionSelected(session) },
+                                )
+                            }
+                        }
                     }
                 }
             }
@@ -293,6 +343,7 @@ private fun DrawerSessionRow(
     session: StoredSession,
     selected: Boolean,
     enabled: Boolean,
+    metadata: String?,
     onClick: () -> Unit,
 ) {
     CelestePanel(
@@ -306,15 +357,27 @@ private fun DrawerSessionRow(
         shape = RoundedCornerShape(if (selected) 22.dp else 12.dp),
         containerColor = if (selected) CelesteSurfaceSelected else Color.Transparent,
         borderColor = Color.Transparent,
-        contentPadding = PaddingValues(horizontal = 13.dp, vertical = 11.dp),
+        contentPadding = PaddingValues(horizontal = 13.dp, vertical = 9.dp),
     ) {
-        Text(
-            text = session.title.ifBlank { "Untitled conversation" },
-            style = MaterialTheme.typography.bodyLarge,
-            fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-        )
+        Column {
+            Text(
+                text = session.title.ifBlank { "Untitled conversation" },
+                style = MaterialTheme.typography.bodyLarge,
+                fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            metadata?.let {
+                Spacer(Modifier.height(2.dp))
+                Text(
+                    text = it,
+                    color = CelesteTextMuted,
+                    style = MaterialTheme.typography.labelSmall,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+        }
     }
 }
 
