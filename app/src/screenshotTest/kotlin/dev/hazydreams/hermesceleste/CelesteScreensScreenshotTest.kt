@@ -10,6 +10,7 @@ import dev.hazydreams.hermesceleste.network.DashboardProbeResult
 import dev.hazydreams.hermesceleste.network.DashboardProfile
 import dev.hazydreams.hermesceleste.network.StoredSession
 import dev.hazydreams.hermesceleste.ui.HermesCelesteTheme
+import dev.hazydreams.hermesceleste.ui.CelesteScreen
 import dev.hazydreams.hermesceleste.ui.conversation.ConversationScreen
 import dev.hazydreams.hermesceleste.ui.gateway.ConnectionLoadingScreen
 import dev.hazydreams.hermesceleste.ui.gateway.ConnectionUnavailableScreen
@@ -18,6 +19,7 @@ import dev.hazydreams.hermesceleste.ui.gateway.GatewaySettingsScreen
 import dev.hazydreams.hermesceleste.ui.gateway.GatewaySettingsUiState
 import dev.hazydreams.hermesceleste.ui.gateway.SettingsScreen
 import dev.hazydreams.hermesceleste.ui.sessions.SessionListScreen
+import dev.hazydreams.hermesceleste.ui.sessions.SessionNavigationDrawer
 
 private val previewSessions = listOf(
     StoredSession(
@@ -257,6 +259,31 @@ fun SessionListPreviewScreenshot() {
 }
 
 @PreviewTest
+@Preview(name = "18 · Navigation drawer", widthDp = 390, heightDp = 844, showBackground = true)
+@Composable
+fun NavigationDrawerPreviewScreenshot() {
+    HermesCelesteTheme {
+        CelesteScreen {
+            SessionNavigationDrawer(
+                sessions = previewSessions,
+                profiles = listOf(
+                    DashboardProfile(name = "default", isDefault = true),
+                    DashboardProfile(name = "work", model = "Hermes 4"),
+                ),
+                selectedProfile = "work",
+                selectedSessionId = "visual-layer",
+                loadingMessage = null,
+                errorMessage = null,
+                onProfileSelected = {},
+                onNewConversation = {},
+                onSessionSelected = {},
+                onSettings = {},
+            )
+        }
+    }
+}
+
+@PreviewTest
 @Preview(name = "14 · Empty conversations", widthDp = 390, heightDp = 844, showBackground = true)
 @Composable
 fun EmptySessionListPreviewScreenshot() {
@@ -453,7 +480,7 @@ private fun PreviewConversation(
         onSend = {},
         onInterrupt = {},
         onReconnect = {},
-        onBack = {},
+        onOpenDrawer = {},
         initiallyFollowLatest = initiallyFollowLatest,
         jumpToLatestVisibleOverride = jumpToLatestVisible,
     )
