@@ -1,6 +1,5 @@
 package dev.hazydreams.hermesceleste.ui.sessions
 
-import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -21,13 +20,12 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalDrawerSheet
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -38,6 +36,11 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.StrokeJoin
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.graphics.vector.path
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
@@ -45,13 +48,10 @@ import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import dev.hazydreams.hermesceleste.network.DashboardProfile
 import dev.hazydreams.hermesceleste.network.StoredSession
 import dev.hazydreams.hermesceleste.ui.CelesteAccent
-import dev.hazydreams.hermesceleste.ui.CelesteAccentContent
 import dev.hazydreams.hermesceleste.ui.CelesteError
-import dev.hazydreams.hermesceleste.ui.CelesteHairline
 import dev.hazydreams.hermesceleste.ui.CelestePanel
 import dev.hazydreams.hermesceleste.ui.CelesteSurfacePrimary
 import dev.hazydreams.hermesceleste.ui.CelesteSurfaceRaised
@@ -78,9 +78,9 @@ internal fun SessionNavigationDrawer(
 
     ModalDrawerSheet(
         modifier = Modifier
-            .fillMaxWidth(0.9f)
-            .widthIn(max = 360.dp),
-        drawerShape = RoundedCornerShape(topEnd = 28.dp, bottomEnd = 28.dp),
+            .fillMaxWidth(0.86f)
+            .widthIn(max = 344.dp),
+        drawerShape = RoundedCornerShape(topEnd = 24.dp, bottomEnd = 24.dp),
         drawerContainerColor = CelesteSurfacePrimary,
         drawerContentColor = CelesteTextPrimary,
         drawerTonalElevation = 0.dp,
@@ -90,105 +90,61 @@ internal fun SessionNavigationDrawer(
                 .fillMaxSize()
                 .statusBarsPadding()
                 .navigationBarsPadding()
-                .padding(horizontal = 16.dp),
+                .padding(horizontal = 14.dp),
         ) {
-            Row(
+            Spacer(Modifier.height(12.dp))
+
+            TextButton(
+                onClick = onNewConversation,
+                enabled = enabled,
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(top = 14.dp, bottom = 12.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    .height(50.dp),
+                shape = RoundedCornerShape(18.dp),
+                colors = ButtonDefaults.textButtonColors(
+                    containerColor = Color.Transparent,
+                    contentColor = CelesteTextPrimary,
+                    disabledContainerColor = Color.Transparent,
+                    disabledContentColor = CelesteTextMuted,
+                ),
+                contentPadding = PaddingValues(horizontal = 8.dp),
             ) {
-                Column(modifier = Modifier.weight(1f)) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Icon(
+                        imageVector = NewConversationIcon,
+                        contentDescription = null,
+                        modifier = Modifier.size(22.dp),
+                    )
+                    Spacer(Modifier.size(13.dp))
                     Text(
-                        text = "Celeste",
-                        style = MaterialTheme.typography.titleLarge,
+                        text = "New chat",
+                        style = MaterialTheme.typography.titleSmall,
                         fontWeight = FontWeight.SemiBold,
                     )
-                    Text(
-                        text = "Conversations",
-                        color = CelesteTextMuted,
-                        style = MaterialTheme.typography.bodySmall,
-                    )
-                }
-                Button(
-                    onClick = onNewConversation,
-                    enabled = enabled,
-                    modifier = Modifier.height(40.dp),
-                    shape = RoundedCornerShape(20.dp),
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = CelesteAccent,
-                        contentColor = CelesteAccentContent,
-                        disabledContainerColor = CelesteHairline,
-                        disabledContentColor = CelesteTextMuted,
-                    ),
-                    contentPadding = PaddingValues(horizontal = 15.dp),
-                ) {
-                    Text("+  New", fontWeight = FontWeight.SemiBold)
-                }
-            }
-
-            Box(modifier = Modifier.fillMaxWidth()) {
-                OutlinedButton(
-                    onClick = { profileMenuExpanded = true },
-                    enabled = enabled,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(42.dp)
-                        .semantics {
-                            contentDescription = "New conversation profile: ${selectedProfile.replaceFirstChar(Char::uppercase)}"
-                            stateDescription = if (profileMenuExpanded) "Expanded" else "Collapsed"
-                        },
-                    shape = RoundedCornerShape(21.dp),
-                    border = BorderStroke(1.dp, CelesteHairline),
-                    colors = ButtonDefaults.outlinedButtonColors(
-                        containerColor = CelesteSurfaceRaised,
-                        contentColor = CelesteTextPrimary,
-                    ),
-                ) {
-                    Text(
-                        text = "New chat profile  ·  ${selectedProfile.replaceFirstChar(Char::uppercase)}  ↓",
-                        style = MaterialTheme.typography.labelLarge,
-                    )
-                }
-                DropdownMenu(
-                    expanded = profileMenuExpanded,
-                    onDismissRequest = { profileMenuExpanded = false },
-                    containerColor = CelesteSurfaceRaised,
-                ) {
-                    profiles.forEach { profile ->
-                        DropdownMenuItem(
-                            text = {
-                                Text(if (profile.isDefault) "${profile.name} · default" else profile.name)
-                            },
-                            onClick = {
-                                onProfileSelected(profile.name)
-                                profileMenuExpanded = false
-                            },
-                        )
-                    }
                 }
             }
 
             if (loadingMessage != null || errorMessage != null) {
                 Column(
-                    modifier = Modifier.padding(horizontal = 4.dp, vertical = 12.dp),
+                    modifier = Modifier.padding(horizontal = 4.dp, vertical = 10.dp),
                     verticalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
                     loadingMessage?.let { StatusMessage(it, CelesteAccent, showSpinner = true) }
                     errorMessage?.let { StatusMessage(it, CelesteError) }
                 }
             } else {
-                Spacer(Modifier.height(14.dp))
+                Spacer(Modifier.height(18.dp))
             }
 
             Text(
-                text = "CONVERSATIONS",
+                text = "Chats",
                 color = CelesteTextMuted,
-                fontSize = 10.sp,
+                style = MaterialTheme.typography.titleSmall,
                 fontWeight = FontWeight.SemiBold,
-                letterSpacing = 0.8.sp,
-                modifier = Modifier.padding(horizontal = 4.dp, vertical = 6.dp),
+                modifier = Modifier.padding(horizontal = 8.dp, vertical = 5.dp),
             )
 
             if (sessions.isEmpty()) {
@@ -203,7 +159,7 @@ internal fun SessionNavigationDrawer(
                     Text("No conversations yet", style = MaterialTheme.typography.titleMedium)
                     Spacer(Modifier.height(6.dp))
                     Text(
-                        text = "Start a new conversation from the button above.",
+                        text = "Start a new conversation above.",
                         color = CelesteTextMuted,
                         style = MaterialTheme.typography.bodySmall,
                     )
@@ -213,8 +169,8 @@ internal fun SessionNavigationDrawer(
                     modifier = Modifier
                         .weight(1f)
                         .fillMaxWidth(),
-                    contentPadding = PaddingValues(bottom = 12.dp),
-                    verticalArrangement = Arrangement.spacedBy(4.dp),
+                    contentPadding = PaddingValues(top = 3.dp, bottom = 10.dp),
+                    verticalArrangement = Arrangement.spacedBy(2.dp),
                 ) {
                     items(
                         items = sessions,
@@ -223,7 +179,6 @@ internal fun SessionNavigationDrawer(
                         DrawerSessionRow(
                             session = session,
                             selected = session.id == selectedSessionId,
-                            showProfile = profiles.size > 1,
                             enabled = enabled,
                             onClick = { onSessionSelected(session) },
                         )
@@ -231,24 +186,101 @@ internal fun SessionNavigationDrawer(
                 }
             }
 
-            CelestePanel(
+            Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(bottom = 12.dp),
-                shape = RoundedCornerShape(18.dp),
-                containerColor = CelesteSurfaceRaised,
-                contentPadding = PaddingValues(4.dp),
+                    .padding(top = 8.dp, bottom = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
+                Box(modifier = Modifier.weight(1f)) {
+                    TextButton(
+                        onClick = { profileMenuExpanded = true },
+                        enabled = enabled,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(48.dp)
+                            .semantics {
+                                contentDescription = "New conversation profile: ${selectedProfile.replaceFirstChar(Char::uppercase)}"
+                                stateDescription = if (profileMenuExpanded) "Expanded" else "Collapsed"
+                            },
+                        shape = RoundedCornerShape(17.dp),
+                        colors = ButtonDefaults.textButtonColors(
+                            containerColor = Color.Transparent,
+                            contentColor = CelesteTextPrimary,
+                            disabledContainerColor = Color.Transparent,
+                            disabledContentColor = CelesteTextMuted,
+                        ),
+                        contentPadding = PaddingValues(horizontal = 7.dp),
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(34.dp)
+                                    .background(CelesteSurfaceSelected, CircleShape),
+                                contentAlignment = Alignment.Center,
+                            ) {
+                                Text(
+                                    text = selectedProfile.take(1).uppercase(),
+                                    style = MaterialTheme.typography.labelLarge,
+                                    fontWeight = FontWeight.SemiBold,
+                                )
+                            }
+                            Column(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .padding(start = 9.dp),
+                            ) {
+                                Text(
+                                    text = selectedProfile.replaceFirstChar(Char::uppercase),
+                                    style = MaterialTheme.typography.labelLarge,
+                                    fontWeight = FontWeight.SemiBold,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                            }
+                            Text("⌄", color = CelesteTextMuted)
+                        }
+                    }
+                    DropdownMenu(
+                        expanded = profileMenuExpanded,
+                        onDismissRequest = { profileMenuExpanded = false },
+                        containerColor = CelesteSurfaceRaised,
+                    ) {
+                        profiles.forEach { profile ->
+                            DropdownMenuItem(
+                                text = {
+                                    Text(if (profile.isDefault) "${profile.name} · default" else profile.name)
+                                },
+                                onClick = {
+                                    onProfileSelected(profile.name)
+                                    profileMenuExpanded = false
+                                },
+                            )
+                        }
+                    }
+                }
+
                 TextButton(
                     onClick = onSettings,
                     enabled = enabled,
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(14.dp),
+                    modifier = Modifier.size(48.dp),
+                    shape = CircleShape,
+                    colors = ButtonDefaults.textButtonColors(
+                        containerColor = CelesteSurfaceRaised,
+                        contentColor = CelesteTextPrimary,
+                        disabledContainerColor = CelesteSurfaceRaised,
+                        disabledContentColor = CelesteTextMuted,
+                    ),
+                    contentPadding = PaddingValues(0.dp),
                 ) {
-                    Text(
-                        text = "Settings",
-                        color = CelesteTextPrimary,
-                        fontWeight = FontWeight.SemiBold,
+                    Icon(
+                        imageVector = DrawerSettingsIcon,
+                        contentDescription = "Settings",
+                        modifier = Modifier.size(21.dp),
                     )
                 }
             }
@@ -260,7 +292,6 @@ internal fun SessionNavigationDrawer(
 private fun DrawerSessionRow(
     session: StoredSession,
     selected: Boolean,
-    showProfile: Boolean,
     enabled: Boolean,
     onClick: () -> Unit,
 ) {
@@ -272,56 +303,73 @@ private fun DrawerSessionRow(
                 if (selected) stateDescription = "Current conversation"
             }
             .clickable(enabled = enabled, onClick = onClick),
-        shape = RoundedCornerShape(16.dp),
+        shape = RoundedCornerShape(if (selected) 22.dp else 12.dp),
         containerColor = if (selected) CelesteSurfaceSelected else Color.Transparent,
-        borderColor = if (selected) CelesteHairline else Color.Transparent,
+        borderColor = Color.Transparent,
         contentPadding = PaddingValues(horizontal = 13.dp, vertical = 11.dp),
     ) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            verticalAlignment = Alignment.Top,
-            horizontalArrangement = Arrangement.spacedBy(10.dp),
-        ) {
-            Box(
-                modifier = Modifier
-                    .padding(top = 5.dp)
-                    .size(7.dp)
-                    .background(
-                        color = if (selected) CelesteAccent else Color.Transparent,
-                        shape = CircleShape,
-                    ),
-            )
-            Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = session.title.ifBlank { "Untitled conversation" },
-                    style = MaterialTheme.typography.titleSmall,
-                    fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-                if (session.preview.isNotBlank()) {
-                    Spacer(Modifier.height(3.dp))
-                    Text(
-                        text = session.preview,
-                        color = CelesteTextMuted,
-                        style = MaterialTheme.typography.bodySmall,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                }
-                Spacer(Modifier.height(6.dp))
-                Text(
-                    text = if (showProfile) {
-                        "${session.profile.uppercase()}  ·  ${session.messageCount} MESSAGES"
-                    } else {
-                        "${session.messageCount} MESSAGES"
-                    },
-                    color = CelesteTextMuted,
-                    fontSize = 9.sp,
-                    fontWeight = FontWeight.SemiBold,
-                    letterSpacing = 0.6.sp,
-                )
-            }
-        }
+        Text(
+            text = session.title.ifBlank { "Untitled conversation" },
+            style = MaterialTheme.typography.bodyLarge,
+            fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
     }
+}
+
+private val NewConversationIcon: ImageVector by lazy {
+    ImageVector.Builder(
+        name = "New chat",
+        defaultWidth = 24.dp,
+        defaultHeight = 24.dp,
+        viewportWidth = 24f,
+        viewportHeight = 24f,
+    ).apply {
+        path(
+            stroke = SolidColor(Color.Black),
+            strokeLineWidth = 1.8f,
+            strokeLineCap = StrokeCap.Round,
+            strokeLineJoin = StrokeJoin.Round,
+        ) {
+            moveTo(5f, 5f)
+            lineTo(19f, 5f)
+            lineTo(19f, 19f)
+            lineTo(5f, 19f)
+            close()
+            moveTo(12f, 8.5f)
+            verticalLineTo(15.5f)
+            moveTo(8.5f, 12f)
+            horizontalLineTo(15.5f)
+        }
+    }.build()
+}
+
+private val DrawerSettingsIcon: ImageVector by lazy {
+    ImageVector.Builder(
+        name = "Settings",
+        defaultWidth = 24.dp,
+        defaultHeight = 24.dp,
+        viewportWidth = 24f,
+        viewportHeight = 24f,
+    ).apply {
+        path(
+            stroke = SolidColor(Color.Black),
+            strokeLineWidth = 1.8f,
+            strokeLineCap = StrokeCap.Round,
+        ) {
+            moveTo(4f, 7f)
+            horizontalLineTo(20f)
+            moveTo(9f, 5f)
+            verticalLineTo(9f)
+            moveTo(4f, 12f)
+            horizontalLineTo(20f)
+            moveTo(15f, 10f)
+            verticalLineTo(14f)
+            moveTo(4f, 17f)
+            horizontalLineTo(20f)
+            moveTo(8f, 15f)
+            verticalLineTo(19f)
+        }
+    }.build()
 }
