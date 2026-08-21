@@ -41,7 +41,6 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
@@ -60,6 +59,8 @@ import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.graphics.vector.path
 import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
@@ -112,6 +113,7 @@ internal fun ConversationScreen(
             shouldShowJumpToLatest(
                 canScrollForward = listState.canScrollForward,
                 visibleMessageCount = visibleMessageCount,
+                followLatest = followLatest,
             )
         }
     }
@@ -172,7 +174,7 @@ internal fun ConversationScreen(
                 LazyColumn(
                     state = listState,
                     modifier = Modifier.fillMaxSize(),
-                    contentPadding = PaddingValues(horizontal = 20.dp, vertical = 22.dp),
+                    contentPadding = PaddingValues(horizontal = 20.dp, vertical = 20.dp),
                     verticalArrangement = Arrangement.spacedBy(20.dp),
                 ) {
                     itemsIndexed(
@@ -190,19 +192,25 @@ internal fun ConversationScreen(
                         }
                     }
                 }
+            }
 
-                JumpToLatestButton(
-                    visible = jumpToLatestVisibleOverride ?: jumpToLatestVisible.value,
-                    onClick = {
-                        followLatest = true
-                        latestTranscriptIndex(visibleMessageCount)?.let { latestIndex ->
-                            coroutineScope.launch { listState.animateScrollToLatest(latestIndex) }
-                        }
-                    },
+            if (jumpToLatestVisibleOverride ?: jumpToLatestVisible.value) {
+                Box(
                     modifier = Modifier
-                        .align(Alignment.BottomCenter)
-                        .padding(bottom = 12.dp),
-                )
+                        .fillMaxWidth()
+                        .height(60.dp),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    JumpToLatestButton(
+                        visible = true,
+                        onClick = {
+                            followLatest = true
+                            latestTranscriptIndex(visibleMessageCount)?.let { latestIndex ->
+                                coroutineScope.launch { listState.animateScrollToLatest(latestIndex) }
+                            }
+                        },
+                    )
+                }
             }
 
             ConversationComposer(
@@ -261,7 +269,8 @@ private suspend fun LazyListState.animateScrollToLatest(latestIndex: Int) {
 internal fun shouldShowJumpToLatest(
     canScrollForward: Boolean,
     visibleMessageCount: Int,
-): Boolean = canScrollForward && visibleMessageCount > 0
+    followLatest: Boolean,
+): Boolean = !followLatest && canScrollForward && visibleMessageCount > 0
 
 @Composable
 private fun JumpToLatestButton(
@@ -299,51 +308,42 @@ private fun ConversationHeader(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 14.dp, vertical = 8.dp),
+            .padding(horizontal = 16.dp, vertical = 4.dp)
+            .semantics { stateDescription = turnStateAccessibilityLabel(turnState) },
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        TextButton(
-            onClick = onBack,
-            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 8.dp),
+        CelestePanel(
+            modifier = Modifier.size(48.dp),
+            shape = CircleShape,
+            containerColor = CelesteSurfacePrimary,
         ) {
-            Text("‹", color = CelesteTextPrimary, fontSize = 26.sp, lineHeight = 26.sp)
-        }
-        Column(modifier = Modifier.weight(1f)) {
-            Text(
-                text = title,
-                style = MaterialTheme.typography.titleMedium,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
-            Spacer(Modifier.height(2.dp))
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Box(
-                    modifier = Modifier
-                        .size(6.dp)
-                        .background(turnStateColor(turnState), CircleShape),
-                )
-                Spacer(Modifier.size(6.dp))
-                Text(
-                    text = turnStateLabel(turnState),
-                    color = if (turnState == TurnState.Running) CelesteAccent else CelesteTextMuted,
-                    fontSize = 11.sp,
+            IconButton(
+                onClick = onBack,
+                modifier = Modifier.fillMaxSize(),
+            ) {
+                Icon(
+                    imageVector = ConversationListIcon,
+                    contentDescription = "Back to conversations",
+                    modifier = Modifier.size(22.dp),
+                    tint = CelesteTextPrimary,
                 )
             }
         }
-        if (turnState == TurnState.Running || turnState == TurnState.Synchronizing) {
+        Text(
+            text = title,
+            modifier = Modifier
+                .weight(1f)
+                .padding(start = 13.dp, end = 10.dp),
+            style = MaterialTheme.typography.titleMedium,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+        if (turnState != TurnState.Idle) {
             Box(
                 modifier = Modifier
-                    .background(CelesteTextPrimary, RoundedCornerShape(18.dp))
-                    .padding(horizontal = 12.dp, vertical = 7.dp),
-            ) {
-                Text(
-                    text = "BUSY ON",
-                    color = CelesteSurfacePrimary,
-                    fontSize = 9.sp,
-                    fontWeight = FontWeight.Bold,
-                    letterSpacing = 0.6.sp,
-                )
-            }
+                    .size(8.dp)
+                    .background(turnStateColor(turnState), CircleShape),
+            )
         }
     }
 }
@@ -357,19 +357,18 @@ private fun ConversationComposer(
     onInterrupt: () -> Unit,
     onReconnect: () -> Unit,
 ) {
-    val activeTurn = turnState == TurnState.Running || turnState == TurnState.Synchronizing
-
     Box(
         modifier = Modifier
             .fillMaxWidth()
             .navigationBarsPadding()
             .imePadding()
-            .padding(horizontal = 12.dp, vertical = 12.dp),
+            .padding(horizontal = 16.dp, vertical = 12.dp),
     ) {
         CelestePanel(
             modifier = Modifier.fillMaxWidth(),
-            shape = RoundedCornerShape(28.dp),
-            borderColor = if (activeTurn) CelesteAccent.copy(alpha = 0.55f) else CelesteHairline,
+            shape = RoundedCornerShape(30.dp),
+            containerColor = CelesteSurfaceRaised,
+            borderColor = CelesteHairline,
             contentPadding = PaddingValues(4.dp),
         ) {
             Row(
@@ -385,7 +384,7 @@ private fun ConversationComposer(
                         Text(
                             text = when (turnState) {
                                 TurnState.Idle -> "Message Hermes…"
-                                TurnState.Running -> "Hermes is responding…"
+                                TurnState.Running -> "Message Hermes…"
                                 TurnState.Synchronizing -> "Synchronizing…"
                                 TurnState.Reconnecting -> "Keep drafting while Hermes reconnects…"
                             },
@@ -455,7 +454,11 @@ private fun ConversationComposer(
                         ),
                         contentPadding = PaddingValues(0.dp),
                     ) {
-                        Text("↑", fontSize = 18.sp, fontWeight = FontWeight.Bold)
+                        Icon(
+                            imageVector = SendMessageIcon,
+                            contentDescription = "Send message",
+                            modifier = Modifier.size(20.dp),
+                        )
                     }
                 }
                 Spacer(Modifier.width(2.dp))
@@ -464,11 +467,11 @@ private fun ConversationComposer(
     }
 }
 
-private fun turnStateLabel(turnState: TurnState): String = when (turnState) {
+private fun turnStateAccessibilityLabel(turnState: TurnState): String = when (turnState) {
     TurnState.Idle -> "Connected"
-    TurnState.Running -> "Thinking…"
-    TurnState.Synchronizing -> "Synchronizing…"
-    TurnState.Reconnecting -> "Reconnecting…"
+    TurnState.Running -> "Hermes is responding"
+    TurnState.Synchronizing -> "Conversation is synchronizing"
+    TurnState.Reconnecting -> "Hermes is reconnecting"
 }
 
 private fun turnStateColor(turnState: TurnState): Color = when (turnState) {
@@ -476,6 +479,52 @@ private fun turnStateColor(turnState: TurnState): Color = when (turnState) {
     TurnState.Running -> CelesteAccent
     TurnState.Synchronizing -> CelesteAccent
     TurnState.Reconnecting -> CelesteError
+}
+
+private val ConversationListIcon: ImageVector by lazy {
+    ImageVector.Builder(
+        name = "Conversations",
+        defaultWidth = 24.dp,
+        defaultHeight = 24.dp,
+        viewportWidth = 24f,
+        viewportHeight = 24f,
+    ).apply {
+        path(
+            stroke = SolidColor(Color.Black),
+            strokeLineWidth = 1.8f,
+            strokeLineCap = StrokeCap.Round,
+        ) {
+            moveTo(5f, 7f)
+            horizontalLineTo(19f)
+            moveTo(5f, 12f)
+            horizontalLineTo(19f)
+            moveTo(5f, 17f)
+            horizontalLineTo(15f)
+        }
+    }.build()
+}
+
+private val SendMessageIcon: ImageVector by lazy {
+    ImageVector.Builder(
+        name = "Send message",
+        defaultWidth = 24.dp,
+        defaultHeight = 24.dp,
+        viewportWidth = 24f,
+        viewportHeight = 24f,
+    ).apply {
+        path(
+            stroke = SolidColor(Color.Black),
+            strokeLineWidth = 2f,
+            strokeLineCap = StrokeCap.Round,
+            strokeLineJoin = StrokeJoin.Round,
+        ) {
+            moveTo(12f, 18f)
+            verticalLineTo(6f)
+            moveTo(7f, 11f)
+            lineTo(12f, 6f)
+            lineTo(17f, 11f)
+        }
+    }.build()
 }
 
 private val JumpToLatestIcon: ImageVector by lazy {

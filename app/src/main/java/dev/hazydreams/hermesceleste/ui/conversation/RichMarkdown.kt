@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.wrapContentWidth
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
@@ -94,11 +95,17 @@ import org.intellij.markdown.flavours.gfm.GFMFlavourDescriptor
 import org.intellij.markdown.flavours.gfm.GFMTokenTypes
 import org.intellij.markdown.parser.EmptyStreamingMarkdownFile
 
+internal enum class MarkdownWidthPolicy {
+    Fill,
+    WrapContent,
+}
+
 @Composable
 internal fun RichMarkdown(
     content: String,
     streaming: Boolean,
     modifier: Modifier = Modifier,
+    widthPolicy: MarkdownWidthPolicy = MarkdownWidthPolicy.Fill,
 ) {
     val platformUriHandler = LocalUriHandler.current
     val safeUriHandler = remember(platformUriHandler) {
@@ -109,12 +116,17 @@ internal fun RichMarkdown(
         }
     }
 
+    val contentModifier = when (widthPolicy) {
+        MarkdownWidthPolicy.Fill -> modifier.fillMaxWidth()
+        MarkdownWidthPolicy.WrapContent -> modifier.wrapContentWidth()
+    }
+
     CompositionLocalProvider(LocalUriHandler provides safeUriHandler) {
         SelectionContainer {
             if (!containsRichMarkdown(content)) {
-                RawMarkdownFallback(content = content, modifier = modifier.fillMaxWidth())
+                RawMarkdownFallback(content = content, modifier = contentModifier)
             } else {
-                BoxWithConstraints(modifier = modifier.fillMaxWidth()) {
+                BoxWithConstraints(modifier = contentModifier) {
                     if (streaming) {
                         StreamingRichMarkdown(
                             content = content,
