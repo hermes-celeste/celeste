@@ -67,6 +67,7 @@ data class StoredSession(
     val profile: String = "default",
     val model: String? = null,
     val pinned: Boolean? = null,
+    val lastActiveAt: Double = startedAt,
 )
 
 data class DashboardProfile(
@@ -126,7 +127,7 @@ interface DashboardService {
     suspend fun listSessions(
         baseUrl: String,
         credential: GatewayCredential,
-        limit: Int = 200,
+        limit: Int = 50,
     ): List<StoredSession>
 
     suspend fun listProfiles(
@@ -335,7 +336,7 @@ class DashboardClient(
         credential: GatewayCredential,
         limit: Int,
     ): List<StoredSession> {
-        val boundedLimit = limit.coerceIn(1, 500)
+        val boundedLimit = limit.coerceIn(1, 50)
         val restSessions = try {
             withContext(Dispatchers.IO) {
                 requestRestSessionList(baseUrl, credential, boundedLimit)
@@ -683,11 +684,12 @@ class DashboardClient(
     private fun decodeSession(element: JsonElement): StoredSession? {
         val row = element as? JsonObject ?: return null
         val id = row["id"]?.jsonPrimitive?.contentOrNull?.takeIf(String::isNotBlank) ?: return null
+        val startedAt = row["started_at"]?.jsonPrimitive?.doubleOrNull ?: 0.0
         return StoredSession(
             id = id,
             title = row["title"]?.jsonPrimitive?.contentOrNull.orEmpty(),
             preview = row["preview"]?.jsonPrimitive?.contentOrNull.orEmpty(),
-            startedAt = row["started_at"]?.jsonPrimitive?.doubleOrNull ?: 0.0,
+            startedAt = startedAt,
             messageCount = row["message_count"]?.jsonPrimitive?.intOrNull ?: 0,
             source = row["source"]?.jsonPrimitive?.contentOrNull.orEmpty(),
             profile = row["profile"]?.jsonPrimitive?.contentOrNull
@@ -695,6 +697,7 @@ class DashboardClient(
                 ?: "default",
             model = row["model"]?.jsonPrimitive?.contentOrNull,
             pinned = (row["pinned"] as? JsonPrimitive)?.booleanOrNull,
+            lastActiveAt = row["last_active"]?.jsonPrimitive?.doubleOrNull ?: startedAt,
         )
     }
 

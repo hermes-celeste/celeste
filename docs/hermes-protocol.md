@@ -39,7 +39,7 @@ Static-token profile requests use `X-Hermes-Session-Token`. Cookie-authenticated
 
 Current Hermes exposes `GET /api/profiles`. A `404` from that route alone is treated as compatibility with an older single-profile dashboard and yields the `default` profile. Authentication rejection, rate limiting, other HTTP or transport failures, and malformed profile responses remain failures.
 
-Session discovery prefers `GET /api/sessions` with archived sessions excluded and server-side recent ordering. Its compact rows are authoritative for profile, source, model, and pinned state; `source: "cron"` identifies a scheduled run. A `404` from that route alone falls back to the older disposable-WebSocket `session.list` contract. Authentication rejection, rate limiting, other HTTP or transport failures, and malformed session responses remain failures instead of silently changing transports. Legacy rows may omit model and pinned state.
+Session discovery prefers `GET /api/sessions` with archived sessions excluded, a limit of 50, and server-side recent ordering by `last_active` with `started_at` as the compatibility fallback. Hermes may backfill pinned sessions beyond the requested limit. Its compact rows are authoritative for profile, source, model, and pinned state; `source: "cron"` identifies a scheduled run. A `404` from that route alone falls back to the older disposable-WebSocket `session.list` contract. Authentication rejection, rate limiting, other HTTP or transport failures, and malformed session responses remain failures instead of silently changing transports. Legacy rows may omit last-active, model, and pinned state.
 
 The shared HTTP client does not follow redirects. Reverse proxies must expose the expected routes directly under the normalized base path.
 

@@ -218,6 +218,7 @@ class CelesteViewModelTest {
         val dashboard = FakeDashboard(gateway)
         val viewModel = CelesteViewModel(
             dashboard = dashboard,
+            currentEpochSeconds = { 1.0 },
             reconnectDelayMillis = { _, _ -> 0L },
         )
         viewModel.updateDashboardUrl("http://hermes.test:9119")
@@ -286,6 +287,7 @@ class CelesteViewModelTest {
         }
         val viewModel = CelesteViewModel(
             dashboard = dashboard,
+            currentEpochSeconds = { 1.0 },
             reconnectDelayMillis = { _, _ -> 0L },
         )
         viewModel.updateDashboardUrl("http://hermes.test:9119")
@@ -363,6 +365,7 @@ class CelesteViewModelTest {
             connectionStore = InMemoryConnectionStore(),
             clientSource = "ios",
             normalizeDashboardUrl = { it },
+            currentEpochSeconds = { 0.0 },
             reconnectDelayMillis = { _, _ -> 0L },
         )
         advanceUntilIdle()
@@ -388,6 +391,7 @@ class CelesteViewModelTest {
             connectionStore = InMemoryConnectionStore(),
             clientSource = "ios",
             normalizeDashboardUrl = { it },
+            currentEpochSeconds = { 0.0 },
             reconnectDelayMillis = { _, _ -> 0L },
         )
         advanceUntilIdle()
@@ -415,6 +419,7 @@ class CelesteViewModelTest {
             connectionStore = InMemoryConnectionStore(),
             clientSource = "android",
             normalizeDashboardUrl = { it },
+            currentEpochSeconds = { 0.0 },
             reconnectDelayMillis = { _, _ -> 0L },
         )
         advanceUntilIdle()

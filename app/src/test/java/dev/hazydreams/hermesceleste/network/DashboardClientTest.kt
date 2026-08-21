@@ -106,15 +106,30 @@ class DashboardClientTest {
         assertEquals("work", sessions.first().profile)
         assertEquals("hermes-4", sessions.first().model)
         assertEquals(true, sessions.first().pinned)
+        assertEquals(456.75, sessions.first().lastActiveAt, 0.0)
+        assertEquals(100.0, sessions[1].lastActiveAt, 0.0)
         assertEquals("cron", sessions.last().source)
         assertEquals(false, sessions.last().pinned)
         val request = server.takeRequest()
         assertEquals("/api/sessions", request.url.encodedPath)
-        assertEquals("200", request.url.queryParameter("limit"))
+        assertEquals("50", request.url.queryParameter("limit"))
         assertEquals("0", request.url.queryParameter("min_messages"))
         assertEquals("exclude", request.url.queryParameter("archived"))
         assertEquals("recent", request.url.queryParameter("order"))
         assertEquals("private-token", request.headers["X-Hermes-Session-Token"])
+    }
+
+    @Test
+    fun capsSessionDiscoveryAtFifty() = runTest {
+        server.enqueue(sessionListRest())
+
+        DashboardClient().listSessions(
+            baseUrl = server.url("/").toString().trimEnd('/'),
+            credential = GatewayCredential.None,
+            limit = 500,
+        )
+
+        assertEquals("50", server.takeRequest().url.queryParameter("limit"))
     }
 
     @Test
@@ -645,7 +660,7 @@ class DashboardClientTest {
         MockResponse.Builder()
             .code(200)
             .body(
-                """{"sessions":[{"id":"s1","title":"This conversation","preview":"perfect. lets build that.","started_at":123.5,"message_count":42,"source":"desktop","profile":"work","model":"hermes-4","pinned":true},{"id":"s2","title":"Older chat","preview":"hello","started_at":100,"message_count":2,"source":"cli","profile":"default","model":null,"pinned":false},{"id":"cron-1","title":"Morning brief","preview":"","started_at":90,"message_count":1,"source":"cron","profile":"default","model":"hermes-4","pinned":false}],"total":3,"limit":200,"offset":0}""",
+                """{"sessions":[{"id":"s1","title":"This conversation","preview":"perfect. lets build that.","started_at":123.5,"last_active":456.75,"message_count":42,"source":"desktop","profile":"work","model":"hermes-4","pinned":true},{"id":"s2","title":"Older chat","preview":"hello","started_at":100,"message_count":2,"source":"cli","profile":"default","model":null,"pinned":false},{"id":"cron-1","title":"Morning brief","preview":"","started_at":90,"message_count":1,"source":"cron","profile":"default","model":"hermes-4","pinned":false}],"total":3,"limit":50,"offset":0}""",
             )
             .build()
 

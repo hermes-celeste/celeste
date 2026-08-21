@@ -70,7 +70,11 @@ class CelesteViewModelAutoLoginTest {
         val store = InMemoryConnectionStore(StoredConnection(descriptor, null))
         val dashboard = AutoLoginDashboard(openProbe)
 
-        val viewModel = CelesteViewModel(dashboard = dashboard, connectionStore = store)
+        val viewModel = CelesteViewModel(
+            dashboard = dashboard,
+            connectionStore = store,
+            currentEpochSeconds = { 1.0 },
+        )
         advanceUntilIdle()
 
         val state = viewModel.state.value
@@ -95,7 +99,11 @@ class CelesteViewModelAutoLoginTest {
             createSessionGate = draftGate
         }
 
-        val viewModel = CelesteViewModel(dashboard = dashboard, connectionStore = store)
+        val viewModel = CelesteViewModel(
+            dashboard = dashboard,
+            connectionStore = store,
+            currentEpochSeconds = { 1.0 },
+        )
         runCurrent()
 
         assertEquals(ConnectionPhase.Restoring, viewModel.state.value.connectionPhase)
