@@ -82,11 +82,16 @@ Hermes does not insert a durable session row during `session.create`. The row is
 The current reducer recognizes:
 
 - `message.start`, `message.delta`, `message.interim`, `message.complete`, `message.error`;
+- `reasoning.delta` and `reasoning.available`;
 - `message.interrupted`, `session.interrupted`, `session.busy`, `session.info`;
 - `tool.start` and `tool.complete`;
 - top-level `error`.
 
-Do not add an event name from guesswork. Verify its payload and ordering against current Hermes source, add decoding/state tests, and document only cross-event semantics that code alone cannot make clear.
+`reasoning.delta` and `reasoning.available` provide display reasoning for the current turn's chronological Steps projection. `thinking.delta` carries provider/status activity for the running turn. Tool events correlate by `tool_id` (or the current equivalent tool-call ID alias), so simultaneous tools with the same name retain their own start order and completion detail.
+
+The `session.resume` display projection may expose assistant reasoning through `reasoning`, `reasoning_content`, or `reasoning_details`, followed by projected `role: "tool"` rows. Celeste reconstructs those available rows into the same settled per-turn Steps projection used by live events and presents each resumed tool's supplied name and context.
+
+Event names, payloads, and ordering are verified against current Hermes source and covered by focused decoding/state tests. This document records the cross-event semantics that connect those implementation points.
 
 Notifications with a blank `session_id` are accepted for the active conversation. Only a non-empty mismatched runtime ID is filtered out. `gateway.ready` is consumed as transport readiness and is not emitted as a conversation event.
 

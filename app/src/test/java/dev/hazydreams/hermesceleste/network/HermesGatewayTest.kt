@@ -129,8 +129,9 @@ class HermesGatewayTest {
             ).jsonArray,
         )
 
-        assertEquals(listOf("row-41", "resume-1", "resume-2"), messages.map { it.id })
+        assertEquals(listOf("row-41", "steps:resume-1"), messages.map { it.id })
         assertEquals(messages.size, messages.map { it.id }.toSet().size)
+        assertEquals(listOf("resume-1:tool", "resume-2:tool"), messages.single { it.role == "steps" }.steps.map { it.id })
     }
 
     @Test
@@ -147,10 +148,58 @@ class HermesGatewayTest {
             ).jsonArray,
         )
 
-        assertEquals(listOf("user", "assistant", "tool", "tool", "assistant"), messages.map { it.role })
-        assertEquals(listOf("Run the check", "Checking", "Repeated output", "Repeated output", "Done"), messages.map { it.text })
-        assertEquals(listOf(null, null, "terminal", "terminal", null), messages.map { it.toolName })
-        assertEquals(listOf("row-41", "resume-1", "resume-2", "resume-3", "final"), messages.map { it.id })
+        assertEquals(listOf("user", "assistant", "steps", "assistant"), messages.map { it.role })
+        assertEquals(listOf("Run the check", "Checking", "", "Done"), messages.map { it.text })
+        val steps = messages.single { it.role == "steps" }.steps
+        assertEquals(listOf("terminal", "terminal"), steps.map { it.toolName })
+        assertEquals(listOf("row-41", "resume-1", "steps:resume-2", "final"), messages.map { it.id })
+    }
+
+    @Test
+    fun resumedReasoningAndToolsShareOneChronologicalStepsProjection() {
+        val messages = decodeGatewayMessages(
+            Json.parseToJsonElement(
+                """[
+                    {"row_id":1,"role":"user","text":"Inspect this"},
+                    {"row_id":2,"role":"assistant","reasoning_content":"First I should inspect the file.","text":""},
+                    {"row_id":3,"role":"tool","tool_call_id":"call-1","name":"read_file","context":"app/Main.kt"},
+                    {"row_id":4,"role":"assistant","reasoning":"The file confirms the UI boundary.","text":""},
+                    {"row_id":5,"role":"assistant","text":"Done"}
+                ]""".trimIndent(),
+            ).jsonArray,
+        )
+
+        assertEquals(listOf("user", "steps", "assistant"), messages.map { it.role })
+        val steps = messages.single { it.role == "steps" }.steps
+        assertEquals(
+            listOf(ConversationStepKind.Reasoning, ConversationStepKind.Tool, ConversationStepKind.Reasoning),
+            steps.map { it.kind },
+        )
+        assertEquals("First I should inspect the file.", steps[0].detail)
+        assertEquals("app/Main.kt", steps[1].context)
+        assertEquals("The file confirms the UI boundary.", steps[2].detail)
+        assertEquals("call-1", steps[1].id)
+        assertTrue(steps.none { it.pending })
+    }
+
+    @Test
+    fun resumedHistorySafelySkipsStructuredReasoningDetails() {
+        val messages = decodeGatewayMessages(
+            Json.parseToJsonElement(
+                """[
+                    {"row_id":1,"role":"user","text":"Inspect this"},
+                    {"row_id":2,"role":"assistant","reasoning_details":[{"type":"summary","text":"Internal metadata"}],"text":"Checking"},
+                    {"row_id":3,"role":"tool","tool_call_id":"call-1","name":"read_file","context":"app/Main.kt"},
+                    {"row_id":4,"role":"assistant","text":"Done"}
+                ]""".trimIndent(),
+            ).jsonArray,
+        )
+
+        assertEquals(listOf("user", "assistant", "steps", "assistant"), messages.map { it.role })
+        assertEquals(listOf("Inspect this", "Checking", "", "Done"), messages.map { it.text })
+        val step = messages.single { it.role == "steps" }.steps.single()
+        assertEquals(ConversationStepKind.Tool, step.kind)
+        assertEquals("app/Main.kt", step.context)
     }
 
     @Test
@@ -166,7 +215,7 @@ class HermesGatewayTest {
             ).jsonArray,
         )
 
-        assertEquals(listOf("legacy-id", "7", "true", "false"), messages.map { it.id })
+        assertEquals(listOf("legacy-id", "7", "true", "steps:false"), messages.map { it.id })
     }
 
     @Test
@@ -182,7 +231,7 @@ class HermesGatewayTest {
             ).jsonArray,
         )
 
-        assertEquals(listOf("shared", "resume-1", "resume-2", "resume-3"), messages.map { it.id })
+        assertEquals(listOf("shared", "resume-1", "resume-2", "steps:resume-3"), messages.map { it.id })
         assertEquals(messages.size, messages.map { it.id }.toSet().size)
     }
 

@@ -7,6 +7,7 @@ import dev.hazydreams.hermesceleste.network.AuthenticationMaterial
 import dev.hazydreams.hermesceleste.network.AuthenticationRejected
 import dev.hazydreams.hermesceleste.network.AuthProvider
 import dev.hazydreams.hermesceleste.network.ConversationMessage
+import dev.hazydreams.hermesceleste.network.ConversationStepKind
 import dev.hazydreams.hermesceleste.network.DashboardProbeResult
 import dev.hazydreams.hermesceleste.network.DashboardProfile
 import dev.hazydreams.hermesceleste.network.DashboardService
@@ -85,6 +86,161 @@ class CelesteViewModelTest {
         assertEquals("Hello continued", state.messages.single { it.role == "assistant" }.text)
         assertFalse(state.messages.single { it.role == "user" }.pending)
         assertEquals(1, gateway.methods.count { it == "prompt.submit" })
+        viewModel.controller.close()
+    }
+
+    @Test
+    fun reasoningAndToolsShareOneChronologicalStepsRow() = runTest {
+        val gateway = FakeGateway()
+        val viewModel = openConversation(gateway)
+
+        viewModel.updateDraft("Inspect this once")
+        viewModel.sendMessage()
+        gateway.emit("message.start")
+        gateway.emit("reasoning.delta", """{"text":"Inspecting"}""")
+        gateway.emit("reasoning.delta", """{"text":" the gateway."}""")
+        gateway.emit(
+            "tool.start",
+            """{"tool_id":"tool-1","name":"read_file","context":"GatewaySessionApi.kt"}""",
+        )
+        gateway.emit(
+            "tool.complete",
+            """{"tool_id":"tool-1","name":"read_file","summary":"Read the resume projection","result":"42 lines"}""",
+        )
+        gateway.emit("reasoning.delta", """{"text":"The boundary is clear."}""")
+        gateway.emit("message.complete", """{"content":"Done","status":"complete"}""")
+        advanceUntilIdle()
+
+        val messages = viewModel.state.value.messages
+        assertEquals(listOf("user", "steps", "assistant"), messages.map { it.role })
+        val steps = messages.single { it.role == "steps" }
+        assertEquals(
+            listOf(ConversationStepKind.Reasoning, ConversationStepKind.Tool, ConversationStepKind.Reasoning),
+            steps.steps.map { it.kind },
+        )
+        assertEquals("Inspecting the gateway.", steps.steps[0].detail)
+        assertEquals("tool-1", steps.steps[1].id)
+        assertEquals("Read the resume projection", steps.steps[1].summary)
+        assertEquals("The boundary is clear.", steps.steps[2].detail)
+        assertFalse(steps.pending)
+        assertTrue(steps.steps.none { it.pending })
+        viewModel.controller.close()
+    }
+
+    @Test
+    fun structuredToolResultCompletesTheStepAndTurn() = runTest {
+        val gateway = FakeGateway()
+        val viewModel = openConversation(gateway)
+
+        viewModel.updateDraft("Inspect the structured result")
+        viewModel.sendMessage()
+        gateway.emit("message.start")
+        gateway.emit(
+            "tool.start",
+            """{"tool_id":"tool-json","name":"read_file","context":"report.json"}""",
+        )
+        gateway.emit(
+            "tool.complete",
+            """{"tool_id":"tool-json","name":"read_file","summary":"Read report","result":{"items":[1,2]}}""",
+        )
+        runCurrent()
+
+        val activeSteps = viewModel.state.value.messages.single { it.role == "steps" }
+        assertTrue(activeSteps.pending)
+        assertFalse(activeSteps.steps.single().pending)
+
+        gateway.emit("message.complete", """{"content":"Done","status":"complete"}""")
+        advanceUntilIdle()
+
+        val state = viewModel.state.value
+        val tool = state.messages.single { it.role == "steps" }.steps.single()
+        assertEquals(TurnState.Idle, state.turnState)
+        assertEquals("Read report", tool.summary)
+        assertEquals("{\"items\":[1,2]}", tool.result)
+        assertFalse(tool.pending)
+        viewModel.controller.close()
+    }
+
+    @Test
+    fun reasoningWhitespaceDeltasPreserveTokenSpacing() = runTest {
+        val gateway = FakeGateway()
+        val viewModel = openConversation(gateway)
+
+        viewModel.updateDraft("Inspect this")
+        viewModel.sendMessage()
+        gateway.emit("message.start")
+        gateway.emit("reasoning.delta", """{"text":"Inspect"}""")
+        gateway.emit("reasoning.delta", """{"text":" "}""")
+        gateway.emit("reasoning.delta", """{"text":"the file"}""")
+        gateway.emit("message.complete", """{"content":"Done","status":"complete"}""")
+        advanceUntilIdle()
+
+        val reasoning = viewModel.state.value.messages
+            .single { it.role == "steps" }
+            .steps
+            .single { it.kind == ConversationStepKind.Reasoning }
+        assertEquals("Inspect the file", reasoning.detail)
+        viewModel.controller.close()
+    }
+
+    @Test
+    fun assistantInterimSeparatesReasoningBlocksWithinTheTurn() = runTest {
+        val gateway = FakeGateway()
+        val viewModel = openConversation(gateway)
+
+        viewModel.updateDraft("Explain while you work")
+        viewModel.sendMessage()
+        gateway.emit("message.start")
+        gateway.emit("reasoning.delta", """{"text":"First thought."}""")
+        gateway.emit("message.interim", """{"text":"I checked the first part."}""")
+        gateway.emit("reasoning.delta", """{"text":"Second thought."}""")
+        gateway.emit("message.complete", """{"content":"Finished.","status":"complete"}""")
+        advanceUntilIdle()
+
+        val reasoning = viewModel.state.value.messages
+            .single { it.role == "steps" }
+            .steps
+            .filter { it.kind == ConversationStepKind.Reasoning }
+        assertEquals(listOf("First thought.", "Second thought."), reasoning.map { it.detail })
+        assertTrue(reasoning.none { it.pending })
+        viewModel.controller.close()
+    }
+
+    @Test
+    fun sameNameParallelToolsCompleteByStableId() = runTest {
+        val gateway = FakeGateway()
+        val viewModel = openConversation(gateway)
+
+        viewModel.updateDraft("Run both")
+        viewModel.sendMessage()
+        gateway.emit("message.start")
+        gateway.emit("tool.start", """{"tool_id":"command-a","name":"terminal","context":"first"}""")
+        gateway.emit("tool.start", """{"tool_id":"command-b","name":"terminal","context":"second"}""")
+        gateway.emit("tool.complete", """{"tool_id":"command-b","name":"terminal","summary":"Second done"}""")
+        gateway.emit("tool.complete", """{"tool_id":"command-a","name":"terminal","summary":"First done"}""")
+        gateway.emit("message.complete", """{"content":"Both done","status":"complete"}""")
+        advanceUntilIdle()
+
+        val tools = viewModel.state.value.messages.single { it.role == "steps" }.steps
+        assertEquals(listOf("command-a", "command-b"), tools.map { it.id })
+        assertEquals(listOf("First done", "Second done"), tools.map { it.summary })
+        assertTrue(tools.none { it.pending })
+        viewModel.controller.close()
+    }
+
+    @Test
+    fun thinkingDeltaDoesNotCreateSteps() = runTest {
+        val gateway = FakeGateway()
+        val viewModel = openConversation(gateway)
+
+        viewModel.updateDraft("Answer normally")
+        viewModel.sendMessage()
+        gateway.emit("message.start")
+        gateway.emit("thinking.delta", """{"text":"Waiting for provider"}""")
+        gateway.emit("message.complete", """{"content":"Ready","status":"complete"}""")
+        advanceUntilIdle()
+
+        assertEquals(listOf("user", "assistant"), viewModel.state.value.messages.map { it.role })
         viewModel.controller.close()
     }
 

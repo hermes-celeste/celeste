@@ -111,35 +111,70 @@ suspend fun GatewayConnection.interruptSession(runtimeSessionId: String): JsonOb
 
 internal fun decodeGatewayMessages(elements: List<JsonElement>): List<ConversationMessage> {
     val usedIds = mutableSetOf<String>()
-    return elements.mapIndexedNotNull { index, element ->
-        val message = decodeGatewayMessage(element) ?: return@mapIndexedNotNull null
-        val preferredId = message.id?.takeIf(String::isNotBlank)
-        val id = if (preferredId != null && usedIds.add(preferredId)) {
-            preferredId
-        } else {
-            generateSequence("resume-$index") { current -> "$current-duplicate" }
-                .first(usedIds::add)
-        }
-        message.copy(id = id)
-    }
-}
+    var messages = emptyList<ConversationMessage>()
 
-private fun decodeGatewayMessage(element: JsonElement): ConversationMessage? {
-    val row = element as? JsonObject ?: return null
-    val role = row.string("role")?.takeIf(String::isNotBlank) ?: return null
-    val toolName = row.string("name") ?: row.string("tool_name")
-    val text = row.string("text")
-        ?: row.string("content")
-        ?: row.string("context")
-        ?: if (role == "tool") toolName.orEmpty() else ""
-    return ConversationMessage(
-        role = role,
-        text = text,
-        toolName = toolName,
-        id = row["row_id"].scalarIdentity()?.let { "row-$it" }
+    fun uniqueMessageId(preferred: String?, fallback: String): String {
+        val explicit = preferred?.takeIf(String::isNotBlank)
+        if (explicit != null && usedIds.add(explicit)) return explicit
+        return generateSequence(fallback) { current -> "$current-duplicate" }
+            .first(usedIds::add)
+    }
+
+    elements.forEachIndexed { index, element ->
+        val row = element as? JsonObject ?: return@forEachIndexed
+        val role = row.string("role")?.takeIf(String::isNotBlank) ?: return@forEachIndexed
+        val sourceIdentity = row["row_id"].scalarIdentity()?.let { "row-$it" }
             ?: row["id"].scalarIdentity()
-            ?: row["message_id"].scalarIdentity(),
-    )
+            ?: row["message_id"].scalarIdentity()
+        val text = row.string("text")
+            ?: row.string("content")
+            ?: row.string("context")
+            ?: ""
+
+        if (role == "assistant") {
+            val reasoning = sequenceOf("reasoning", "reasoning_content", "reasoning_details")
+                .mapNotNull(row::string)
+                .firstOrNull(String::isNotBlank)
+            if (reasoning != null) {
+                messages = appendReasoningToCurrentTurn(
+                    messages = messages,
+                    id = "${sourceIdentity ?: "resume-$index"}:reasoning",
+                    text = reasoning,
+                    replaceTail = false,
+                    stepsMessageId = "steps:${sourceIdentity ?: "resume-$index"}",
+                )
+            }
+            if (text.isBlank()) return@forEachIndexed
+        }
+
+        if (role == "tool") {
+            val name = row.string("name") ?: row.string("tool_name") ?: "tool"
+            val context = text.ifBlank { row["args"]?.toString().orEmpty() }.ifBlank { name }
+            val toolId = row.string("tool_id")
+                ?: row.string("tool_call_id")
+                ?: "${sourceIdentity ?: "resume-$index"}:tool"
+            messages = completeToolInCurrentTurn(
+                messages = messages,
+                id = toolId,
+                name = name,
+                context = context,
+                summary = row.string("summary").orEmpty(),
+                result = row.string("result").orEmpty(),
+                fallbackStepId = toolId,
+                stepsMessageId = "steps:${sourceIdentity ?: "resume-$index"}",
+            )
+            return@forEachIndexed
+        }
+
+        if (text.isBlank()) return@forEachIndexed
+        messages = messages + ConversationMessage(
+            role = role,
+            text = text,
+            id = uniqueMessageId(sourceIdentity, "resume-$index"),
+        )
+    }
+
+    return messages.map(ConversationMessage::settledSteps)
 }
 
 private fun JsonElement?.scalarIdentity(): String? =
@@ -167,7 +202,7 @@ private fun JsonElement.asObject(errorMessage: String): JsonObject =
     this as? JsonObject ?: throw IOException(errorMessage)
 
 internal fun JsonObject.string(key: String): String? =
-    get(key)?.jsonPrimitive?.contentOrNull
+    (get(key) as? JsonPrimitive)?.contentOrNull
 
 internal fun JsonObject.boolean(key: String): Boolean? =
     get(key)?.jsonPrimitive?.booleanOrNull

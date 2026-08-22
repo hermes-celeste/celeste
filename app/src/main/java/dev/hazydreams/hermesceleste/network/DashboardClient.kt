@@ -88,15 +88,6 @@ data class DashboardProfile(
     val provider: String? = null,
 )
 
-data class ConversationMessage(
-    val role: String,
-    val text: String,
-    val toolName: String? = null,
-    val id: String? = null,
-    val pending: Boolean = false,
-    val interim: Boolean = false,
-)
-
 data class ResumedSession(
     val runtimeSessionId: String,
     val storedSessionId: String,

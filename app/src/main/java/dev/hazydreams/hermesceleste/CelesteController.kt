@@ -9,6 +9,11 @@ import dev.hazydreams.hermesceleste.connection.connectionBootstrapDecision
 import dev.hazydreams.hermesceleste.network.AuthenticationRejected
 import dev.hazydreams.hermesceleste.network.AuthenticationMaterial
 import dev.hazydreams.hermesceleste.network.ConversationMessage
+import dev.hazydreams.hermesceleste.network.appendReasoningToCurrentTurn
+import dev.hazydreams.hermesceleste.network.completeToolInCurrentTurn
+import dev.hazydreams.hermesceleste.network.settleCurrentReasoning
+import dev.hazydreams.hermesceleste.network.settleCurrentTurnSteps
+import dev.hazydreams.hermesceleste.network.startToolInCurrentTurn
 import dev.hazydreams.hermesceleste.network.DashboardProfile
 import dev.hazydreams.hermesceleste.network.DashboardProbeResult
 import dev.hazydreams.hermesceleste.network.DashboardService
@@ -1494,6 +1499,7 @@ internal class CelesteController(
                 val delta = event.payload.string("text").orEmpty()
                 if (delta.isNotEmpty()) {
                     mutableState.value = mutableState.value.copy(
+                        messages = settleCurrentReasoning(mutableState.value.messages),
                         streamingText = mutableState.value.streamingText + delta,
                         turnState = TurnState.Running,
                     )
@@ -1503,6 +1509,9 @@ internal class CelesteController(
             "message.interim" -> {
                 val text = event.payload.string("text").orEmpty()
                 val alreadyStreamed = event.payload.boolean("already_streamed") == true
+                mutableState.value = mutableState.value.copy(
+                    messages = settleCurrentReasoning(mutableState.value.messages),
+                )
                 if (alreadyStreamed && mutableState.value.streamingText.isNotBlank()) {
                     finalizeAssistant(
                         text.ifBlank { mutableState.value.streamingText },
@@ -1522,6 +1531,7 @@ internal class CelesteController(
                     ?: ""
                 finalizeAssistant(content, keepRunning = false)
                 mutableState.value = mutableState.value.copy(
+                    messages = settleCurrentTurnSteps(mutableState.value.messages),
                     turnState = TurnState.Idle,
                     errorMessage = if (status == "error") {
                         event.payload.string("error") ?: "Hermes could not finish that response."
@@ -1534,6 +1544,7 @@ internal class CelesteController(
             "error", "message.error" -> {
                 finalizeAssistant(keepRunning = false)
                 mutableState.value = mutableState.value.copy(
+                    messages = settleCurrentTurnSteps(mutableState.value.messages),
                     turnState = TurnState.Idle,
                     errorMessage = event.payload.string("message") ?: "Hermes reported an error.",
                 )
@@ -1541,7 +1552,10 @@ internal class CelesteController(
 
             "message.interrupted", "session.interrupted" -> {
                 finalizeAssistant(keepRunning = false)
-                mutableState.value = mutableState.value.copy(turnState = TurnState.Idle)
+                mutableState.value = mutableState.value.copy(
+                    messages = settleCurrentTurnSteps(mutableState.value.messages),
+                    turnState = TurnState.Idle,
+                )
             }
 
             "session.busy" -> {
@@ -1558,38 +1572,69 @@ internal class CelesteController(
                 }
             }
 
+            "reasoning.delta", "reasoning.available" -> {
+                val text = event.payload.string("text").orEmpty()
+                if (text.isNotEmpty()) {
+                    if (mutableState.value.streamingText.isNotBlank()) {
+                        finalizeAssistant(keepRunning = true, interim = true)
+                    }
+                    mutableState.value = mutableState.value.copy(
+                        messages = appendReasoningToCurrentTurn(
+                            messages = mutableState.value.messages,
+                            id = nextLocalMessageId("reasoning"),
+                            text = text,
+                            replaceTail = event.type == "reasoning.available",
+                            stepsMessageId = nextLocalMessageId("steps"),
+                        ),
+                        turnState = TurnState.Running,
+                    )
+                }
+            }
+
             "tool.start" -> {
                 if (mutableState.value.streamingText.isNotBlank()) finalizeAssistant(keepRunning = true)
-                val name = event.payload.string("name") ?: "Tool"
-                val input = event.payload.string("args_text")
+                val name = event.payload.string("name") ?: "tool"
+                val context = event.payload.string("args_text")
                     ?: event.payload.string("context")
                     ?: event.payload["args"]?.toString().orEmpty()
+                val toolId = event.payload.string("tool_id")
+                    ?: event.payload.string("tool_call_id")
+                    ?: nextLocalMessageId("tool")
                 mutableState.value = mutableState.value.copy(
-                    messages = mutableState.value.messages + ConversationMessage(
-                        role = "tool",
-                        text = input,
-                        toolName = name,
-                        id = nextLocalMessageId("tool"),
-                        pending = true,
+                    messages = startToolInCurrentTurn(
+                        messages = mutableState.value.messages,
+                        id = toolId,
+                        name = name,
+                        context = context,
+                        stepsMessageId = nextLocalMessageId("steps"),
                     ),
                     turnState = TurnState.Running,
                 )
             }
 
             "tool.complete" -> {
-                val name = event.payload.string("name") ?: "Tool"
-                val output = event.payload.string("output")
+                val name = event.payload.string("name") ?: "tool"
+                val toolId = event.payload.string("tool_id")
+                    ?: event.payload.string("tool_call_id")
+                val context = event.payload.string("args_text")
+                    ?: event.payload.string("context")
+                    ?: event.payload["args"]?.toString().orEmpty()
+                val summary = event.payload.string("summary").orEmpty()
+                val result = event.payload.string("result_text")
+                    ?: event.payload.string("result")
                     ?: event.payload["result"]?.toString().orEmpty()
-                val messages = mutableState.value.messages.toMutableList()
-                val index = messages.indexOfLast {
-                    it.role == "tool" && it.toolName == name && it.pending
-                }
-                if (index >= 0) {
-                    messages[index] = messages[index].copy(text = output, pending = false)
-                } else {
-                    messages += ConversationMessage(role = "tool", text = output, toolName = name)
-                }
-                mutableState.value = mutableState.value.copy(messages = messages)
+                mutableState.value = mutableState.value.copy(
+                    messages = completeToolInCurrentTurn(
+                        messages = mutableState.value.messages,
+                        id = toolId,
+                        name = name,
+                        context = context,
+                        summary = summary,
+                        result = result,
+                        fallbackStepId = nextLocalMessageId("tool"),
+                        stepsMessageId = nextLocalMessageId("steps"),
+                    ),
+                )
             }
         }
     }

@@ -47,11 +47,16 @@ internal fun transcriptItemKeys(messages: List<ConversationMessage>): List<Strin
 }
 
 @Composable
-internal fun MessageBubble(message: ConversationMessage, streaming: Boolean = false) {
+internal fun MessageBubble(
+    message: ConversationMessage,
+    streaming: Boolean = false,
+    onOpenSteps: () -> Unit = {},
+) {
     when (message.role) {
         "user" -> UserMessage(message, streaming)
         "assistant" -> AssistantMessage(message, streaming)
-        else -> ToolMessage(message)
+        "steps" -> StepsTranscriptEntry(message, onOpenSteps)
+        else -> LabeledMessage(message)
     }
 }
 
@@ -106,10 +111,9 @@ private fun AssistantMessage(message: ConversationMessage, streaming: Boolean) {
 }
 
 @Composable
-private fun ToolMessage(message: ConversationMessage) {
+private fun LabeledMessage(message: ConversationMessage) {
     CelestePanel(
-        modifier = Modifier
-            .fillMaxWidth(),
+        modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(16.dp),
         contentPadding = androidx.compose.foundation.layout.PaddingValues(
             horizontal = 15.dp,
@@ -118,7 +122,7 @@ private fun ToolMessage(message: ConversationMessage) {
     ) {
         Column {
             MessageLabel(
-                message.toolName?.replace('_', ' ') ?: "Tool",
+                message.role.replace('_', ' '),
                 CelesteAccent,
                 message.pending,
             )
