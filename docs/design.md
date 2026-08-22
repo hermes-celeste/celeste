@@ -48,6 +48,7 @@ Do not duplicate hexadecimal values here. Change tokens in code and validate aff
 - When a new conversation becomes ready, focus the composer once and open the keyboard so the user can begin typing immediately. Resize the available conversation viewport with the keyboard while keeping the header, transcript, and composer in their normal layout order.
 - During automatic reconnection, keep the draft, message placeholder, composer geometry, and Send affordance stable. A quiet warning-colored presence indicator communicates recovery until the conversation is ready again. Repeated runtime-resume failures settle into a dedicated conversation card with a nearby Retry action while persisted history remains readable.
 - Routine reasoning and tool activity form chronological segments around assistant commentary. The transcript presents each activity segment as a compact **Thinking** entry that opens the mobile **Steps** sheet. High-salience interactions such as approvals and user questions retain their dedicated surfaces.
+- During context compaction, present one concise **Summarizing conversation…** row at the live edge of the active transcript. Keep it through the pause, announce it politely to assistive technology, and replace it as soon as Hermes resumes normal turn output.
 - Active work uses concise copy, semantic status color, and restrained progress treatment. It must not frame or illuminate the page.
 - Only expose controls and destinations with working behavior. Future drawer locations do not justify inert placeholders.
 

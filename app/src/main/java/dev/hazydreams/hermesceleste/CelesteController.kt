@@ -94,9 +94,27 @@ internal data class CelesteUiState(
     val streamingText: String = "",
     val draft: String = "",
     val turnState: TurnState = TurnState.Idle,
+    val isCompacting: Boolean = false,
     val resumeExhausted: Boolean = false,
     val loadingMessage: String? = null,
     val errorMessage: String? = null,
+)
+
+private val COMPACTION_RESUME_EVENT_TYPES = setOf(
+    "message.start",
+    "message.delta",
+    "message.interim",
+    "thinking.delta",
+    "reasoning.delta",
+    "reasoning.available",
+    "tool.start",
+    "tool.progress",
+    "tool.generating",
+    "tool.complete",
+    "moa.reference",
+    "moa.aggregating",
+    "moa.progress",
+    "moa.phase",
 )
 
 private data class LoadedDashboard(
@@ -470,6 +488,7 @@ internal class CelesteController(
             messages = emptyList(),
             streamingText = "",
             draft = "",
+            isCompacting = false,
             loadingMessage = "Finding Hermes…",
             errorMessage = null,
         )
@@ -618,6 +637,7 @@ internal class CelesteController(
             messages = emptyList(),
             streamingText = "",
             draft = "",
+            isCompacting = false,
             password = "",
             sessionToken = "",
             loadingMessage = "Signing out…",
@@ -942,6 +962,7 @@ internal class CelesteController(
             streamingText = "",
             draft = "",
             turnState = TurnState.Synchronizing,
+            isCompacting = false,
             resumeExhausted = false,
             loadingMessage = "Opening ${summary.title.ifBlank { "conversation" }}…",
             errorMessage = null,
@@ -1019,6 +1040,7 @@ internal class CelesteController(
             password = password,
             sessionToken = sessionToken,
             turnState = TurnState.Idle,
+            isCompacting = false,
             resumeExhausted = false,
             loadingMessage = null,
             errorMessage = connectionWarning,
@@ -1037,6 +1059,7 @@ internal class CelesteController(
             streamingText = "",
             draft = if (clearDraft) "" else snapshot.draft,
             turnState = TurnState.Idle,
+            isCompacting = false,
             resumeExhausted = false,
             loadingMessage = null,
             errorMessage = null,
@@ -1227,6 +1250,7 @@ internal class CelesteController(
             streamingText = "",
             draft = "",
             turnState = TurnState.Running,
+            isCompacting = false,
             errorMessage = null,
         )
         // prompt.submit creates the durable row before work begins. From this point on,
@@ -1527,6 +1551,8 @@ internal class CelesteController(
             } else {
                 TurnState.Idle
             },
+            isCompacting = mutableState.value.isCompacting &&
+                (resumed.running == true || resumed.hasLiveProjection),
             resumeExhausted = false,
             errorMessage = null,
         )
@@ -1596,7 +1622,15 @@ internal class CelesteController(
     private fun applyEvent(event: GatewayEvent) {
         val runtimeId = currentRuntimeSessionId ?: return
         if (event.sessionId.isNotBlank() && event.sessionId != runtimeId) return
+        if (event.type in COMPACTION_RESUME_EVENT_TYPES && mutableState.value.isCompacting) {
+            mutableState.value = mutableState.value.copy(isCompacting = false)
+        }
         when (event.type) {
+            "status.update" -> when (event.payload.string("kind")) {
+                "compacting" -> mutableState.value = mutableState.value.copy(isCompacting = true)
+                "compacted" -> mutableState.value = mutableState.value.copy(isCompacting = false)
+            }
+
             "message.start" -> {
                 if (mutableState.value.streamingText.isNotBlank()) finalizeAssistant()
                 mutableState.value = mutableState.value.copy(
@@ -1644,6 +1678,7 @@ internal class CelesteController(
                 mutableState.value = mutableState.value.copy(
                     messages = settleCurrentTurnSteps(mutableState.value.messages),
                     turnState = TurnState.Idle,
+                    isCompacting = false,
                     errorMessage = if (status == "error") {
                         event.payload.string("error") ?: "Hermes could not finish that response."
                     } else {
@@ -1657,6 +1692,7 @@ internal class CelesteController(
                 mutableState.value = mutableState.value.copy(
                     messages = settleCurrentTurnSteps(mutableState.value.messages),
                     turnState = TurnState.Idle,
+                    isCompacting = false,
                     errorMessage = event.payload.string("message") ?: "Hermes reported an error.",
                 )
             }
@@ -1666,12 +1702,15 @@ internal class CelesteController(
                 mutableState.value = mutableState.value.copy(
                     messages = settleCurrentTurnSteps(mutableState.value.messages),
                     turnState = TurnState.Idle,
+                    isCompacting = false,
                 )
             }
 
             "session.busy" -> {
+                val running = event.payload.boolean("busy") == true
                 mutableState.value = mutableState.value.copy(
-                    turnState = if (event.payload.boolean("busy") == true) TurnState.Running else TurnState.Idle,
+                    turnState = if (running) TurnState.Running else TurnState.Idle,
+                    isCompacting = mutableState.value.isCompacting && running,
                 )
             }
 
@@ -1679,6 +1718,7 @@ internal class CelesteController(
                 event.payload.boolean("running")?.let { running ->
                     mutableState.value = mutableState.value.copy(
                         turnState = if (running) TurnState.Running else TurnState.Idle,
+                        isCompacting = mutableState.value.isCompacting && running,
                     )
                 }
             }

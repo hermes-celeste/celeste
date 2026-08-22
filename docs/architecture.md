@@ -38,7 +38,7 @@ The four turn states are intentionally user-facing projections:
 - `Running` — Hermes owns an active turn.
 - `Reconnecting` — the draft remains local and the stable composer stays visible while Celeste automatically restores the server relationship. Compose uses a warning-colored presence indicator for this recoverable state.
 
-Reasoning and tool events are reduced into chronological `steps` transcript rows for the current user turn. Adjacent reasoning deltas coalesce within the active segment, while tool starts and completions reconcile by stable Hermes tool ID. Interim assistant prose closes the current activity segment and appears in the transcript; later reasoning or tools begin a fresh **Thinking** row. Compose presents each row through the same separate **Steps** bottom sheet.
+Reasoning and tool events are reduced into chronological `steps` transcript rows for the current user turn. Adjacent reasoning deltas coalesce within the active segment, while tool starts and completions reconcile by stable Hermes tool ID. Interim assistant prose closes the current activity segment and appears in the transcript; later reasoning or tools begin a fresh **Thinking** row. Compose presents each row through the same separate **Steps** bottom sheet. Structured compaction status is held per active conversation and appears as one polite live transcript status until Hermes reports completion or normal turn output resumes.
 
 Do not derive protocol truth from animation or view-local state.
 
@@ -69,7 +69,7 @@ Provider cookies may rotate while Hermes refreshes a session. Celeste snapshots 
 5. List sessions and profiles over the current required HTTP routes.
 6. Publish a local empty composer as soon as the session catalog and profiles are ready. Resume durable history only when the user selects it from the drawer.
 7. On the local draft's first Send, connect the gateway, create the Hermes runtime, submit the prompt, and publish the stored session into the catalog after `prompt.submit` crosses Hermes' persistence boundary. A creation failure leaves the exact draft ready for another Send.
-8. Reduce gateway events into assistant messages, the current turn's chronological Steps projection, and turn state.
+8. Reduce gateway events into assistant messages, the current turn's chronological Steps projection, turn state, and the active conversation's compaction status.
 9. On interruption, disconnect, or foreground recovery, keep the local draft, reconnect automatically, and ask the server for authoritative state before continuing. Connection attempts continue while the transport is unavailable. Once connected, session resume uses the initial attempt plus four bounded retries; persisted REST history stays readable, and exhaustion presents a dedicated Retry action that begins a fresh resume cycle. Recoverable transport details stay inside the connection layer; definitive authentication rejection returns the user to connection setup.
 
 The dashboard remains the source of truth throughout this flow. Celeste holds a screen projection and unsent draft, not a competing history database.
