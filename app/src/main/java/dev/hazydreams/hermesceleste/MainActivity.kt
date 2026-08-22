@@ -53,6 +53,7 @@ private class CelesteViewModelFactory(
 private fun HermesCelesteApp(viewModel: CelesteViewModel) {
     val controller = viewModel.controller
     val ui by controller.state.collectAsStateWithLifecycle()
+    val composerFocusRequest by viewModel.composerFocusRequest.collectAsStateWithLifecycle()
     val lifecycleOwner = LocalLifecycleOwner.current
 
     DisposableEffect(lifecycleOwner, controller, ui.activeSummary?.id) {
@@ -70,5 +71,11 @@ private fun HermesCelesteApp(viewModel: CelesteViewModel) {
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
 
-    CelesteRoutes(ui = ui, controller = controller)
+    CelesteRoutes(
+        ui = ui,
+        controller = controller,
+        composerFocusRequest = composerFocusRequest,
+        onComposerFocusRequestHandled = viewModel::completeComposerFocusRequest,
+        onNewConversation = viewModel::createNewConversation,
+    )
 }

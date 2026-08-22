@@ -24,7 +24,13 @@ import dev.hazydreams.hermesceleste.ui.sessions.SessionNavigationDrawer
 import kotlinx.coroutines.launch
 
 @Composable
-internal fun CelesteRoutes(ui: CelesteUiState, controller: CelesteController) {
+internal fun CelesteRoutes(
+    ui: CelesteUiState,
+    controller: CelesteController,
+    composerFocusRequest: Long?,
+    onComposerFocusRequestHandled: (Long) -> Unit,
+    onNewConversation: () -> Unit,
+) {
     val activeSummary = ui.activeSummary
     val sessions = ui.sessions
     var destination by rememberSaveable { mutableStateOf(CelesteDestination.Content) }
@@ -85,7 +91,7 @@ internal fun CelesteRoutes(ui: CelesteUiState, controller: CelesteController) {
                             onNewConversation = {
                                 drawerScope.launch {
                                     drawerState.close()
-                                    controller.createNewConversation()
+                                    onNewConversation()
                                 }
                             },
                             onSessionSelected = { session ->
@@ -120,6 +126,8 @@ internal fun CelesteRoutes(ui: CelesteUiState, controller: CelesteController) {
                         onInterrupt = controller::interrupt,
                         onReconnect = controller::reconnectNow,
                         onOpenDrawer = { drawerScope.launch { drawerState.open() } },
+                        composerFocusRequest = composerFocusRequest,
+                        onComposerFocusRequestHandled = onComposerFocusRequestHandled,
                     )
                 }
             }

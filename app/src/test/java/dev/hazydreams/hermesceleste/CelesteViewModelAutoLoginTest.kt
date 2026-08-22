@@ -80,6 +80,9 @@ class CelesteViewModelAutoLoginTest {
         assertEquals("https://hermes.example.net", state.dashboardUrl)
         assertEquals(listOf("stored-1"), state.sessions?.map { it.id })
         assertEquals("stored-draft-1", state.activeSummary?.id)
+        assertEquals(1L, viewModel.composerFocusRequest.value)
+        assertTrue(viewModel.completeComposerFocusRequest(1L))
+        assertNull(viewModel.composerFocusRequest.value)
         assertEquals(1, dashboard.createSessionCalls)
         assertEquals(1, dashboard.probeCalls)
     }
