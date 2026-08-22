@@ -207,7 +207,9 @@ class CelesteViewModelTest {
         assertTrue(messages[2].interim)
         assertEquals("First thought.", messages[1].steps.single().detail)
         assertEquals("Second thought.", messages[3].steps.single().detail)
-        assertTrue(messages.filter { it.role == "steps" }.flatMap { it.steps }.none { it.pending })
+        val thinkingCapsules = messages.filter { it.role == "steps" }
+        assertTrue(thinkingCapsules.none { it.pending })
+        assertTrue(thinkingCapsules.flatMap { it.steps }.none { it.pending })
         viewModel.controller.close()
     }
 

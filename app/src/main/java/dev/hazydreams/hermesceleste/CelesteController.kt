@@ -1541,7 +1541,7 @@ internal class CelesteController(
                 val text = event.payload.string("text").orEmpty()
                 val alreadyStreamed = event.payload.boolean("already_streamed") == true
                 mutableState.value = mutableState.value.copy(
-                    messages = settleCurrentReasoning(mutableState.value.messages),
+                    messages = settleCurrentTurnSteps(mutableState.value.messages),
                 )
                 if (alreadyStreamed && mutableState.value.streamingText.isNotBlank()) {
                     finalizeAssistant(
