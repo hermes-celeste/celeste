@@ -75,7 +75,12 @@ internal fun CelesteRoutes(ui: CelesteUiState, controller: CelesteController) {
                             hasMoreSessions = ui.hasMoreSessions,
                             isLoadingMoreSessions = ui.isLoadingMoreSessions,
                             sessionPageError = ui.sessionPageError,
+                            searchQuery = ui.sessionSearchQuery,
+                            searchResults = ui.sessionSearchResults,
+                            isSearchingSessions = ui.isSearchingSessions,
+                            sessionSearchError = ui.sessionSearchError,
                             onProfileSelected = controller::selectProfile,
+                            onSearchQueryChange = controller::updateSessionSearchQuery,
                             onNewConversation = {
                                 drawerScope.launch {
                                     drawerState.close()

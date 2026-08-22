@@ -432,6 +432,14 @@ class CelesteViewModelAutoLoginTest {
             offset = offset,
         )
 
+        override suspend fun searchSessions(
+            baseUrl: String,
+            credential: GatewayCredential,
+            query: String,
+            profile: String,
+            limit: Int,
+        ): List<StoredSession> = emptyList()
+
         override suspend fun markSessionRead(
             baseUrl: String,
             credential: GatewayCredential,

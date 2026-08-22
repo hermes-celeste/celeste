@@ -127,6 +127,44 @@ class DashboardClientTest {
     }
 
     @Test
+    fun searchesFullSessionHistoryAndStripsFtsMarkers() = runTest {
+        server.enqueue(
+            MockResponse.Builder()
+                .code(200)
+                .body(
+                    """{"results":[{"session_id":"older-notes","title":"Dashboard connection notes","snippet":"Before >>>connection<<< after","session_started":100.5,"last_active":456.75,"message_count":8,"source":"desktop","model":"hermes-4"}]}""",
+                )
+                .build(),
+        )
+
+        val results = DashboardClient().searchSessions(
+            baseUrl = server.url("/").toString().trimEnd('/'),
+            credential = GatewayCredential.StaticToken("private-token"),
+            query = "  connection notes  ",
+            profile = "work",
+        )
+
+        val session = results.single()
+        assertEquals("older-notes", session.id)
+        assertEquals("Dashboard connection notes", session.title)
+        assertEquals("Before connection after", session.preview)
+        assertEquals("work", session.profile)
+        assertEquals("desktop", session.source)
+        assertEquals("hermes-4", session.model)
+        assertEquals(8, session.messageCount)
+        assertEquals(null, session.pinned)
+        assertFalse(session.unread)
+        assertEquals(456.75, session.lastActiveAt, 0.0)
+
+        val request = server.takeRequest()
+        assertEquals("/api/sessions/search", request.url.encodedPath)
+        assertEquals("connection notes", request.url.queryParameter("q"))
+        assertEquals("20", request.url.queryParameter("limit"))
+        assertEquals("work", request.url.queryParameter("profile"))
+        assertEquals("private-token", request.headers["X-Hermes-Session-Token"])
+    }
+
+    @Test
     fun capsSessionDiscoveryAtFifty() = runTest {
         server.enqueue(sessionListRest(limit = 50))
 

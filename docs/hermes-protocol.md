@@ -34,6 +34,7 @@ Transport security and sensitive data rules live in [`security.md`](security.md)
 | `POST /api/auth/ws-ticket` | Mint a short-lived, one-use WebSocket ticket from the cookie session |
 | `GET /api/profiles` | Read the server’s profile catalog |
 | `GET /api/sessions` | Read recent, pinned, scheduled, and unread stored-conversation metadata |
+| `GET /api/sessions/search` | Search durable conversation history by session identity and indexed message content |
 | `PATCH /api/sessions/{session_id}` | Update authoritative conversation metadata such as the read watermark |
 
 Static-token profile requests use `X-Hermes-Session-Token`. Cookie-authenticated requests use the client’s private cookie jar. Celeste may Keystore-encrypt unexpired Hermes access, refresh, and provider cookies for the exact normalized endpoint; it never persists PKCE cookies, one-use WebSocket tickets, or passwords.
@@ -41,6 +42,8 @@ Static-token profile requests use `X-Hermes-Session-Token`. Cookie-authenticated
 Current Hermes requires `GET /api/profiles`. A missing route, authentication rejection, rate limiting, other HTTP or transport failure, or malformed response remains a failure.
 
 Session discovery requires `GET /api/sessions` with archived sessions excluded, 15-row `limit` and `offset` pages, and server-side recent ordering by `last_active` with `started_at` as the data fallback. The response's `total`, `limit`, and `offset` metadata controls exhaustion; advance by the requested page window rather than by response length because Hermes may append pinned sessions beyond that window. Deduplicate this pinned backfill by stable stored session ID while preserving the progressively loaded catalog. Compact rows are authoritative for profile, source, model, pinned, and unread state; `source: "cron"` identifies a scheduled run. Opening an unread row sends `PATCH /api/sessions/{session_id}` with `unread: false` and its profile context. A failed read acknowledgement does not block opening the conversation; later authoritative metadata may restore unread state. Missing routes, authentication rejection, rate limiting, other HTTP or transport failures, and malformed responses remain failures instead of silently changing transports.
+
+Conversation search uses `GET /api/sessions/search` with a trimmed `q`, the server-default profile, and `limit=20`. Current Hermes searches session IDs first and indexed message content second, resolves compressed lineages to their live tips, and returns a bounded result list rather than offset metadata. Celeste therefore does not invent search pagination. It strips Hermes FTS highlight markers before rendering snippets, merges already-loaded matches ahead of server hits by stored session ID, ignores stale debounced responses, and leaves the paged catalog untouched so clearing search restores it exactly.
 
 The shared HTTP client does not follow redirects. Reverse proxies must expose the expected routes directly under the normalized base path.
 
