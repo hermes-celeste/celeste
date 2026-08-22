@@ -21,13 +21,17 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalDrawerSheet
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -52,6 +56,7 @@ import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import dev.hazydreams.hermesceleste.network.DashboardProfile
@@ -78,7 +83,12 @@ internal fun SessionNavigationDrawer(
     hasMoreSessions: Boolean,
     isLoadingMoreSessions: Boolean,
     sessionPageError: String?,
+    searchQuery: String,
+    searchResults: List<StoredSession>,
+    isSearchingSessions: Boolean,
+    sessionSearchError: String?,
     onProfileSelected: (String) -> Unit,
+    onSearchQueryChange: (String) -> Unit,
     onNewConversation: () -> Unit,
     onSessionSelected: (StoredSession) -> Unit,
     onLoadMoreSessions: () -> Unit,
@@ -91,6 +101,7 @@ internal fun SessionNavigationDrawer(
     val enabled = loadingMessage == null
     val sections = sessions.toSessionSections()
     val showProfile = profiles.size > 1
+    val searchActive = searchQuery.isNotBlank()
     val listState = rememberLazyListState()
     val currentLoadMore by rememberUpdatedState(onLoadMoreSessions)
 
@@ -101,13 +112,14 @@ internal fun SessionNavigationDrawer(
         isLoadingMoreSessions,
         sessionPageError,
         sessions.size,
+        searchActive,
     ) {
         snapshotFlow {
             shouldRequestNextSessionPage(
                 isScrollInProgress = listState.isScrollInProgress,
                 lastVisibleIndex = listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: -1,
                 totalItemCount = listState.layoutInfo.totalItemsCount,
-                enabled = enabled,
+                enabled = enabled && !searchActive,
                 hasMoreSessions = hasMoreSessions,
                 isLoadingMoreSessions = isLoadingMoreSessions,
                 hasPageError = sessionPageError != null,
@@ -134,6 +146,14 @@ internal fun SessionNavigationDrawer(
                 .padding(horizontal = 14.dp),
         ) {
             Spacer(Modifier.height(12.dp))
+
+            SessionSearchField(
+                query = searchQuery,
+                searching = isSearchingSessions,
+                enabled = enabled,
+                onQueryChange = onSearchQueryChange,
+            )
+            Spacer(Modifier.height(6.dp))
 
             TextButton(
                 onClick = onNewConversation,
@@ -180,7 +200,7 @@ internal fun SessionNavigationDrawer(
                 Spacer(Modifier.height(18.dp))
             }
 
-            if (sessions.isEmpty()) {
+            if (sessions.isEmpty() && !searchActive) {
                 Column(
                     modifier = Modifier
                         .weight(1f)
@@ -206,94 +226,140 @@ internal fun SessionNavigationDrawer(
                     contentPadding = PaddingValues(top = 2.dp, bottom = 10.dp),
                     verticalArrangement = Arrangement.spacedBy(2.dp),
                 ) {
-                    if (sections.pinned.isNotEmpty()) {
-                        item(key = "pinned-header") {
-                            SessionSectionHeader(
-                                label = "Pinned",
-                                expanded = pinnedExpanded,
-                                onToggle = { pinnedExpanded = !pinnedExpanded },
+                    if (searchActive) {
+                        item(key = "search-results-header") {
+                            Text(
+                                text = "Results",
+                                modifier = Modifier.padding(horizontal = 13.dp, vertical = 9.dp),
+                                color = CelesteTextMuted,
+                                style = MaterialTheme.typography.labelMedium,
+                                fontWeight = FontWeight.SemiBold,
                             )
                         }
-                        if (pinnedExpanded) {
-                            items(sections.pinned, key = { session -> "pinned-${session.id}" }) { session ->
-                                DrawerSessionRow(
-                                    session = session,
-                                    selected = session.id == selectedSessionId,
-                                    enabled = enabled,
-                                    metadata = session.compactMetadata(showProfile),
-                                    onClick = { onSessionSelected(session) },
-                                )
-                            }
-                        }
-                    }
-                    if (sections.recents.isNotEmpty()) {
-                        item(key = "recents-header") {
-                            SessionSectionHeader(
-                                label = "Recents",
-                                expanded = recentsExpanded,
-                                onToggle = { recentsExpanded = !recentsExpanded },
+                        items(searchResults, key = { session -> "search-${session.id}" }) { session ->
+                            DrawerSessionRow(
+                                session = session,
+                                selected = session.id == selectedSessionId,
+                                enabled = enabled,
+                                metadata = session.compactMetadata(showProfile),
+                                onClick = { onSessionSelected(session) },
                             )
                         }
-                        if (recentsExpanded) {
-                            items(sections.recents, key = { session -> "recent-${session.id}" }) { session ->
-                                DrawerSessionRow(
-                                    session = session,
-                                    selected = session.id == selectedSessionId,
-                                    enabled = enabled,
-                                    metadata = session.compactMetadata(showProfile),
-                                    onClick = { onSessionSelected(session) },
+                        if (searchResults.isEmpty()) {
+                            item(key = "search-empty") {
+                                Text(
+                                    text = when {
+                                        isSearchingSessions -> "Searching conversations…"
+                                        sessionSearchError != null -> "Could not search conversations"
+                                        else -> "No conversations found"
+                                    },
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(horizontal = 13.dp, vertical = 22.dp),
+                                    color = if (sessionSearchError == null) CelesteTextMuted else CelesteError,
+                                    style = MaterialTheme.typography.bodyMedium,
+                                )
+                            }
+                        } else if (sessionSearchError != null) {
+                            item(key = "search-error") {
+                                Text(
+                                    text = "Some results may be missing",
+                                    modifier = Modifier.padding(horizontal = 13.dp, vertical = 10.dp),
+                                    color = CelesteError,
+                                    style = MaterialTheme.typography.labelMedium,
                                 )
                             }
                         }
-                    }
-                    if (sections.scheduled.isNotEmpty()) {
-                        item(key = "scheduled-header") {
-                            SessionSectionHeader(
-                                label = "Scheduled",
-                                expanded = scheduledExpanded,
-                                onToggle = { scheduledExpanded = !scheduledExpanded },
-                            )
-                        }
-                        if (scheduledExpanded) {
-                            items(sections.scheduled, key = { session -> "scheduled-${session.id}" }) { session ->
-                                DrawerSessionRow(
-                                    session = session,
-                                    selected = session.id == selectedSessionId,
-                                    enabled = enabled,
-                                    metadata = session.compactMetadata(
-                                        showProfile = showProfile,
-                                        includeScheduledMarker = false,
-                                    ),
-                                    onClick = { onSessionSelected(session) },
+                    } else {
+                        if (sections.pinned.isNotEmpty()) {
+                            item(key = "pinned-header") {
+                                SessionSectionHeader(
+                                    label = "Pinned",
+                                    expanded = pinnedExpanded,
+                                    onToggle = { pinnedExpanded = !pinnedExpanded },
                                 )
                             }
-                        }
-                    }
-                    if (isLoadingMoreSessions) {
-                        item(key = "session-page-loading") {
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .height(48.dp)
-                                    .semantics { contentDescription = "Loading older conversations" },
-                                horizontalArrangement = Arrangement.Center,
-                                verticalAlignment = Alignment.CenterVertically,
-                            ) {
-                                CircularProgressIndicator(
-                                    modifier = Modifier.size(18.dp),
-                                    color = CelesteAccent,
-                                    strokeWidth = 2.dp,
-                                )
+                            if (pinnedExpanded) {
+                                items(sections.pinned, key = { session -> "pinned-${session.id}" }) { session ->
+                                    DrawerSessionRow(
+                                        session = session,
+                                        selected = session.id == selectedSessionId,
+                                        enabled = enabled,
+                                        metadata = session.compactMetadata(showProfile),
+                                        onClick = { onSessionSelected(session) },
+                                    )
+                                }
                             }
                         }
-                    } else if (sessionPageError != null) {
-                        item(key = "session-page-error") {
-                            TextButton(
-                                onClick = onLoadMoreSessions,
-                                enabled = enabled && hasMoreSessions,
-                                modifier = Modifier.fillMaxWidth(),
-                            ) {
-                                Text("Retry loading older conversations")
+                        if (sections.recents.isNotEmpty()) {
+                            item(key = "recents-header") {
+                                SessionSectionHeader(
+                                    label = "Recents",
+                                    expanded = recentsExpanded,
+                                    onToggle = { recentsExpanded = !recentsExpanded },
+                                )
+                            }
+                            if (recentsExpanded) {
+                                items(sections.recents, key = { session -> "recent-${session.id}" }) { session ->
+                                    DrawerSessionRow(
+                                        session = session,
+                                        selected = session.id == selectedSessionId,
+                                        enabled = enabled,
+                                        metadata = session.compactMetadata(showProfile),
+                                        onClick = { onSessionSelected(session) },
+                                    )
+                                }
+                            }
+                        }
+                        if (sections.scheduled.isNotEmpty()) {
+                            item(key = "scheduled-header") {
+                                SessionSectionHeader(
+                                    label = "Scheduled",
+                                    expanded = scheduledExpanded,
+                                    onToggle = { scheduledExpanded = !scheduledExpanded },
+                                )
+                            }
+                            if (scheduledExpanded) {
+                                items(sections.scheduled, key = { session -> "scheduled-${session.id}" }) { session ->
+                                    DrawerSessionRow(
+                                        session = session,
+                                        selected = session.id == selectedSessionId,
+                                        enabled = enabled,
+                                        metadata = session.compactMetadata(
+                                            showProfile = showProfile,
+                                            includeScheduledMarker = false,
+                                        ),
+                                        onClick = { onSessionSelected(session) },
+                                    )
+                                }
+                            }
+                        }
+                        if (isLoadingMoreSessions) {
+                            item(key = "session-page-loading") {
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .height(48.dp)
+                                        .semantics { contentDescription = "Loading older conversations" },
+                                    horizontalArrangement = Arrangement.Center,
+                                    verticalAlignment = Alignment.CenterVertically,
+                                ) {
+                                    CircularProgressIndicator(
+                                        modifier = Modifier.size(18.dp),
+                                        color = CelesteAccent,
+                                        strokeWidth = 2.dp,
+                                    )
+                                }
+                            }
+                        } else if (sessionPageError != null) {
+                            item(key = "session-page-error") {
+                                TextButton(
+                                    onClick = onLoadMoreSessions,
+                                    enabled = enabled && hasMoreSessions,
+                                    modifier = Modifier.fillMaxWidth(),
+                                ) {
+                                    Text("Retry loading older conversations")
+                                }
                             }
                         }
                     }
@@ -403,6 +469,73 @@ internal fun SessionNavigationDrawer(
 }
 
 @Composable
+private fun SessionSearchField(
+    query: String,
+    searching: Boolean,
+    enabled: Boolean,
+    onQueryChange: (String) -> Unit,
+) {
+    OutlinedTextField(
+        value = query,
+        onValueChange = onQueryChange,
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(50.dp)
+            .semantics {
+                contentDescription = "Search conversations"
+                if (searching) stateDescription = "Searching"
+            },
+        enabled = enabled,
+        placeholder = {
+            Text(
+                text = "Search conversations",
+                color = CelesteTextMuted,
+                style = MaterialTheme.typography.bodyMedium,
+            )
+        },
+        leadingIcon = {
+            Icon(
+                imageVector = SearchSessionsIcon,
+                contentDescription = null,
+                modifier = Modifier.size(19.dp),
+                tint = CelesteTextMuted,
+            )
+        },
+        trailingIcon = when {
+            searching -> ({
+                CircularProgressIndicator(
+                    modifier = Modifier.size(17.dp),
+                    color = CelesteAccent,
+                    strokeWidth = 2.dp,
+                )
+            })
+            query.isNotEmpty() -> ({
+                IconButton(
+                    onClick = { onQueryChange("") },
+                    modifier = Modifier.semantics { contentDescription = "Clear conversation search" },
+                ) {
+                    Text("×", color = CelesteTextMuted, style = MaterialTheme.typography.titleMedium)
+                }
+            })
+            else -> null
+        },
+        singleLine = true,
+        shape = RoundedCornerShape(18.dp),
+        textStyle = MaterialTheme.typography.bodyMedium,
+        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+        colors = OutlinedTextFieldDefaults.colors(
+            focusedBorderColor = Color.Transparent,
+            unfocusedBorderColor = Color.Transparent,
+            disabledBorderColor = Color.Transparent,
+            focusedContainerColor = CelesteSurfaceRaised,
+            unfocusedContainerColor = CelesteSurfaceRaised,
+            disabledContainerColor = CelesteSurfaceRaised,
+            cursorColor = CelesteAccent,
+        ),
+    )
+}
+
+@Composable
 private fun DrawerSessionRow(
     session: StoredSession,
     selected: Boolean,
@@ -431,7 +564,7 @@ private fun DrawerSessionRow(
             Column(modifier = Modifier.weight(1f)) {
                 Text(
                     text = session.title.ifBlank { "Untitled conversation" },
-                    style = MaterialTheme.typography.bodyLarge,
+                    style = MaterialTheme.typography.bodyMedium,
                     fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
@@ -499,6 +632,32 @@ private val NewConversationIcon: ImageVector by lazy {
             verticalLineTo(15.5f)
             moveTo(8.5f, 12f)
             horizontalLineTo(15.5f)
+        }
+    }.build()
+}
+
+private val SearchSessionsIcon: ImageVector by lazy {
+    ImageVector.Builder(
+        name = "Search conversations",
+        defaultWidth = 24.dp,
+        defaultHeight = 24.dp,
+        viewportWidth = 24f,
+        viewportHeight = 24f,
+    ).apply {
+        path(
+            stroke = SolidColor(Color.Black),
+            strokeLineWidth = 1.8f,
+            strokeLineCap = StrokeCap.Round,
+            strokeLineJoin = StrokeJoin.Round,
+        ) {
+            moveTo(10.8f, 5f)
+            curveTo(7.6f, 5f, 5f, 7.6f, 5f, 10.8f)
+            curveTo(5f, 14f, 7.6f, 16.6f, 10.8f, 16.6f)
+            curveTo(14f, 16.6f, 16.6f, 14f, 16.6f, 10.8f)
+            curveTo(16.6f, 7.6f, 14f, 5f, 10.8f, 5f)
+            close()
+            moveTo(15f, 15f)
+            lineTo(19f, 19f)
         }
     }.build()
 }

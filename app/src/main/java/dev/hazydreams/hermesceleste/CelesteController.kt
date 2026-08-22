@@ -72,6 +72,10 @@ internal data class CelesteUiState(
     val hasMoreSessions: Boolean = false,
     val isLoadingMoreSessions: Boolean = false,
     val sessionPageError: String? = null,
+    val sessionSearchQuery: String = "",
+    val sessionSearchResults: List<StoredSession> = emptyList(),
+    val isSearchingSessions: Boolean = false,
+    val sessionSearchError: String? = null,
     val profiles: List<DashboardProfile> = listOf(DashboardProfile(name = "default", isDefault = true)),
     val selectedProfile: String = "default",
     val activeSummary: StoredSession? = null,
@@ -116,6 +120,34 @@ internal fun mergeSessionCatalog(
     }
 }
 
+private fun searchLoadedSessions(
+    sessions: List<StoredSession>,
+    query: String,
+): List<StoredSession> {
+    val needle = query.trim().lowercase()
+    if (needle.isEmpty()) return emptyList()
+    return sessions.filter { session ->
+        listOfNotNull(
+            session.id,
+            session.title,
+            session.preview,
+            session.source,
+            session.profile,
+            session.model,
+        ).any { value -> needle in value.lowercase() }
+    }
+}
+
+private fun mergeSessionSearchResults(
+    loaded: List<StoredSession>,
+    remote: List<StoredSession>,
+): List<StoredSession> = buildList {
+    val seen = mutableSetOf<String>()
+    (loaded + remote).forEach { session ->
+        if (seen.add(session.id)) add(session)
+    }
+}
+
 /**
  * Owns Celeste's portable application and session state.
  *
@@ -152,9 +184,11 @@ internal class CelesteController(
     private var foregroundCheckJob: Job? = null
     private var connectionJob: Job? = null
     private var sessionPageJob: Job? = null
+    private var sessionSearchJob: Job? = null
     private val sessionMetadataJobs = mutableSetOf<Job>()
     private var connectionAttempt = 0L
     private var sessionPageAttempt = 0L
+    private var sessionSearchAttempt = 0L
     private val connectionStoreMutex = Mutex()
     private var currentDescriptor: SavedConnectionDescriptor? = null
     private var reconnectAttempts = 0
@@ -198,6 +232,73 @@ internal class CelesteController(
         mutableState.value = mutableState.value.copy(selectedProfile = name)
     }
 
+    fun updateSessionSearchQuery(value: String) {
+        sessionSearchJob?.cancel()
+        sessionSearchJob = null
+        val requestAttempt = ++sessionSearchAttempt
+        val trimmedQuery = value.trim()
+        val snapshot = mutableState.value
+        val loadedMatches = searchLoadedSessions(snapshot.sessions.orEmpty(), trimmedQuery)
+        mutableState.value = snapshot.copy(
+            sessionSearchQuery = value,
+            sessionSearchResults = loadedMatches,
+            isSearchingSessions = trimmedQuery.isNotEmpty(),
+            sessionSearchError = null,
+        )
+        if (trimmedQuery.isEmpty()) return
+
+        val connection = snapshot.probe
+        val activeCredential = credential
+        if (connection == null || activeCredential == null) {
+            mutableState.value = mutableState.value.copy(isSearchingSessions = false)
+            return
+        }
+        val profile = snapshot.profiles.firstOrNull(DashboardProfile::isDefault)?.name ?: "default"
+        val connectionGeneration = connectionAttempt
+        sessionSearchJob = controllerScope.launch {
+            delay(SESSION_SEARCH_DEBOUNCE_MILLIS)
+            try {
+                val remoteMatches = dashboard.searchSessions(
+                    baseUrl = connection.baseUrl,
+                    credential = activeCredential,
+                    query = trimmedQuery,
+                    profile = profile,
+                    limit = SESSION_SEARCH_LIMIT,
+                )
+                if (
+                    !isCurrentConnectionAttempt(connectionGeneration) ||
+                    sessionSearchAttempt != requestAttempt
+                ) {
+                    return@launch
+                }
+                val current = mutableState.value
+                mutableState.value = current.copy(
+                    sessionSearchResults = mergeSessionSearchResults(
+                        loaded = searchLoadedSessions(current.sessions.orEmpty(), trimmedQuery),
+                        remote = remoteMatches,
+                    ),
+                    isSearchingSessions = false,
+                    sessionSearchError = null,
+                )
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: Throwable) {
+                if (
+                    !isCurrentConnectionAttempt(connectionGeneration) ||
+                    sessionSearchAttempt != requestAttempt
+                ) {
+                    return@launch
+                }
+                mutableState.value = mutableState.value.copy(
+                    isSearchingSessions = false,
+                    sessionSearchError = error.message ?: "Could not search conversations.",
+                )
+            } finally {
+                if (sessionSearchAttempt == requestAttempt) sessionSearchJob = null
+            }
+        }
+    }
+
     fun findDashboard() {
         val rawUrl = mutableState.value.dashboardUrl
         if (rawUrl.isBlank()) return
@@ -214,6 +315,10 @@ internal class CelesteController(
             hasMoreSessions = false,
             isLoadingMoreSessions = false,
             sessionPageError = null,
+            sessionSearchQuery = "",
+            sessionSearchResults = emptyList(),
+            isSearchingSessions = false,
+            sessionSearchError = null,
             activeSummary = null,
             messages = emptyList(),
             streamingText = "",
@@ -358,6 +463,10 @@ internal class CelesteController(
             hasMoreSessions = false,
             isLoadingMoreSessions = false,
             sessionPageError = null,
+            sessionSearchQuery = "",
+            sessionSearchResults = emptyList(),
+            isSearchingSessions = false,
+            sessionSearchError = null,
             activeSummary = null,
             messages = emptyList(),
             streamingText = "",
@@ -622,6 +731,7 @@ internal class CelesteController(
     private fun invalidateConnectionBoundWork(): Long {
         connectionAttempt += 1
         cancelSessionPageLoad()
+        cancelSessionSearch()
         cancelSessionMetadataUpdates()
         return connectionAttempt
     }
@@ -630,6 +740,12 @@ internal class CelesteController(
         sessionPageAttempt += 1
         sessionPageJob?.cancel()
         sessionPageJob = null
+    }
+
+    private fun cancelSessionSearch() {
+        sessionSearchAttempt += 1
+        sessionSearchJob?.cancel()
+        sessionSearchJob = null
     }
 
     private fun cancelSessionMetadataUpdates() {
@@ -733,6 +849,10 @@ internal class CelesteController(
             hasMoreSessions = false,
             isLoadingMoreSessions = false,
             sessionPageError = null,
+            sessionSearchQuery = "",
+            sessionSearchResults = emptyList(),
+            isSearchingSessions = false,
+            sessionSearchError = null,
             profiles = profiles,
             selectedProfile = selectedProfile,
             activeSummary = null,
@@ -892,6 +1012,7 @@ internal class CelesteController(
         val activeCredential = credential ?: return
         if (
             snapshot.sessions == null ||
+            snapshot.sessionSearchQuery.isNotBlank() ||
             !snapshot.hasMoreSessions ||
             snapshot.isLoadingMoreSessions ||
             snapshot.loadingMessage != null
@@ -1481,6 +1602,7 @@ internal class CelesteController(
         connectionJob?.cancel()
         connectionJob = null
         cancelSessionPageLoad()
+        cancelSessionSearch()
         cancelSessionMetadataUpdates()
         closeGateway()
         dashboard.clearAuthentication()
@@ -1493,6 +1615,8 @@ internal class CelesteController(
 
     companion object {
         private const val SESSION_PAGE_SIZE = 15
+        private const val SESSION_SEARCH_LIMIT = 20
+        private const val SESSION_SEARCH_DEBOUNCE_MILLIS = 200L
 
         internal fun unpersistedInflightText(
             inflight: String,

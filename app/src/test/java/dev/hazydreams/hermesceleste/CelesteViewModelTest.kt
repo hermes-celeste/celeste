@@ -22,10 +22,12 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.resetMain
@@ -196,6 +198,90 @@ class CelesteViewModelTest {
         assertEquals(ConnectionPhase.ManualSetup, viewModel.state.value.connectionPhase)
         assertNull(viewModel.state.value.sessions)
         assertEquals("Hermes rejected profile access.", viewModel.state.value.errorMessage)
+    }
+
+    @Test
+    fun searchesLoadedRowsImmediatelyThenMergesServerHistoryAfterDebounce() = runTest {
+        val dashboard = FakeDashboard(FakeGateway())
+        val localMatch = dashboard.session.copy(
+            id = "loaded-notes",
+            title = "Dashboard connection notes",
+            profile = "default",
+        )
+        val other = dashboard.session.copy(id = "other", title = "Weekend plans")
+        dashboard.sessionPages[0] = SessionCatalogPage(
+            sessions = listOf(localMatch, other),
+            total = 2,
+            limit = 15,
+            offset = 0,
+        )
+        dashboard.searchResults["notes"] = listOf(
+            localMatch.copy(title = "Server copy should not replace loaded metadata"),
+            dashboard.session.copy(id = "older-notes", title = "Older release notes"),
+        )
+        val viewModel = CelesteViewModel(dashboard = dashboard)
+        advanceUntilIdle()
+        viewModel.updateDashboardUrl("http://hermes.test:9119")
+        viewModel.findDashboard()
+        viewModel.loadSessions()
+        advanceUntilIdle()
+
+        viewModel.updateSessionSearchQuery("notes")
+
+        assertEquals(listOf("loaded-notes"), viewModel.state.value.sessionSearchResults.map(StoredSession::id))
+        assertTrue(viewModel.state.value.isSearchingSessions)
+        assertTrue(dashboard.searchRequests.isEmpty())
+
+        mainDispatcher.scheduler.advanceTimeBy(199)
+        mainDispatcher.scheduler.runCurrent()
+        assertTrue(dashboard.searchRequests.isEmpty())
+
+        mainDispatcher.scheduler.advanceTimeBy(1)
+        mainDispatcher.scheduler.runCurrent()
+
+        assertEquals(
+            listOf("loaded-notes", "older-notes"),
+            viewModel.state.value.sessionSearchResults.map(StoredSession::id),
+        )
+        assertEquals("Dashboard connection notes", viewModel.state.value.sessionSearchResults.first().title)
+        assertEquals(listOf(Triple("notes", "default", 20)), dashboard.searchRequests)
+        assertFalse(viewModel.state.value.isSearchingSessions)
+
+        viewModel.updateSessionSearchQuery("")
+        assertEquals(listOf("loaded-notes", "other"), viewModel.state.value.sessions?.map(StoredSession::id))
+        assertTrue(viewModel.state.value.sessionSearchResults.isEmpty())
+        assertEquals("", viewModel.state.value.sessionSearchQuery)
+    }
+
+    @Test
+    fun staleSessionSearchCannotReplaceANewerQuery() = runTest {
+        val dashboard = FakeDashboard(FakeGateway()).apply {
+            returnSearchAfterCancellation = true
+            searchGates["first"] = CompletableDeferred()
+            searchResults["first"] = listOf(session.copy(id = "first-result", title = "First result"))
+            searchResults["second"] = listOf(session.copy(id = "second-result", title = "Second result"))
+        }
+        val viewModel = CelesteViewModel(dashboard = dashboard)
+        advanceUntilIdle()
+        viewModel.updateDashboardUrl("http://hermes.test:9119")
+        viewModel.findDashboard()
+        viewModel.loadSessions()
+        advanceUntilIdle()
+
+        viewModel.updateSessionSearchQuery("first")
+        mainDispatcher.scheduler.advanceTimeBy(200)
+        mainDispatcher.scheduler.runCurrent()
+        viewModel.updateSessionSearchQuery("second")
+        mainDispatcher.scheduler.advanceTimeBy(200)
+        mainDispatcher.scheduler.runCurrent()
+
+        assertEquals(listOf("second-result"), viewModel.state.value.sessionSearchResults.map(StoredSession::id))
+
+        dashboard.searchGates.getValue("first").complete(Unit)
+        mainDispatcher.scheduler.runCurrent()
+
+        assertEquals(listOf("second-result"), viewModel.state.value.sessionSearchResults.map(StoredSession::id))
+        assertEquals("second", viewModel.state.value.sessionSearchQuery)
     }
 
     @Test
@@ -707,11 +793,15 @@ class CelesteViewModelTest {
         var gatewayFactory: () -> GatewayConnection = { gateway }
         var nextPageGate: CompletableDeferred<Unit>? = null
         var returnPageAfterCancellation = false
+        var returnSearchAfterCancellation = false
         var markReadGate: CompletableDeferred<Unit>? = null
         var markReadFailure: Throwable? = null
         val sessionPages = mutableMapOf<Int, SessionCatalogPage>()
         val sessionPageFailures = mutableMapOf<Int, Throwable>()
         val sessionPageRequests = mutableListOf<Pair<Int, Int>>()
+        val searchResults = mutableMapOf<String, List<StoredSession>>()
+        val searchGates = mutableMapOf<String, CompletableDeferred<Unit>>()
+        val searchRequests = mutableListOf<Triple<String, String, Int>>()
         val markReadRequests = mutableListOf<Pair<String, String>>()
 
         var session = StoredSession(
@@ -763,6 +853,23 @@ class CelesteViewModelTest {
                 limit = limit,
                 offset = offset,
             )
+        }
+
+        override suspend fun searchSessions(
+            baseUrl: String,
+            credential: GatewayCredential,
+            query: String,
+            profile: String,
+            limit: Int,
+        ): List<StoredSession> {
+            searchRequests += Triple(query, profile, limit)
+            try {
+                searchGates[query]?.await()
+            } catch (error: CancellationException) {
+                if (!returnSearchAfterCancellation) throw error
+                withContext(NonCancellable) { searchGates[query]?.await() }
+            }
+            return searchResults[query].orEmpty()
         }
 
         override suspend fun markSessionRead(

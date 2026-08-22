@@ -142,6 +142,14 @@ interface DashboardService {
         offset: Int = 0,
     ): SessionCatalogPage
 
+    suspend fun searchSessions(
+        baseUrl: String,
+        credential: GatewayCredential,
+        query: String,
+        profile: String,
+        limit: Int = 20,
+    ): List<StoredSession>
+
     suspend fun markSessionRead(
         baseUrl: String,
         credential: GatewayCredential,
@@ -359,6 +367,44 @@ class DashboardClient(
         val boundedOffset = offset.coerceAtLeast(0)
         return withContext(Dispatchers.IO) {
             requestRestSessionList(baseUrl, credential, boundedLimit, boundedOffset)
+        }
+    }
+
+    override suspend fun searchSessions(
+        baseUrl: String,
+        credential: GatewayCredential,
+        query: String,
+        profile: String,
+        limit: Int,
+    ): List<StoredSession> {
+        val trimmedQuery = query.trim()
+        require(trimmedQuery.isNotEmpty()) { "Enter a conversation search." }
+        require(profile.isNotBlank()) { "A Hermes profile is required." }
+        val boundedLimit = limit.coerceIn(1, 100)
+        return withContext(Dispatchers.IO) {
+            val url = "$baseUrl/api/sessions/search".toHttpUrl().newBuilder()
+                .addQueryParameter("q", trimmedQuery)
+                .addQueryParameter("limit", boundedLimit.toString())
+                .addQueryParameter("profile", profile)
+                .build()
+            val request = Request.Builder()
+                .url(url)
+                .header("Accept", "application/json")
+                .apply {
+                    if (credential is GatewayCredential.StaticToken) {
+                        header("X-Hermes-Session-Token", credential.value.trim())
+                    }
+                }
+                .get()
+                .build()
+            val root = executeJson(request, "Hermes session search") as? JsonObject
+                ?: throw InvalidDashboardResponse("Hermes returned no session search results.")
+            val rows = root["results"] as? JsonArray
+                ?: throw InvalidDashboardResponse("Hermes returned no session search results.")
+            rows.map { row ->
+                decodeSearchSession(row, profile)
+                    ?: throw InvalidDashboardResponse("Hermes returned an invalid session search result.")
+            }
         }
     }
 
@@ -725,6 +771,36 @@ class DashboardClient(
             messageCount = row["message_count"]?.jsonPrimitive?.intOrNull ?: 0,
             source = row["source"]?.jsonPrimitive?.contentOrNull.orEmpty(),
             profile = row["profile"]?.jsonPrimitive?.contentOrNull ?: "default",
+            model = row["model"]?.jsonPrimitive?.contentOrNull,
+            pinned = (row["pinned"] as? JsonPrimitive)?.booleanOrNull,
+            lastActiveAt = row["last_active"]?.jsonPrimitive?.doubleOrNull ?: startedAt,
+            unread = (row["unread"] as? JsonPrimitive)?.booleanOrNull ?: false,
+        )
+    }
+
+    private fun decodeSearchSession(element: JsonElement, profile: String): StoredSession? {
+        val row = element as? JsonObject ?: return null
+        val id = row["session_id"]?.jsonPrimitive?.contentOrNull?.takeIf(String::isNotBlank)
+            ?: return null
+        val startedAt = row["started_at"]?.jsonPrimitive?.doubleOrNull
+            ?: row["session_started"]?.jsonPrimitive?.doubleOrNull
+            ?: 0.0
+        val snippet = row["snippet"]?.jsonPrimitive?.contentOrNull
+            .orEmpty()
+            .replace(">>>", "")
+            .replace("<<<", "")
+            .trim()
+        val title = row["title"]?.jsonPrimitive?.contentOrNull
+            .orEmpty()
+            .ifBlank { snippet.lineSequence().firstOrNull().orEmpty() }
+        return StoredSession(
+            id = id,
+            title = title,
+            preview = snippet.ifBlank { row["preview"]?.jsonPrimitive?.contentOrNull.orEmpty() },
+            startedAt = startedAt,
+            messageCount = row["message_count"]?.jsonPrimitive?.intOrNull ?: 0,
+            source = row["source"]?.jsonPrimitive?.contentOrNull.orEmpty(),
+            profile = profile,
             model = row["model"]?.jsonPrimitive?.contentOrNull,
             pinned = (row["pinned"] as? JsonPrimitive)?.booleanOrNull,
             lastActiveAt = row["last_active"]?.jsonPrimitive?.doubleOrNull ?: startedAt,
