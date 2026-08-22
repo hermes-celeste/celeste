@@ -16,6 +16,7 @@ import dev.hazydreams.hermesceleste.network.GatewayConnection
 import dev.hazydreams.hermesceleste.network.GatewayConnectionState
 import dev.hazydreams.hermesceleste.network.GatewayCredential
 import dev.hazydreams.hermesceleste.network.GatewayEvent
+import dev.hazydreams.hermesceleste.network.GatewayRpcException
 import dev.hazydreams.hermesceleste.network.SessionCatalogPage
 import dev.hazydreams.hermesceleste.network.StoredSession
 import kotlinx.coroutines.CancellationException
@@ -391,6 +392,99 @@ class CelesteViewModelTest {
         } finally {
             viewModel.controller.close()
         }
+    }
+
+    @Test
+    fun reconnectContinuesAfterARequestTimeoutCancellation() = runTest {
+        val gateway = FakeGateway()
+        val dashboard = FakeDashboard(gateway)
+        val viewModel = CelesteViewModel(
+            dashboard = dashboard,
+            reconnectDelayMillis = { _, _ -> 1_000L },
+        )
+        viewModel.updateDashboardUrl("http://hermes.test:9119")
+        viewModel.findDashboard()
+        viewModel.loadSessions()
+        viewModel.openSession(dashboard.session)
+        advanceUntilIdle()
+        try {
+            gateway.connectFailure = CancellationException("Timed out waiting for Hermes")
+            gateway.disconnect("connection lost")
+
+            mainDispatcher.scheduler.advanceTimeBy(1_000L)
+            mainDispatcher.scheduler.runCurrent()
+            assertEquals(TurnState.Reconnecting, viewModel.state.value.turnState)
+
+            gateway.connectFailure = null
+            mainDispatcher.scheduler.advanceTimeBy(1_000L)
+            mainDispatcher.scheduler.runCurrent()
+
+            assertEquals(TurnState.Idle, viewModel.state.value.turnState)
+            assertNull(viewModel.state.value.errorMessage)
+        } finally {
+            viewModel.controller.close()
+        }
+    }
+
+    @Test
+    fun promptTimeoutReconcilesQuietlyWithoutLeakingTransportDetails() = runTest {
+        val gateway = FakeGateway()
+        val viewModel = openConversation(gateway)
+        advanceUntilIdle()
+        gateway.promptFailure = CancellationException("StandaloneCoroutine was cancelled")
+
+        viewModel.updateDraft("Send this once")
+        viewModel.sendMessage()
+        advanceUntilIdle()
+
+        assertEquals(1, gateway.methods.count { it == "prompt.submit" })
+        assertEquals(2, gateway.methods.count { it == "session.resume" })
+        assertEquals(TurnState.Idle, viewModel.state.value.turnState)
+        assertNull(viewModel.state.value.errorMessage)
+        viewModel.controller.close()
+    }
+
+    @Test
+    fun definitivePromptRejectionRestoresTheExactDraft() = runTest {
+        val gateway = FakeGateway()
+        val viewModel = openConversation(gateway)
+        advanceUntilIdle()
+        gateway.promptFailure = GatewayRpcException(
+            code = 409,
+            message = "Hermes rejected this prompt.",
+        )
+
+        viewModel.updateDraft("  Send this exactly once  ")
+        viewModel.sendMessage()
+        advanceUntilIdle()
+
+        assertEquals(1, gateway.methods.count { it == "prompt.submit" })
+        assertEquals(1, gateway.methods.count { it == "session.resume" })
+        assertTrue(viewModel.state.value.messages.none { it.role == "user" && it.pending })
+        assertEquals("  Send this exactly once  ", viewModel.state.value.draft)
+        assertEquals(TurnState.Idle, viewModel.state.value.turnState)
+        assertEquals("Hermes rejected this prompt.", viewModel.state.value.errorMessage)
+        viewModel.controller.close()
+    }
+
+    @Test
+    fun interruptTimeoutReconcilesQuietlyWithoutLeakingTransportDetails() = runTest {
+        val gateway = FakeGateway()
+        val viewModel = openConversation(gateway)
+        advanceUntilIdle()
+        viewModel.updateDraft("Start a long turn")
+        viewModel.sendMessage()
+        advanceUntilIdle()
+        gateway.interruptFailure = CancellationException("request timed out")
+
+        viewModel.interrupt()
+        advanceUntilIdle()
+
+        assertEquals(1, gateway.methods.count { it == "session.interrupt" })
+        assertEquals(2, gateway.methods.count { it == "session.resume" })
+        assertEquals(TurnState.Idle, viewModel.state.value.turnState)
+        assertNull(viewModel.state.value.errorMessage)
+        viewModel.controller.close()
     }
 
     @Test
@@ -1014,7 +1108,7 @@ class CelesteViewModelTest {
         viewModel.onForeground()
         advanceUntilIdle()
 
-        assertEquals(3, gateway.connectCount)
+        assertEquals(2, gateway.connectCount)
         assertEquals(1, gateway.methods.count { it == "session.list" })
         assertEquals(2, gateway.methods.count { it == "session.resume" })
         assertEquals(TurnState.Idle, viewModel.state.value.turnState)
@@ -1022,7 +1116,7 @@ class CelesteViewModelTest {
     }
 
     @Test
-    fun draftSessionsStayOutOfTheCatalogUntilTheFirstPrompt() = runTest {
+    fun localDraftCreatesAndPublishesASessionOnlyOnTheFirstPrompt() = runTest {
         val gateway = FakeGateway()
         val dashboard = FakeDashboard(gateway)
         val viewModel = CelesteViewModel(
@@ -1034,52 +1128,85 @@ class CelesteViewModelTest {
         viewModel.loadSessions()
         advanceUntilIdle()
 
-        assertEquals("stored-new-1", viewModel.state.value.activeSummary?.id)
+        assertNull(viewModel.state.value.activeSummary)
         assertEquals(listOf("stored-42"), viewModel.state.value.sessions?.map { it.id })
-        assertEquals(1, gateway.methods.count { it == "session.create" })
+        assertEquals(0, gateway.methods.count { it == "session.create" })
 
         viewModel.selectProfile("work")
         viewModel.createNewConversation()
         advanceUntilIdle()
 
-        assertEquals("work", viewModel.state.value.activeSummary?.profile)
-        assertEquals("stored-new-2", viewModel.state.value.activeSummary?.id)
+        assertNull(viewModel.state.value.activeSummary)
+        assertEquals("work", viewModel.state.value.selectedProfile)
         assertEquals(listOf("stored-42"), viewModel.state.value.sessions?.map { it.id })
-        assertEquals(2, gateway.methods.count { it == "session.create" })
+        assertEquals(0, gateway.methods.count { it == "session.create" })
         assertEquals(0, gateway.methods.count { it == "session.resume" })
-        val createParams = gateway.requests.last { it.first == "session.create" }.second
-        assertEquals("work", createParams["profile"]?.jsonPrimitive?.content)
-        assertEquals("android", createParams["source"]?.jsonPrimitive?.content)
-
-        gateway.disconnect("blank session socket died")
-        advanceUntilIdle()
-
-        assertEquals(3, gateway.methods.count { it == "session.create" })
-        assertEquals(0, gateway.methods.count { it == "session.resume" })
-        assertEquals("stored-new-3", viewModel.state.value.activeSummary?.id)
-        assertEquals(listOf("stored-42"), viewModel.state.value.sessions?.map { it.id })
 
         viewModel.updateDraft("Persist this conversation")
         viewModel.sendMessage()
         advanceUntilIdle()
+        val createParams = gateway.requests.last { it.first == "session.create" }.second
+        assertEquals("work", createParams["profile"]?.jsonPrimitive?.content)
+        assertEquals("android", createParams["source"]?.jsonPrimitive?.content)
         val promptParams = gateway.requests.last { it.first == "prompt.submit" }.second
-        assertEquals("runtime-new-3", promptParams["session_id"]?.jsonPrimitive?.content)
+        assertEquals("runtime-new-1", promptParams["session_id"]?.jsonPrimitive?.content)
         assertEquals(
-            listOf("stored-new-3", "stored-42"),
+            listOf("stored-new-1", "stored-42"),
             viewModel.state.value.sessions?.map { it.id },
         )
         assertEquals("Persist this conversation", viewModel.state.value.sessions?.first()?.preview)
         assertEquals(1, viewModel.state.value.sessions?.first()?.messageCount)
 
         gateway.resumePayload = Json.parseToJsonElement(
-            """{"session_id":"runtime-resumed","resumed":"stored-new-3","running":false,"status":"idle","inflight":null,"messages":[]}""",
+            """{"session_id":"runtime-resumed","resumed":"stored-new-1","running":false,"status":"idle","inflight":null,"messages":[]}""",
         ) as JsonObject
         gateway.disconnect("after first prompt")
         advanceUntilIdle()
 
-        assertEquals(3, gateway.methods.count { it == "session.create" })
+        assertEquals(1, gateway.methods.count { it == "session.create" })
         assertEquals(1, gateway.methods.count { it == "session.resume" })
         assertEquals(1, gateway.methods.count { it == "prompt.submit" })
+        viewModel.controller.close()
+    }
+
+    @Test
+    fun failedFirstPromptCreationKeepsTheLocalDraftReadyToSendAgain() = runTest {
+        val gateway = FakeGateway().apply {
+            createFailure = IOException("socket exploded")
+        }
+        val dashboard = FakeDashboard(gateway)
+        val viewModel = CelesteViewModel(
+            dashboard = dashboard,
+            reconnectDelayMillis = { _, _ -> 0L },
+        )
+        viewModel.updateDashboardUrl("http://hermes.test:9119")
+        viewModel.findDashboard()
+        viewModel.loadSessions()
+        advanceUntilIdle()
+        viewModel.updateDraft("  Keep this exact draft  ")
+
+        viewModel.sendMessage()
+        advanceUntilIdle()
+
+        assertNull(viewModel.state.value.activeSummary)
+        assertEquals("  Keep this exact draft  ", viewModel.state.value.draft)
+        assertEquals(TurnState.Idle, viewModel.state.value.turnState)
+        assertEquals(
+            "Could not start the conversation. Your message is ready to send again.",
+            viewModel.state.value.errorMessage,
+        )
+        assertEquals(1, gateway.methods.count { it == "session.create" })
+        assertEquals(0, gateway.methods.count { it == "prompt.submit" })
+
+        gateway.createFailure = null
+        viewModel.sendMessage()
+        advanceUntilIdle()
+
+        assertEquals("stored-new-1", viewModel.state.value.activeSummary?.id)
+        assertEquals("", viewModel.state.value.draft)
+        assertEquals(2, gateway.methods.count { it == "session.create" })
+        assertEquals(1, gateway.methods.count { it == "prompt.submit" })
+        assertNull(viewModel.state.value.errorMessage)
         viewModel.controller.close()
     }
 
@@ -1102,20 +1229,20 @@ class CelesteViewModelTest {
         viewModel.loadSessions()
         advanceUntilIdle()
 
-        assertEquals("stored-a-new-1", viewModel.state.value.activeSummary?.id)
+        assertNull(viewModel.state.value.activeSummary)
         viewModel.updateDraft("Persist conversation A")
         viewModel.sendMessage()
         runCurrent()
 
         viewModel.createNewConversation()
         advanceUntilIdle()
-        assertEquals("stored-b-new-1", viewModel.state.value.activeSummary?.id)
+        assertNull(viewModel.state.value.activeSummary)
         assertEquals(listOf("stored-42"), viewModel.state.value.sessions?.map { it.id })
 
         firstGateway.promptGate?.complete(Unit)
         advanceUntilIdle()
 
-        assertEquals("stored-b-new-1", viewModel.state.value.activeSummary?.id)
+        assertNull(viewModel.state.value.activeSummary)
         assertEquals(
             listOf("stored-a-new-1", "stored-42"),
             viewModel.state.value.sessions?.map { it.id },
@@ -1127,7 +1254,7 @@ class CelesteViewModelTest {
     }
 
     @Test
-    fun staleLaunchDraftCannotOverwriteASelectedConversation() = runTest {
+    fun staleFirstSendCreationCannotOverwriteASelectedConversation() = runTest {
         val launchGateway = FakeGateway("launch-").apply {
             createGate = CompletableDeferred()
         }
@@ -1143,10 +1270,12 @@ class CelesteViewModelTest {
         viewModel.updateDashboardUrl("http://hermes.test:9119")
         viewModel.findDashboard()
         viewModel.loadSessions()
+        advanceUntilIdle()
+        viewModel.updateDraft("Start this later")
+        viewModel.sendMessage()
         runCurrent()
 
-        assertEquals(ConnectionPhase.Restoring, viewModel.state.value.connectionPhase)
-        assertNull(viewModel.state.value.sessions)
+        assertEquals(TurnState.Synchronizing, viewModel.state.value.turnState)
         viewModel.openSession(dashboard.session)
         advanceUntilIdle()
 
@@ -1179,6 +1308,9 @@ class CelesteViewModelTest {
         controller.updateDashboardUrl("http://hermes.test:9119")
         controller.findDashboard()
         controller.loadSessions()
+        advanceUntilIdle()
+        controller.updateDraft("Create from iOS")
+        controller.sendMessage()
         advanceUntilIdle()
 
         val createParams = gateway.requests.single { it.first == "session.create" }.second
@@ -1450,6 +1582,9 @@ class CelesteViewModelTest {
         var closeCount = 0
         var failHealthCheck = false
         var connectFailure: Throwable? = null
+        var createFailure: Throwable? = null
+        var promptFailure: Throwable? = null
+        var interruptFailure: Throwable? = null
         var createGate: CompletableDeferred<Unit>? = null
         var promptGate: CompletableDeferred<Unit>? = null
         var resumePayload: JsonObject = resumePayload(messages = emptyList(), running = false)
@@ -1471,6 +1606,7 @@ class CelesteViewModelTest {
                 "session.resume" -> resumePayload
                 "session.create" -> {
                     createGate?.await()
+                    createFailure?.let { throw it }
                     createCount += 1
                     buildJsonObject {
                         put("session_id", "runtime-${idPrefix}new-$createCount")
@@ -1492,9 +1628,13 @@ class CelesteViewModelTest {
                 }
                 "prompt.submit" -> {
                     promptGate?.await()
+                    promptFailure?.let { throw it }
                     buildJsonObject { put("status", "streaming") }
                 }
-                "session.interrupt" -> buildJsonObject { put("status", "interrupting") }
+                "session.interrupt" -> {
+                    interruptFailure?.let { throw it }
+                    buildJsonObject { put("status", "interrupting") }
+                }
                 else -> buildJsonObject {}
             }
         }

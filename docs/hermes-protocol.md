@@ -68,7 +68,7 @@ Celeste currently uses:
 | Method | Identity | Purpose |
 | --- | --- | --- |
 | `session.list` | none | Foreground health check on the lifecycle-owned gateway |
-| `session.create` | profile | Start a non-persisted profile-scoped draft runtime |
+| `session.create` | profile | Create the profile-scoped runtime for a local draft's first Send |
 | `session.resume` | stored session ID | Attach to durable history and recover runtime state |
 | `prompt.submit` | runtime session ID | Persist and begin a user turn |
 | `session.interrupt` | runtime session ID | Stop active work before reconciling history |

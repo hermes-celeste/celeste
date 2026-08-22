@@ -27,14 +27,14 @@ Compose renders `CelesteUiState` and emits user intent to `CelesteController`. T
 
 ### Application controller
 
-`CelesteController` coordinates cold-start restoration, the selected dashboard, in-memory credential, profile/session selection, persistent gateway, transcript projection, draft, and turn state. It is the boundary between UI intent and protocol operations. The host supplies its coroutine scope, `DashboardService`, `ConnectionStore`, client source, and mandatory dashboard URL admission function; the controller owns and cancels a child scope. After loading the session catalog, restoration keeps the connection surface visible while it opens a non-persisted Hermes draft runtime. Only a ready runtime publishes the connected empty composer, and the draft stays out of the catalog until the first prompt makes it durable.
+`CelesteController` coordinates cold-start restoration, the selected dashboard, in-memory credential, profile/session selection, persistent gateway, transcript projection, draft, and turn state. It is the boundary between UI intent and protocol operations. The host supplies its coroutine scope, `DashboardService`, `ConnectionStore`, client source, and mandatory dashboard URL admission function; the controller owns and cancels a child scope. After loading the session catalog, restoration publishes a local empty draft immediately. The first Send creates its Hermes runtime, submits the prompt, and publishes the resulting stored session into the catalog.
 
 The Android `CelesteViewModel` constructs the controller with `viewModelScope`, Android's connection store, and the `android` client source. `MainActivity` forwards foreground/background events. A future platform host must provide equivalent lifetime and platform dependencies rather than reproduce controller behavior.
 
 The four turn states are intentionally user-facing projections:
 
 - `Synchronizing` — Celeste is establishing or reconciling authoritative state.
-- `Idle` — the active runtime can accept a prompt.
+- `Idle` — the local draft or active runtime can accept a prompt.
 - `Running` — Hermes owns an active turn.
 - `Reconnecting` — the draft remains local and the stable composer stays visible while Celeste automatically restores the server relationship. Compose uses a warning-colored presence indicator for this recoverable state.
 
@@ -67,8 +67,8 @@ Provider cookies may rotate while Hermes refreshes a session. Celeste snapshots 
 3. Normalize and probe the dashboard base URL.
 4. Establish an in-memory credential: no credential for open loopback, a static machine token, or an authenticated cookie session.
 5. List sessions and profiles over the current required HTTP routes.
-6. Keep connection progress visible while opening a non-persisted draft runtime through the persistent gateway; publish the connected empty composer only after the runtime is ready. Resume durable history only when the user selects it from the drawer.
-7. Publish the draft into the catalog only after the first `prompt.submit` crosses Hermes' persistence boundary.
+6. Publish a local empty composer as soon as the session catalog and profiles are ready. Resume durable history only when the user selects it from the drawer.
+7. On the local draft's first Send, connect the gateway, create the Hermes runtime, submit the prompt, and publish the stored session into the catalog after `prompt.submit` crosses Hermes' persistence boundary. A creation failure leaves the exact draft ready for another Send.
 8. Reduce gateway events into assistant messages, the current turn's chronological Steps projection, and turn state.
 9. On interruption, disconnect, or foreground recovery, keep the local draft, reconnect automatically, and ask the server for authoritative state before continuing. Recoverable transport details stay inside the connection layer; definitive authentication rejection returns the user to connection setup.
 
@@ -80,7 +80,7 @@ New behavior belongs in portable Kotlin and Compose by default. Protocol models 
 
 Platform code owns application entry points, lifecycle bridges, secure storage, system back/navigation, keyboard and insets, pickers, notifications, haptics, and other operating-system integrations. Use constructor-injected contracts at real seams instead of platform checks spread through shared code. A concrete transport may remain target-specific when its dependency is not portable; protocol rules must remain above it.
 
-`MainActivity` requests Android's resized soft-input layout, while the conversation composer applies navigation-bar and IME insets at the component boundary. `CelesteViewModel` owns a one-shot composer-focus request across Activity recreation; Compose consumes it after the new-conversation runtime reaches `Idle` and the text field is ready.
+`MainActivity` requests Android's resized soft-input layout, while the conversation composer applies navigation-bar and IME insets at the component boundary. `CelesteViewModel` owns a one-shot composer-focus request across Activity recreation; Compose consumes it after the local new-conversation draft reaches `Idle` and the text field is ready.
 
 `CelesteController` is confined to the serial UI dispatcher supplied by its host. Hosts call its actions and `close()` on that dispatcher; its child coroutines inherit the same context so mutable application state is reduced in order. Cancelling the host scope is also a lifetime boundary: it must close the active gateway and clear in-memory authentication even if the host does not call `close()` separately.
 
@@ -102,8 +102,7 @@ Do not substitute one for the other because they happen to match in a test fixtu
 - Wait for `gateway.ready` before reporting a gateway as connected or sending RPCs.
 - Buffer events while a session snapshot is being resumed, apply the snapshot first, then replay buffered events. This prevents a stale snapshot from overwriting newer stream events.
 - Once `prompt.submit` begins, uncertain delivery is reconciled by stored session ID. Never automatically resend the prompt.
-- Bind asynchronous draft creation and first-prompt publication to their originating gateway and stored ID. A stale completion may update its own catalog row but must never replace the active conversation.
-- A newly created blank runtime may not yet be resumable. If it disconnects before the first prompt, recreate only that untouched empty session and preserve the draft.
+- Bind first-Send runtime creation and first-prompt publication to their originating gateway and stored ID. A stale completion may update its own catalog row but must never replace the active conversation.
 - On foreground, health-check the persistent socket. Replace and reconcile a stale connection rather than trusting an apparently open transport.
 - Ignore events carrying a different non-empty runtime session ID.
 - Give every rendered transcript row a unique UI identity. Prefer a scalar, nonblank Hermes `row_id`; synthesize a deterministic per-resume identity when projections such as tool rows omit one. Namespace Compose keys separately from protocol IDs and occurrence-qualify duplicates so malformed or reused server IDs cannot collide with local, tool, fallback, or streaming rows.
