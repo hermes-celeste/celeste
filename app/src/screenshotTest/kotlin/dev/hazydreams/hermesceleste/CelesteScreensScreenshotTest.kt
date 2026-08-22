@@ -576,7 +576,6 @@ fun ReconnectingPreviewScreenshot() {
         PreviewConversation(
             draft = "This draft stays here while the connection recovers.",
             turnState = TurnState.Reconnecting,
-            errorMessage = "The dashboard connection closed before Hermes finished responding.",
         )
     }
 }
@@ -633,7 +632,6 @@ private fun PreviewConversation(
         onDraftChange = {},
         onSend = {},
         onInterrupt = {},
-        onReconnect = {},
         onOpenDrawer = {},
         initiallyFollowLatest = initiallyFollowLatest,
         jumpToLatestVisibleOverride = jumpToLatestVisible,

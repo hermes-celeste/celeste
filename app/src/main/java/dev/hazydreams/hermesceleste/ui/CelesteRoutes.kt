@@ -124,7 +124,6 @@ internal fun CelesteRoutes(
                         onDraftChange = controller::updateDraft,
                         onSend = controller::sendMessage,
                         onInterrupt = controller::interrupt,
-                        onReconnect = controller::reconnectNow,
                         onOpenDrawer = { drawerScope.launch { drawerState.open() } },
                         composerFocusRequest = composerFocusRequest,
                         onComposerFocusRequestHandled = onComposerFocusRequestHandled,
