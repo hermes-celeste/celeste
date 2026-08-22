@@ -36,7 +36,7 @@ When a draft is selected, revalidate its claims against current Celeste and rele
 | [`docs/design.md`](docs/design.md) | Visual language, interaction principles, accessibility, and accepted design backlog |
 | [`docs/development.md`](docs/development.md) | Toolchain, build setup, repository policy, and local development workflow |
 | [`docs/testing.md`](docs/testing.md) | Test layers, command selection, screenshots, live contracts, and device milestones |
-| [`docs/review.md`](docs/review.md) | Code-review triage, plausibility, scope control, and automated-review policy |
+| [`docs/review.md`](docs/review.md) | Code-review triage, intended-workflow judgment, complexity budget, and automated-review policy |
 | [`docs/security.md`](docs/security.md) | Trust boundaries, credential handling, transport rules, backup policy, and sensitive data |
 | [`docs/plans/2026-08-14-codebase-cleanup.md`](docs/plans/2026-08-14-codebase-cleanup.md) | Ordered cleanup scope, exclusions, tasks, and verification gates |
 
@@ -69,7 +69,7 @@ GitHub Actions owns the full regression matrix, APK assembly, and test-build sig
 ## Critical rules
 
 - The current official Hermes server and Desktop implementation is protocol authority. Check it before changing routes, payloads, events, or lifecycle behavior; see [`docs/hermes-protocol.md`](docs/hermes-protocol.md).
-- Read [`docs/review.md`](docs/review.md) before requesting, performing, or responding to code review. Review comments are evidence to triage by reachability, real-user plausibility, impact, scope, and proportionality; never change code merely because a scenario is technically possible or an automated reviewer requested it.
+- Read [`docs/review.md`](docs/review.md) before requesting, performing, or responding to code review. Triage comments by the intended workflow, real-world likelihood, actual consequence, available normal path, and complexity budget; technical reachability and reviewer severity are not product priority.
 - The Hermes dashboard owns profiles, sessions, messages, and capabilities. Do not create a second mobile session store or synchronization layer; see [`docs/architecture.md`](docs/architecture.md).
 - Keep transport, authentication, protocol models, and session state independent of Compose.
 - Keep protocol behavior, application state, and custom Compose UI free of Android, AndroidX, and JVM APIs; inject narrow platform adapters where operating-system integration is real.
