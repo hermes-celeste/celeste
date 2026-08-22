@@ -20,6 +20,8 @@ internal class CelesteViewModel(
         if (wasRunning && attempt == 0) 100L else min(5_000L, 1_000L shl attempt.coerceAtMost(2))
     },
 ) : ViewModel() {
+    private val composerFocusRequests = ComposerFocusRequests()
+
     internal val controller = CelesteController(
         parentScope = viewModelScope,
         dashboard = dashboard,
@@ -30,6 +32,7 @@ internal class CelesteViewModel(
     )
 
     val state = controller.state
+    internal val composerFocusRequest = composerFocusRequests.pending
 
     fun updateDashboardUrl(value: String) = controller.updateDashboardUrl(value)
 
@@ -70,7 +73,13 @@ internal class CelesteViewModel(
         onComplete: (String?) -> Unit,
     ) = controller.renameSession(summary, title, onComplete)
 
-    fun createNewConversation() = controller.createNewConversation()
+    fun createNewConversation() {
+        controller.createNewConversation()
+        composerFocusRequests.request()
+    }
+
+    internal fun completeComposerFocusRequest(requestId: Long): Boolean =
+        composerFocusRequests.complete(requestId)
 
     fun sendMessage() = controller.sendMessage()
 

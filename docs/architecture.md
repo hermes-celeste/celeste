@@ -80,6 +80,8 @@ New behavior belongs in portable Kotlin and Compose by default. Protocol models 
 
 Platform code owns application entry points, lifecycle bridges, secure storage, system back/navigation, keyboard and insets, pickers, notifications, haptics, and other operating-system integrations. Use constructor-injected contracts at real seams instead of platform checks spread through shared code. A concrete transport may remain target-specific when its dependency is not portable; protocol rules must remain above it.
 
+`MainActivity` requests Android's resized soft-input layout, while the conversation composer applies navigation-bar and IME insets at the component boundary. `CelesteViewModel` owns a one-shot composer-focus request across Activity recreation; Compose consumes it after the new-conversation runtime reaches `Idle` and the text field is ready.
+
 `CelesteController` is confined to the serial UI dispatcher supplied by its host. Hosts call its actions and `close()` on that dispatcher; its child coroutines inherit the same context so mutable application state is reduced in order. Cancelling the host scope is also a lifetime boundary: it must close the active gateway and clear in-memory authentication even if the host does not call `close()` separately.
 
 `CelesteRoutes` is currently part of the Android navigation adapter because it installs AndroidX `BackHandler`. The screen composables beneath that route assembly remain portable; a future iOS host will provide the equivalent system-back/navigation bridge rather than importing the Android hook into shared source sets.

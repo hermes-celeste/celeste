@@ -52,6 +52,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.StrokeCap
@@ -59,6 +61,7 @@ import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.graphics.vector.path
 import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.font.FontWeight
@@ -96,6 +99,8 @@ internal fun ConversationScreen(
     onInterrupt: () -> Unit,
     onReconnect: () -> Unit,
     onOpenDrawer: () -> Unit,
+    composerFocusRequest: Long? = null,
+    onComposerFocusRequestHandled: (Long) -> Unit = {},
     initiallyFollowLatest: Boolean = true,
     jumpToLatestVisibleOverride: Boolean? = null,
 ) {
@@ -231,6 +236,8 @@ internal fun ConversationScreen(
                 },
                 onInterrupt = onInterrupt,
                 onReconnect = onReconnect,
+                focusRequest = composerFocusRequest,
+                onFocusRequestHandled = onComposerFocusRequestHandled,
             )
         }
     }
@@ -370,7 +377,20 @@ private fun ConversationComposer(
     onSend: () -> Unit,
     onInterrupt: () -> Unit,
     onReconnect: () -> Unit,
+    focusRequest: Long?,
+    onFocusRequestHandled: (Long) -> Unit,
 ) {
+    val focusRequester = remember { FocusRequester() }
+    val keyboardController = LocalSoftwareKeyboardController.current
+
+    LaunchedEffect(focusRequest, turnState) {
+        val requestId = focusRequest ?: return@LaunchedEffect
+        if (turnState != TurnState.Idle) return@LaunchedEffect
+        focusRequester.requestFocus()
+        keyboardController?.show()
+        onFocusRequestHandled(requestId)
+    }
+
     Box(
         modifier = Modifier
             .fillMaxWidth()
@@ -393,7 +413,9 @@ private fun ConversationComposer(
                     value = draft,
                     onValueChange = onDraftChange,
                     enabled = turnState == TurnState.Idle || turnState == TurnState.Reconnecting,
-                    modifier = Modifier.weight(1f),
+                    modifier = Modifier
+                        .weight(1f)
+                        .focusRequester(focusRequester),
                     placeholder = {
                         Text(
                             text = when (turnState) {
