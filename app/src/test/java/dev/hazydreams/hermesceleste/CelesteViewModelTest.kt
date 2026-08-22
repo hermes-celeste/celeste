@@ -285,6 +285,65 @@ class CelesteViewModelTest {
     }
 
     @Test
+    fun remoteContentMatchPreservesLoadedCatalogMetadataAndUsesSnippet() = runTest {
+        val dashboard = FakeDashboard(FakeGateway())
+        val loadedSession = dashboard.session.copy(
+            id = "loaded-content-match",
+            title = "Pinned conversation",
+            preview = "Original catalog preview",
+            profile = "work",
+            model = "catalog-model",
+            pinned = true,
+            unread = true,
+        )
+        dashboard.sessionPages[0] = SessionCatalogPage(
+            sessions = listOf(loadedSession),
+            total = 1,
+            limit = 15,
+            offset = 0,
+        )
+        dashboard.searchResults["needle"] = listOf(
+            loadedSession.copy(
+                title = "Sparse remote title",
+                preview = "Matched needle in an older message",
+                profile = "default",
+                model = null,
+                pinned = null,
+                unread = false,
+            ),
+        )
+        val viewModel = CelesteViewModel(dashboard = dashboard)
+        advanceUntilIdle()
+        viewModel.updateDashboardUrl("http://hermes.test:9119")
+        viewModel.findDashboard()
+        viewModel.loadSessions()
+        advanceUntilIdle()
+
+        viewModel.updateSessionSearchQuery("needle")
+        mainDispatcher.scheduler.advanceTimeBy(200)
+        mainDispatcher.scheduler.runCurrent()
+
+        val result = viewModel.state.value.sessionSearchResults.single()
+        assertEquals("Pinned conversation", result.title)
+        assertEquals("Matched needle in an older message", result.preview)
+        assertEquals("work", result.profile)
+        assertEquals("catalog-model", result.model)
+        assertEquals(true, result.pinned)
+        assertTrue(result.unread)
+
+        viewModel.openSession(result)
+
+        val catalogAfterOpen = viewModel.state.value.sessions.orEmpty().single()
+        assertEquals("Pinned conversation", catalogAfterOpen.title)
+        assertEquals("work", catalogAfterOpen.profile)
+        assertEquals("catalog-model", catalogAfterOpen.model)
+        assertEquals(true, catalogAfterOpen.pinned)
+        assertFalse(catalogAfterOpen.unread)
+        advanceUntilIdle()
+        assertEquals(listOf("loaded-content-match" to "work"), dashboard.markReadRequests)
+    }
+
+    @Test
     fun openingUnreadSearchResultClearsItsSearchProjection() = runTest {
         val dashboard = FakeDashboard(FakeGateway())
         val unreadResult = dashboard.session.copy(

@@ -140,10 +140,17 @@ private fun searchLoadedSessions(
 
 private fun mergeSessionSearchResults(
     loaded: List<StoredSession>,
+    catalog: List<StoredSession>,
     remote: List<StoredSession>,
 ): List<StoredSession> = buildList {
+    val catalogById = catalog.associateBy(StoredSession::id)
     val seen = mutableSetOf<String>()
-    (loaded + remote).forEach { session ->
+    val reconciledRemote = remote.map { match ->
+        catalogById[match.id]?.let { catalogSession ->
+            catalogSession.copy(preview = match.preview.ifBlank { catalogSession.preview })
+        } ?: match
+    }
+    (loaded + reconciledRemote).forEach { session ->
         if (seen.add(session.id)) add(session)
     }
 }
@@ -272,9 +279,11 @@ internal class CelesteController(
                     return@launch
                 }
                 val current = mutableState.value
+                val catalog = current.sessions.orEmpty()
                 mutableState.value = current.copy(
                     sessionSearchResults = mergeSessionSearchResults(
-                        loaded = searchLoadedSessions(current.sessions.orEmpty(), trimmedQuery),
+                        loaded = searchLoadedSessions(catalog, trimmedQuery),
+                        catalog = catalog,
                         remote = remoteMatches,
                     ),
                     isSearchingSessions = false,
