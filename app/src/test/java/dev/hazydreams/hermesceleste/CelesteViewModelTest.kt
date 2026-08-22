@@ -346,7 +346,7 @@ class CelesteViewModelTest {
         advanceUntilIdle()
 
         val state = viewModel.state.value
-        assertEquals(3, gateway.connectCount)
+        assertEquals(2, gateway.connectCount)
         assertEquals(2, gateway.methods.count { it == "session.resume" })
         assertEquals(1, gateway.methods.count { it == "prompt.submit" })
         assertEquals(listOf("Do this once", "Finished exactly once"), state.messages.map { it.text })
@@ -1055,6 +1055,8 @@ class CelesteViewModelTest {
         viewModel.updateDashboardUrl("http://hermes.test:9119")
         viewModel.findDashboard()
         viewModel.loadSessions()
+        advanceUntilIdle()
+        viewModel.openSession(dashboard.session)
         advanceUntilIdle()
 
         viewModel.loadMoreSessions()
