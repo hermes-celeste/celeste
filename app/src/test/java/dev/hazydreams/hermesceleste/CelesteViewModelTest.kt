@@ -285,6 +285,35 @@ class CelesteViewModelTest {
     }
 
     @Test
+    fun openingUnreadSearchResultClearsItsSearchProjection() = runTest {
+        val dashboard = FakeDashboard(FakeGateway())
+        val unreadResult = dashboard.session.copy(
+            id = "remote-unread",
+            title = "Unread search result",
+            preview = "The matching conversation snippet",
+            unread = true,
+        )
+        dashboard.searchResults["unread"] = listOf(unreadResult)
+        val viewModel = CelesteViewModel(dashboard = dashboard)
+        advanceUntilIdle()
+        viewModel.updateDashboardUrl("http://hermes.test:9119")
+        viewModel.findDashboard()
+        viewModel.loadSessions()
+        advanceUntilIdle()
+
+        viewModel.updateSessionSearchQuery("unread")
+        mainDispatcher.scheduler.advanceTimeBy(200)
+        mainDispatcher.scheduler.runCurrent()
+        assertTrue(viewModel.state.value.sessionSearchResults.single().unread)
+
+        viewModel.openSession(unreadResult)
+
+        assertFalse(viewModel.state.value.sessionSearchResults.single().unread)
+        advanceUntilIdle()
+        assertEquals(listOf("remote-unread" to "default"), dashboard.markReadRequests)
+    }
+
+    @Test
     fun loadsNextSessionPageOnceAndDeduplicatesPinnedBackfill() = runTest {
         val gateway = FakeGateway()
         val dashboard = FakeDashboard(gateway)

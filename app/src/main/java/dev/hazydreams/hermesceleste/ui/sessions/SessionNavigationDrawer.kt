@@ -51,6 +51,7 @@ import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.graphics.vector.path
+import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
@@ -103,6 +104,7 @@ internal fun SessionNavigationDrawer(
     val showProfile = profiles.size > 1
     val searchActive = searchQuery.isNotBlank()
     val listState = rememberLazyListState()
+    val focusManager = LocalFocusManager.current
     val currentLoadMore by rememberUpdatedState(onLoadMoreSessions)
 
     LaunchedEffect(
@@ -242,7 +244,11 @@ internal fun SessionNavigationDrawer(
                                 selected = session.id == selectedSessionId,
                                 enabled = enabled,
                                 metadata = session.compactMetadata(showProfile),
-                                onClick = { onSessionSelected(session) },
+                                preview = session.preview.takeIf(String::isNotBlank),
+                                onClick = {
+                                    focusManager.clearFocus()
+                                    onSessionSelected(session)
+                                },
                             )
                         }
                         if (searchResults.isEmpty()) {
@@ -541,6 +547,7 @@ private fun DrawerSessionRow(
     selected: Boolean,
     enabled: Boolean,
     metadata: String?,
+    preview: String? = null,
     onClick: () -> Unit,
 ) {
     CelestePanel(
@@ -569,6 +576,16 @@ private fun DrawerSessionRow(
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                 )
+                preview?.let {
+                    Spacer(Modifier.height(2.dp))
+                    Text(
+                        text = it,
+                        color = CelesteTextMuted,
+                        style = MaterialTheme.typography.bodySmall,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
                 metadata?.let {
                     Spacer(Modifier.height(2.dp))
                     Text(

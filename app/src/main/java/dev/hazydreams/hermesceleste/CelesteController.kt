@@ -786,6 +786,9 @@ internal class CelesteController(
             sessions = mutableState.value.sessions?.map { session ->
                 if (session.id == summary.id) visibleSummary else session
             },
+            sessionSearchResults = mutableState.value.sessionSearchResults.map { session ->
+                if (session.id == summary.id) visibleSummary else session
+            },
             messages = emptyList(),
             streamingText = "",
             draft = "",
