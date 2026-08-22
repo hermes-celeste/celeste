@@ -53,7 +53,7 @@ GitHub Actions uses the checked-in Gradle wrapper directly on a standard Ubuntu 
 4. Make the smallest coherent change across code, tests, and the owning doc.
 5. Run targeted checks during iteration.
 6. Run the full checks required by the changed boundaries.
-7. Before requesting, performing, or responding to code review, read [`review.md`](review.md). Triage findings by plausibility and product scope before editing; do not enter a comment-by-comment patch loop.
+7. Before requesting, performing, or responding to code review, read [`review.md`](review.md). Decide whether a finding harms an intended workflow enough to justify its complexity before editing; do not enter a comment-by-comment patch loop.
 8. Finish with `git diff --check` and inspect the complete diff.
 9. Report any runtime surface that was not exercised.
 

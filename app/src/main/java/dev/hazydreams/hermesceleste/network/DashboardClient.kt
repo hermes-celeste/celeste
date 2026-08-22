@@ -157,6 +157,22 @@ interface DashboardService {
         profile: String,
     )
 
+    suspend fun setSessionPinned(
+        baseUrl: String,
+        credential: GatewayCredential,
+        sessionId: String,
+        profile: String,
+        pinned: Boolean,
+    ): Boolean
+
+    suspend fun renameSession(
+        baseUrl: String,
+        credential: GatewayCredential,
+        sessionId: String,
+        profile: String,
+        title: String,
+    ): String
+
     suspend fun listProfiles(
         baseUrl: String,
         credential: GatewayCredential,
@@ -485,6 +501,70 @@ class DashboardClient(
             "Hermes read state",
         )
         Unit
+    }
+
+    override suspend fun setSessionPinned(
+        baseUrl: String,
+        credential: GatewayCredential,
+        sessionId: String,
+        profile: String,
+        pinned: Boolean,
+    ): Boolean = patchSession(
+        baseUrl = baseUrl,
+        credential = credential,
+        sessionId = sessionId,
+        profile = profile,
+        fields = buildJsonObject { put("pinned", pinned) },
+        operation = "Hermes pin state",
+    )["pinned"]?.jsonPrimitive?.booleanOrNull
+        ?: throw InvalidDashboardResponse("Hermes returned no pin state.")
+
+    override suspend fun renameSession(
+        baseUrl: String,
+        credential: GatewayCredential,
+        sessionId: String,
+        profile: String,
+        title: String,
+    ): String = patchSession(
+        baseUrl = baseUrl,
+        credential = credential,
+        sessionId = sessionId,
+        profile = profile,
+        fields = buildJsonObject { put("title", title) },
+        operation = "Hermes session rename",
+    )["title"]?.jsonPrimitive?.contentOrNull
+        ?: throw InvalidDashboardResponse("Hermes returned no session title.")
+
+    private suspend fun patchSession(
+        baseUrl: String,
+        credential: GatewayCredential,
+        sessionId: String,
+        profile: String,
+        fields: JsonObject,
+        operation: String,
+    ): JsonObject = withContext(Dispatchers.IO) {
+        require(sessionId.isNotBlank()) { "Choose a Hermes session to update." }
+        require(profile.isNotBlank()) { "A Hermes profile is required." }
+        val url = "$baseUrl/api/sessions".toHttpUrl().newBuilder()
+            .addPathSegment(sessionId)
+            .build()
+        val body = buildJsonObject {
+            fields.forEach { (key, value) -> put(key, value) }
+            put("profile", profile)
+        }.toString().toRequestBody(JSON_MEDIA_TYPE)
+        executeJson(
+            Request.Builder()
+                .url(url)
+                .header("Accept", "application/json")
+                .apply {
+                    if (credential is GatewayCredential.StaticToken) {
+                        header("X-Hermes-Session-Token", credential.value.trim())
+                    }
+                }
+                .patch(body)
+                .build(),
+            operation,
+        ) as? JsonObject ?: throw InvalidDashboardResponse("Hermes returned no session update.")
     }
 
     override suspend fun listProfiles(

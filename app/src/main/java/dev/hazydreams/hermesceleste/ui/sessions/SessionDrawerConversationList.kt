@@ -1,7 +1,7 @@
 package dev.hazydreams.hermesceleste.ui.sessions
 
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -25,6 +25,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
@@ -34,6 +35,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.customActions
 import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
@@ -62,6 +64,8 @@ internal fun SessionDrawerConversationList(
     isSearchingSessions: Boolean,
     sessionSearchError: String?,
     onSessionSelected: (StoredSession) -> Unit,
+    onSessionPinnedChange: (StoredSession, Boolean) -> Unit,
+    onSessionRename: (StoredSession, String, (String?) -> Unit) -> Unit,
     onLoadMoreSessions: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -142,6 +146,8 @@ internal fun SessionDrawerConversationList(
                         focusManager.clearFocus()
                         onSessionSelected(session)
                     },
+                    onPinnedChange = { pinned -> onSessionPinnedChange(session, pinned) },
+                    onRename = { title, onComplete -> onSessionRename(session, title, onComplete) },
                 )
             }
             if (searchResults.isEmpty()) {
@@ -186,6 +192,8 @@ internal fun SessionDrawerConversationList(
                             enabled = enabled,
                             metadata = session.compactMetadata(showProfile),
                             onClick = { onSessionSelected(session) },
+                            onPinnedChange = { pinned -> onSessionPinnedChange(session, pinned) },
+                            onRename = { title, onComplete -> onSessionRename(session, title, onComplete) },
                         )
                     }
                 }
@@ -206,6 +214,8 @@ internal fun SessionDrawerConversationList(
                             enabled = enabled,
                             metadata = session.compactMetadata(showProfile),
                             onClick = { onSessionSelected(session) },
+                            onPinnedChange = { pinned -> onSessionPinnedChange(session, pinned) },
+                            onRename = { title, onComplete -> onSessionRename(session, title, onComplete) },
                         )
                     }
                 }
@@ -229,6 +239,8 @@ internal fun SessionDrawerConversationList(
                                 includeScheduledMarker = false,
                             ),
                             onClick = { onSessionSelected(session) },
+                            onPinnedChange = { pinned -> onSessionPinnedChange(session, pinned) },
+                            onRename = { title, onComplete -> onSessionRename(session, title, onComplete) },
                         )
                     }
                 }
@@ -273,63 +285,100 @@ private fun DrawerSessionRow(
     metadata: String?,
     preview: String? = null,
     onClick: () -> Unit,
+    onPinnedChange: (Boolean) -> Unit,
+    onRename: (String, (String?) -> Unit) -> Unit,
 ) {
-    CelestePanel(
-        modifier = Modifier
-            .fillMaxWidth()
-            .semantics {
-                this.selected = selected
-                val states = buildList {
-                    if (selected) add("Current conversation")
-                    if (session.unread) add("Unread")
+    var menuExpanded by remember(session.id) { mutableStateOf(false) }
+    var renameOpen by remember(session.id) { mutableStateOf(false) }
+    val pinned = session.pinned == true
+
+    Box {
+        CelestePanel(
+            modifier = Modifier
+                .fillMaxWidth()
+                .semantics {
+                    this.selected = selected
+                    val states = buildList {
+                        if (selected) add("Current conversation")
+                        if (session.unread) add("Unread")
+                    }
+                    if (states.isNotEmpty()) stateDescription = states.joinToString(", ")
+                    if (enabled) {
+                        customActions = sessionRowAccessibilityActions(
+                            pinned = pinned,
+                            onPinnedChange = onPinnedChange,
+                            onRename = { renameOpen = true },
+                        )
+                    }
                 }
-                if (states.isNotEmpty()) stateDescription = states.joinToString(", ")
-            }
-            .clickable(enabled = enabled, onClick = onClick),
-        shape = RoundedCornerShape(if (selected) 22.dp else 12.dp),
-        containerColor = if (selected) CelesteSurfaceSelected else Color.Transparent,
-        borderColor = Color.Transparent,
-        contentPadding = PaddingValues(horizontal = 13.dp, vertical = 9.dp),
-    ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = session.title.ifBlank { "Untitled conversation" },
-                    style = MaterialTheme.typography.bodyMedium,
-                    fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-                preview?.let {
-                    Spacer(Modifier.height(2.dp))
+                .combinedClickable(
+                    enabled = enabled,
+                    onClick = onClick,
+                    onLongClickLabel = "Conversation actions",
+                    onLongClick = { menuExpanded = true },
+                ),
+            shape = RoundedCornerShape(if (selected) 22.dp else 12.dp),
+            containerColor = if (selected) CelesteSurfaceSelected else Color.Transparent,
+            borderColor = Color.Transparent,
+            contentPadding = PaddingValues(horizontal = 13.dp, vertical = 9.dp),
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(modifier = Modifier.weight(1f)) {
                     Text(
-                        text = it,
-                        color = CelesteTextMuted,
-                        style = MaterialTheme.typography.bodySmall,
-                        maxLines = 2,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                }
-                metadata?.let {
-                    Spacer(Modifier.height(2.dp))
-                    Text(
-                        text = it,
-                        color = CelesteTextMuted,
-                        style = MaterialTheme.typography.labelSmall,
+                        text = session.title.ifBlank { "Untitled conversation" },
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                     )
+                    preview?.let {
+                        Spacer(Modifier.height(2.dp))
+                        Text(
+                            text = it,
+                            color = CelesteTextMuted,
+                            style = MaterialTheme.typography.bodySmall,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                    metadata?.let {
+                        Spacer(Modifier.height(2.dp))
+                        Text(
+                            text = it,
+                            color = CelesteTextMuted,
+                            style = MaterialTheme.typography.labelSmall,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                }
+                if (session.unread) {
+                    Spacer(Modifier.size(10.dp))
+                    Box(
+                        modifier = Modifier
+                            .size(7.dp)
+                            .background(CelesteAccent, CircleShape),
+                    )
                 }
             }
-            if (session.unread) {
-                Spacer(Modifier.size(10.dp))
-                Box(
-                    modifier = Modifier
-                        .size(7.dp)
-                        .background(CelesteAccent, CircleShape),
-                )
-            }
         }
+
+        SessionRowActionMenu(
+            expanded = menuExpanded,
+            pinned = pinned,
+            onDismiss = { menuExpanded = false },
+            onPinnedChange = onPinnedChange,
+            onRename = { renameOpen = true },
+        )
+    }
+
+    if (renameOpen) {
+        RenameConversationDialog(
+            sessionId = session.id,
+            currentTitle = session.title,
+            onDismiss = { renameOpen = false },
+            onRename = onRename,
+        )
     }
 }
 

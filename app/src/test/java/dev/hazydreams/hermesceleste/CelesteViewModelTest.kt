@@ -201,6 +201,152 @@ class CelesteViewModelTest {
     }
 
     @Test
+    fun pinMovesImmediatelyAndPersistsWithTheOwningProfile() = runTest {
+        val dashboard = FakeDashboard(FakeGateway()).apply {
+            session = session.copy(profile = "work", pinned = false)
+            pinGates[true] = CompletableDeferred()
+        }
+        val viewModel = CelesteViewModel(dashboard = dashboard)
+        advanceUntilIdle()
+        viewModel.updateDashboardUrl("http://hermes.test:9119")
+        viewModel.findDashboard()
+        viewModel.loadSessions()
+        advanceUntilIdle()
+
+        viewModel.setSessionPinned(dashboard.session, true)
+
+        assertEquals(true, viewModel.state.value.sessions?.single()?.pinned)
+        runCurrent()
+        assertEquals(listOf(Triple("stored-42", "work", true)), dashboard.pinRequests)
+
+        dashboard.pinGates.getValue(true).complete(Unit)
+        advanceUntilIdle()
+
+        assertEquals(true, viewModel.state.value.sessions?.single()?.pinned)
+        assertNull(viewModel.state.value.sessionActionError)
+        viewModel.controller.close()
+    }
+
+    @Test
+    fun failedPinRollsBackOnlyThePinFieldAndShowsAnError() = runTest {
+        val dashboard = FakeDashboard(FakeGateway()).apply {
+            session = session.copy(title = "Original title", pinned = false)
+            pinFailures[true] = IOException("Pin rejected")
+        }
+        val viewModel = CelesteViewModel(dashboard = dashboard)
+        advanceUntilIdle()
+        viewModel.updateDashboardUrl("http://hermes.test:9119")
+        viewModel.findDashboard()
+        viewModel.loadSessions()
+        advanceUntilIdle()
+
+        viewModel.setSessionPinned(dashboard.session, true)
+        advanceUntilIdle()
+
+        val restored = viewModel.state.value.sessions?.single()
+        assertEquals(false, restored?.pinned)
+        assertEquals("Original title", restored?.title)
+        assertEquals("Pin rejected", viewModel.state.value.sessionActionError)
+        viewModel.controller.close()
+    }
+
+    @Test
+    fun stalePinCompletionCannotOverwriteTheLatestIntent() = runTest {
+        val dashboard = FakeDashboard(FakeGateway()).apply {
+            session = session.copy(pinned = false)
+            pinGates[true] = CompletableDeferred()
+            pinGates[false] = CompletableDeferred()
+        }
+        val viewModel = CelesteViewModel(dashboard = dashboard)
+        advanceUntilIdle()
+        viewModel.updateDashboardUrl("http://hermes.test:9119")
+        viewModel.findDashboard()
+        viewModel.loadSessions()
+        advanceUntilIdle()
+
+        viewModel.setSessionPinned(dashboard.session, true)
+        runCurrent()
+        viewModel.setSessionPinned(dashboard.session.copy(pinned = true), false)
+        runCurrent()
+        dashboard.pinGates.getValue(false).complete(Unit)
+        runCurrent()
+        dashboard.pinGates.getValue(true).complete(Unit)
+        advanceUntilIdle()
+
+        assertEquals(false, viewModel.state.value.sessions?.single()?.pinned)
+        assertEquals(
+            listOf(
+                Triple("stored-42", "default", true),
+                Triple("stored-42", "default", false),
+            ),
+            dashboard.pinRequests,
+        )
+        viewModel.controller.close()
+    }
+
+    @Test
+    fun renameKeepsTheOldTitleUntilHermesAcceptsTheTrimmedName() = runTest {
+        val dashboard = FakeDashboard(FakeGateway()).apply {
+            session = session.copy(title = "Original title", profile = "work")
+            renameGates["Connection notes"] = CompletableDeferred()
+        }
+        val viewModel = CelesteViewModel(dashboard = dashboard)
+        advanceUntilIdle()
+        viewModel.updateDashboardUrl("http://hermes.test:9119")
+        viewModel.findDashboard()
+        viewModel.loadSessions()
+        advanceUntilIdle()
+        var renameError: String? = "waiting"
+
+        viewModel.renameSession(dashboard.session, "  Connection notes  ") { renameError = it }
+        runCurrent()
+
+        assertEquals("Original title", viewModel.state.value.sessions?.single()?.title)
+        assertEquals(listOf(Triple("stored-42", "work", "Connection notes")), dashboard.renameRequests)
+
+        dashboard.renameGates.getValue("Connection notes").complete(Unit)
+        advanceUntilIdle()
+
+        assertEquals("Connection notes", viewModel.state.value.sessions?.single()?.title)
+        assertNull(renameError)
+        viewModel.controller.close()
+    }
+
+    @Test
+    fun failedAndStaleRenamesNeverReplaceTheTruthfulTitle() = runTest {
+        val dashboard = FakeDashboard(FakeGateway()).apply {
+            session = session.copy(title = "Original title")
+            renameFailures["Rejected title"] = IOException("That title is already in use")
+            renameGates["First title"] = CompletableDeferred()
+            renameGates["Final title"] = CompletableDeferred()
+        }
+        val viewModel = CelesteViewModel(dashboard = dashboard)
+        advanceUntilIdle()
+        viewModel.updateDashboardUrl("http://hermes.test:9119")
+        viewModel.findDashboard()
+        viewModel.loadSessions()
+        advanceUntilIdle()
+        var failure: String? = null
+
+        viewModel.renameSession(dashboard.session, "Rejected title") { failure = it }
+        advanceUntilIdle()
+        assertEquals("Original title", viewModel.state.value.sessions?.single()?.title)
+        assertEquals("That title is already in use", failure)
+
+        viewModel.renameSession(dashboard.session, "First title") {}
+        runCurrent()
+        viewModel.renameSession(dashboard.session, "Final title") {}
+        runCurrent()
+        dashboard.renameGates.getValue("Final title").complete(Unit)
+        runCurrent()
+        dashboard.renameGates.getValue("First title").complete(Unit)
+        advanceUntilIdle()
+
+        assertEquals("Final title", viewModel.state.value.sessions?.single()?.title)
+        viewModel.controller.close()
+    }
+
+    @Test
     fun searchesLoadedRowsImmediatelyThenMergesServerHistoryAfterDebounce() = runTest {
         val dashboard = FakeDashboard(FakeGateway())
         val localMatch = dashboard.session.copy(
@@ -891,6 +1037,12 @@ class CelesteViewModelTest {
         val searchGates = mutableMapOf<String, CompletableDeferred<Unit>>()
         val searchRequests = mutableListOf<Triple<String, String, Int>>()
         val markReadRequests = mutableListOf<Pair<String, String>>()
+        val pinRequests = mutableListOf<Triple<String, String, Boolean>>()
+        val pinGates = mutableMapOf<Boolean, CompletableDeferred<Unit>>()
+        val pinFailures = mutableMapOf<Boolean, Throwable>()
+        val renameRequests = mutableListOf<Triple<String, String, String>>()
+        val renameGates = mutableMapOf<String, CompletableDeferred<Unit>>()
+        val renameFailures = mutableMapOf<String, Throwable>()
 
         var session = StoredSession(
             id = "stored-42",
@@ -969,6 +1121,32 @@ class CelesteViewModelTest {
             markReadGate?.await()
             markReadRequests += sessionId to profile
             markReadFailure?.let { throw it }
+        }
+
+        override suspend fun setSessionPinned(
+            baseUrl: String,
+            credential: GatewayCredential,
+            sessionId: String,
+            profile: String,
+            pinned: Boolean,
+        ): Boolean {
+            pinRequests += Triple(sessionId, profile, pinned)
+            pinGates[pinned]?.await()
+            pinFailures[pinned]?.let { throw it }
+            return pinned
+        }
+
+        override suspend fun renameSession(
+            baseUrl: String,
+            credential: GatewayCredential,
+            sessionId: String,
+            profile: String,
+            title: String,
+        ): String {
+            renameRequests += Triple(sessionId, profile, title)
+            renameGates[title]?.await()
+            renameFailures[title]?.let { throw it }
+            return title
         }
 
         override suspend fun listProfiles(

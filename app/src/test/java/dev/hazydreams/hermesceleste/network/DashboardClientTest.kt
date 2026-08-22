@@ -248,6 +248,51 @@ class DashboardClientTest {
     }
 
     @Test
+    fun pinsAStoredSessionWithItsProfileAndUsesTheServerValue() = runTest {
+        server.enqueue(MockResponse.Builder().code(200).body("""{"ok":true,"title":"Notes","pinned":true}""").build())
+        val baseUrl = server.url("/").toString().trimEnd('/')
+
+        val pinned = DashboardClient().setSessionPinned(
+            baseUrl = baseUrl,
+            credential = GatewayCredential.StaticToken("private-token"),
+            sessionId = "stored/session 42",
+            profile = "work",
+            pinned = true,
+        )
+
+        assertTrue(pinned)
+        val request = server.takeRequest()
+        assertEquals("PATCH", request.method)
+        assertEquals("/api/sessions/stored%2Fsession%2042", request.url.encodedPath)
+        assertEquals(
+            Json.parseToJsonElement("""{"pinned":true,"profile":"work"}"""),
+            Json.parseToJsonElement(request.body?.utf8().orEmpty()),
+        )
+    }
+
+    @Test
+    fun renamesAStoredSessionWithItsProfileAndUsesTheServerTitle() = runTest {
+        server.enqueue(MockResponse.Builder().code(200).body("""{"ok":true,"title":"Connection notes"}""").build())
+        val baseUrl = server.url("/").toString().trimEnd('/')
+
+        val title = DashboardClient().renameSession(
+            baseUrl = baseUrl,
+            credential = GatewayCredential.None,
+            sessionId = "stored-42",
+            profile = "default",
+            title = "Connection notes",
+        )
+
+        assertEquals("Connection notes", title)
+        val request = server.takeRequest()
+        assertEquals("PATCH", request.method)
+        assertEquals(
+            Json.parseToJsonElement("""{"title":"Connection notes","profile":"default"}"""),
+            Json.parseToJsonElement(request.body?.utf8().orEmpty()),
+        )
+    }
+
+    @Test
     fun passwordSessionUsesItsCookieForRestSessionDiscovery() = runTest {
         server.enqueue(
             MockResponse.Builder()

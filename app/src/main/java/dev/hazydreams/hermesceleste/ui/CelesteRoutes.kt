@@ -79,6 +79,7 @@ internal fun CelesteRoutes(ui: CelesteUiState, controller: CelesteController) {
                             searchResults = ui.sessionSearchResults,
                             isSearchingSessions = ui.isSearchingSessions,
                             sessionSearchError = ui.sessionSearchError,
+                            sessionActionError = ui.sessionActionError,
                             onProfileSelected = controller::selectProfile,
                             onSearchQueryChange = controller::updateSessionSearchQuery,
                             onNewConversation = {
@@ -93,6 +94,8 @@ internal fun CelesteRoutes(ui: CelesteUiState, controller: CelesteController) {
                                     controller.openSession(session)
                                 }
                             },
+                            onSessionPinnedChange = controller::setSessionPinned,
+                            onSessionRename = controller::renameSession,
                             onLoadMoreSessions = controller::loadMoreSessions,
                             onSettings = {
                                 drawerScope.launch {

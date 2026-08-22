@@ -61,6 +61,15 @@ internal class CelesteViewModel(
 
     fun openSession(summary: StoredSession) = controller.openSession(summary)
 
+    fun setSessionPinned(summary: StoredSession, pinned: Boolean) =
+        controller.setSessionPinned(summary, pinned)
+
+    fun renameSession(
+        summary: StoredSession,
+        title: String,
+        onComplete: (String?) -> Unit,
+    ) = controller.renameSession(summary, title, onComplete)
+
     fun createNewConversation() = controller.createNewConversation()
 
     fun sendMessage() = controller.sendMessage()

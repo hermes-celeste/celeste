@@ -28,7 +28,7 @@ The Android name includes Hermes so the installed app is easy to find. It does n
 
 ## Current functional boundary
 
-Celeste can discover a dashboard, authenticate with a supported password provider or session token, manage the connection directly under **Settings → Gateway**, remember every successful supported connection with Android Keystore-backed encryption, automatically restore into an empty composer without creating a durable conversation, browse grouped conversations from the navigation drawer, explicitly sign out or forget the connection, create and resume conversations, send prompts, render native rich Markdown in user and assistant messages, stream responses and tools, interrupt turns, and reconcile after reconnecting.
+Celeste can discover a dashboard, authenticate with a supported password provider or session token, manage the connection directly under **Settings → Gateway**, remember every successful supported connection with Android Keystore-backed encryption, automatically restore into an empty composer without creating a durable conversation, browse and search grouped conversations from the navigation drawer, pin or rename a conversation from its row actions, explicitly sign out or forget the connection, create and resume conversations, send prompts, render native rich Markdown in user and assistant messages, stream responses and tools, interrupt turns, and reconcile after reconnecting.
 
 The following surfaces are not implemented yet:
 
