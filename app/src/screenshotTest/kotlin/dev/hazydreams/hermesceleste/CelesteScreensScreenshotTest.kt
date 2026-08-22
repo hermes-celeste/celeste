@@ -580,6 +580,19 @@ fun ReconnectingPreviewScreenshot() {
     }
 }
 
+@PreviewTest
+@Preview(name = "18 · Resume exhausted", widthDp = 390, heightDp = 844, showBackground = true)
+@Composable
+fun ResumeExhaustedPreviewScreenshot() {
+    HermesCelesteTheme {
+        PreviewConversation(
+            draft = "This draft remains ready while I restore the conversation.",
+            turnState = TurnState.Reconnecting,
+            resumeExhausted = true,
+        )
+    }
+}
+
 private val richPreviewMessages = listOf(
     ConversationMessage(
         role = "user",
@@ -616,6 +629,7 @@ private fun PreviewConversation(
     streamingText: String = "",
     draft: String = "",
     turnState: TurnState,
+    resumeExhausted: Boolean = false,
     errorMessage: String? = null,
     initiallyFollowLatest: Boolean = true,
     jumpToLatestVisible: Boolean? = null,
@@ -627,11 +641,13 @@ private fun PreviewConversation(
         streamingText = streamingText,
         draft = draft,
         turnState = turnState,
+        resumeExhausted = resumeExhausted,
         loadingMessage = null,
         errorMessage = errorMessage,
         onDraftChange = {},
         onSend = {},
         onInterrupt = {},
+        onRetryResume = {},
         onOpenDrawer = {},
         initiallyFollowLatest = initiallyFollowLatest,
         jumpToLatestVisibleOverride = jumpToLatestVisible,

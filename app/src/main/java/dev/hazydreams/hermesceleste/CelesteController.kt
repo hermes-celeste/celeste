@@ -94,6 +94,7 @@ internal data class CelesteUiState(
     val streamingText: String = "",
     val draft: String = "",
     val turnState: TurnState = TurnState.Idle,
+    val resumeExhausted: Boolean = false,
     val loadingMessage: String? = null,
     val errorMessage: String? = null,
 )
@@ -941,6 +942,7 @@ internal class CelesteController(
             streamingText = "",
             draft = "",
             turnState = TurnState.Synchronizing,
+            resumeExhausted = false,
             loadingMessage = "Opening ${summary.title.ifBlank { "conversation" }}…",
             errorMessage = null,
             isLoadingMoreSessions = false,
@@ -960,8 +962,10 @@ internal class CelesteController(
         gateway = newGateway
         observeGateway(newGateway)
         controllerScope.launch {
+            var resumeAttempted = false
             runCatching {
                 newGateway.connect()
+                resumeAttempted = true
                 reconcile(newGateway, summary.id)
             }.onSuccess {
                 if (gateway !== newGateway) return@onSuccess
@@ -969,12 +973,16 @@ internal class CelesteController(
                 mutableState.value = mutableState.value.copy(loadingMessage = null)
             }.onFailure { error ->
                 if (gateway !== newGateway) return@onFailure
+                currentCoroutineContext().ensureActive()
                 mutableState.value = mutableState.value.copy(
                     loadingMessage = null,
                     errorMessage = null,
                     turnState = TurnState.Reconnecting,
                 )
-                scheduleReconnect(wasRunning = false)
+                scheduleReconnect(
+                    wasRunning = false,
+                    initialResumeFailures = if (resumeAttempted) 1 else 0,
+                )
             }
         }
     }
@@ -1011,6 +1019,7 @@ internal class CelesteController(
             password = password,
             sessionToken = sessionToken,
             turnState = TurnState.Idle,
+            resumeExhausted = false,
             loadingMessage = null,
             errorMessage = connectionWarning,
         )
@@ -1028,6 +1037,7 @@ internal class CelesteController(
             streamingText = "",
             draft = if (clearDraft) "" else snapshot.draft,
             turnState = TurnState.Idle,
+            resumeExhausted = false,
             loadingMessage = null,
             errorMessage = null,
         )
@@ -1110,6 +1120,7 @@ internal class CelesteController(
             sessionPageError = null,
             activeSummary = summary,
             turnState = TurnState.Idle,
+            resumeExhausted = false,
             loadingMessage = null,
             errorMessage = connectionWarning,
         )
@@ -1345,10 +1356,17 @@ internal class CelesteController(
             return
         }
         if (gateway == null) return
+        val wasRunning = mutableState.value.turnState == TurnState.Running
         reconnectJob?.cancel()
         reconnectJob = null
         reconnectAttempts = 0
-        scheduleReconnect(wasRunning = mutableState.value.turnState == TurnState.Running, immediate = true)
+        mutableState.value = mutableState.value.copy(
+            turnState = TurnState.Reconnecting,
+            resumeExhausted = false,
+            loadingMessage = null,
+            errorMessage = null,
+        )
+        scheduleReconnect(wasRunning = wasRunning, immediate = true)
     }
 
     fun onBackground() {
@@ -1371,28 +1389,38 @@ internal class CelesteController(
     fun onForeground() {
         val activeGateway = gateway ?: return
         val storedSessionId = currentStoredSessionId ?: return
+        if (mutableState.value.resumeExhausted) return
         if (foregroundCheckJob?.isActive == true || reconciling) return
         if (activeGateway.state.value != GatewayConnectionState.Connected) {
             reconnectNow()
             return
         }
         foregroundCheckJob = controllerScope.launch {
+            var resumeAttempted = false
             val health = runCatching {
                 activeGateway.request(
                     method = "session.list",
                     params = buildJsonObject { put("limit", 1) },
                     timeoutMillis = 8_000,
                 )
-                if (currentSessionCanResume) reconcile(activeGateway, storedSessionId)
+                if (currentSessionCanResume) {
+                    resumeAttempted = true
+                    reconcile(activeGateway, storedSessionId)
+                }
             }
             if (health.isFailure && gateway === activeGateway) {
+                currentCoroutineContext().ensureActive()
                 val wasRunning = mutableState.value.turnState == TurnState.Running
                 activeGateway.close()
                 mutableState.value = mutableState.value.copy(
                     turnState = TurnState.Reconnecting,
                     errorMessage = null,
                 )
-                scheduleReconnect(wasRunning = wasRunning, immediate = true)
+                scheduleReconnect(
+                    wasRunning = wasRunning,
+                    immediate = true,
+                    initialResumeFailures = if (resumeAttempted) 1 else 0,
+                )
             }
             foregroundCheckJob = null
         }
@@ -1435,7 +1463,7 @@ internal class CelesteController(
             val connection = snapshot.probe
             val activeCredential = credential
             val profile = snapshot.activeSummary?.profile ?: snapshot.selectedProfile
-            val (resumed, persistedMessages) = coroutineScope {
+            val (resumedResult, persistedMessages) = coroutineScope {
                 val persisted = if (connection != null && activeCredential != null && profile.isNotBlank()) {
                     async {
                         try {
@@ -1454,10 +1482,19 @@ internal class CelesteController(
                 } else {
                     null
                 }
-                val runtime = activeGateway.resumeStoredSession(storedSessionId, clientSource)
+                val runtime = runCatching {
+                    activeGateway.resumeStoredSession(storedSessionId, clientSource)
+                }
                 runtime to persisted?.await().orEmpty()
             }
             if (gateway !== activeGateway) return
+            if (resumedResult.isFailure && persistedMessages.isNotEmpty()) {
+                mutableState.value = mutableState.value.copy(
+                    messages = persistedMessages,
+                    streamingText = "",
+                )
+            }
+            val resumed = resumedResult.getOrThrow()
             applyResumedSession(
                 resumed.copy(
                     messages = persistedMessages.ifEmpty { resumed.messages },
@@ -1490,6 +1527,7 @@ internal class CelesteController(
             } else {
                 TurnState.Idle
             },
+            resumeExhausted = false,
             errorMessage = null,
         )
         publishCurrentSession()
@@ -1773,6 +1811,7 @@ internal class CelesteController(
                     if (session.id == previousStoredId) updatedSummary else session
                 },
                 turnState = TurnState.Idle,
+                resumeExhausted = false,
                 errorMessage = null,
             )
             val events = bufferedEvents.toList()
@@ -1786,16 +1825,23 @@ internal class CelesteController(
         }
     }
 
-    private fun scheduleReconnect(wasRunning: Boolean, immediate: Boolean = false) {
+    private fun scheduleReconnect(
+        wasRunning: Boolean,
+        immediate: Boolean = false,
+        initialResumeFailures: Int = 0,
+    ) {
         val activeGateway = gateway ?: return
         val storedSessionId = currentStoredSessionId ?: mutableState.value.activeSummary?.id ?: return
+        if (mutableState.value.resumeExhausted) return
         if (reconnectJob?.isActive == true) return
         mutableState.value = mutableState.value.copy(
             turnState = TurnState.Reconnecting,
+            resumeExhausted = false,
             loadingMessage = null,
             errorMessage = null,
         )
         reconnectJob = controllerScope.launch {
+            var resumeFailures = initialResumeFailures
             while (gateway === activeGateway) {
                 val delayMillis = if (immediate && reconnectAttempts == 0) {
                     0L
@@ -1803,8 +1849,10 @@ internal class CelesteController(
                     reconnectDelayMillis(reconnectAttempts, wasRunning)
                 }
                 if (delayMillis > 0) delay(delayMillis)
+                var resumeAttempted = false
                 val result = runCatching {
                     activeGateway.connect()
+                    resumeAttempted = true
                     if (currentSessionCanResume) {
                         reconcile(activeGateway, storedSessionId)
                     } else {
@@ -1825,9 +1873,23 @@ internal class CelesteController(
                     invalidateReusableAuthentication(descriptor)
                     return@launch
                 }
+                if (resumeAttempted) {
+                    resumeFailures += 1
+                    if (resumeFailures > MAX_RESUME_RETRIES) {
+                        reconnectJob = null
+                        mutableState.value = mutableState.value.copy(
+                            turnState = TurnState.Reconnecting,
+                            resumeExhausted = true,
+                            loadingMessage = null,
+                            errorMessage = null,
+                        )
+                        return@launch
+                    }
+                }
                 reconnectAttempts += 1
                 mutableState.value = mutableState.value.copy(
                     turnState = TurnState.Reconnecting,
+                    resumeExhausted = false,
                     errorMessage = null,
                 )
             }
@@ -1882,6 +1944,7 @@ internal class CelesteController(
         private const val SESSION_SEARCH_LIMIT = 20
         private const val SESSION_SEARCH_DEBOUNCE_MILLIS = 200L
         private const val MAX_SESSION_ACTION_ERROR_LENGTH = 160
+        private const val MAX_RESUME_RETRIES = 4
 
         internal fun unpersistedInflightText(
             inflight: String,

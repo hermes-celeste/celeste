@@ -52,6 +52,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
@@ -93,11 +94,13 @@ internal fun ConversationScreen(
     streamingText: String,
     draft: String,
     turnState: TurnState,
+    resumeExhausted: Boolean,
     loadingMessage: String?,
     errorMessage: String?,
     onDraftChange: (String) -> Unit,
     onSend: () -> Unit,
     onInterrupt: () -> Unit,
+    onRetryResume: () -> Unit,
     onOpenDrawer: () -> Unit,
     composerFocusRequest: Long? = null,
     onComposerFocusRequestHandled: (Long) -> Unit = {},
@@ -116,7 +119,9 @@ internal fun ConversationScreen(
     }
     val focusManager = LocalFocusManager.current
     val transcriptKeys = remember(messages) { transcriptItemKeys(messages) }
-    val visibleMessageCount = messages.size + if (streamingText.isNotBlank()) 1 else 0
+    val visibleMessageCount = messages.size +
+        (if (streamingText.isNotBlank()) 1 else 0) +
+        (if (resumeExhausted) 1 else 0)
     val jumpToLatestVisible = remember(listState, visibleMessageCount) {
         derivedStateOf {
             shouldShowJumpToLatest(
@@ -203,6 +208,11 @@ internal fun ConversationScreen(
                             )
                         }
                     }
+                    if (resumeExhausted) {
+                        item(key = "resume-exhausted:$conversationKey") {
+                            ResumeExhaustedCard(onRetry = onRetryResume)
+                        }
+                    }
                 }
             }
 
@@ -246,6 +256,46 @@ internal fun ConversationScreen(
             message = message,
             onDismiss = { openedStepsMessageId = null },
         )
+    }
+}
+
+@Composable
+private fun ResumeExhaustedCard(
+    onRetry: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Column(
+        modifier = modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(24.dp))
+            .background(CelesteSurfaceRaised)
+            .padding(22.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        Text(
+            text = "Couldn’t load this conversation",
+            color = CelesteTextPrimary,
+            style = MaterialTheme.typography.titleMedium,
+            fontWeight = FontWeight.SemiBold,
+        )
+        Text(
+            text = "Hermes couldn’t restore this conversation after several attempts. Check the connection, then try again.",
+            color = CelesteTextMuted,
+            style = MaterialTheme.typography.bodyMedium,
+        )
+        Button(
+            onClick = onRetry,
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(46.dp),
+            shape = RoundedCornerShape(23.dp),
+            colors = ButtonDefaults.buttonColors(
+                containerColor = CelesteAccent,
+                contentColor = CelesteAccentContent,
+            ),
+        ) {
+            Text("Retry", fontWeight = FontWeight.SemiBold)
+        }
     }
 }
 

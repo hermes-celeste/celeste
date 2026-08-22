@@ -411,9 +411,12 @@ class CelesteViewModelTest {
             gateway.connectFailure = CancellationException("Timed out waiting for Hermes")
             gateway.disconnect("connection lost")
 
-            mainDispatcher.scheduler.advanceTimeBy(1_000L)
-            mainDispatcher.scheduler.runCurrent()
+            repeat(6) {
+                mainDispatcher.scheduler.advanceTimeBy(1_000L)
+                mainDispatcher.scheduler.runCurrent()
+            }
             assertEquals(TurnState.Reconnecting, viewModel.state.value.turnState)
+            assertFalse(viewModel.state.value.resumeExhausted)
 
             gateway.connectFailure = null
             mainDispatcher.scheduler.advanceTimeBy(1_000L)
@@ -424,6 +427,49 @@ class CelesteViewModelTest {
         } finally {
             viewModel.controller.close()
         }
+    }
+
+    @Test
+    fun repeatedResumeFailuresShowHistoryAndWaitForAnExplicitRetry() = runTest {
+        val gateway = FakeGateway().apply {
+            resumeFailure = IOException("resume unavailable")
+        }
+        val dashboard = FakeDashboard(gateway).apply {
+            sessionMessages = listOf(
+                ConversationMessage(
+                    role = "assistant",
+                    text = "Persisted history remains readable.",
+                    id = "persisted-assistant",
+                ),
+            )
+        }
+        val viewModel = CelesteViewModel(
+            dashboard = dashboard,
+            reconnectDelayMillis = { _, _ -> 0L },
+        )
+        viewModel.updateDashboardUrl("http://hermes.test:9119")
+        viewModel.findDashboard()
+        viewModel.loadSessions()
+        viewModel.openSession(dashboard.session)
+        advanceUntilIdle()
+
+        assertEquals(5, gateway.methods.count { it == "session.resume" })
+        assertEquals(TurnState.Reconnecting, viewModel.state.value.turnState)
+        assertTrue(viewModel.state.value.resumeExhausted)
+        assertEquals(
+            listOf("Persisted history remains readable."),
+            viewModel.state.value.messages.map(ConversationMessage::text),
+        )
+        assertNull(viewModel.state.value.errorMessage)
+
+        gateway.resumeFailure = null
+        viewModel.controller.reconnectNow()
+        advanceUntilIdle()
+
+        assertEquals(6, gateway.methods.count { it == "session.resume" })
+        assertEquals(TurnState.Idle, viewModel.state.value.turnState)
+        assertFalse(viewModel.state.value.resumeExhausted)
+        viewModel.controller.close()
     }
 
     @Test
@@ -1584,6 +1630,7 @@ class CelesteViewModelTest {
         var closeCount = 0
         var failHealthCheck = false
         var connectFailure: Throwable? = null
+        var resumeFailure: Throwable? = null
         var createFailure: Throwable? = null
         var promptFailure: Throwable? = null
         var interruptFailure: Throwable? = null
@@ -1605,7 +1652,10 @@ class CelesteViewModelTest {
             methods += method
             requests += method to params
             return when (method) {
-                "session.resume" -> resumePayload
+                "session.resume" -> {
+                    resumeFailure?.let { throw it }
+                    resumePayload
+                }
                 "session.create" -> {
                     createGate?.await()
                     createFailure?.let { throw it }
