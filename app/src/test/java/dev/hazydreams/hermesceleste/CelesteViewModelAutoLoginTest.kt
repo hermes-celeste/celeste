@@ -11,6 +11,7 @@ import dev.hazydreams.hermesceleste.connection.StoredConnection
 import dev.hazydreams.hermesceleste.network.AuthenticationRejected
 import dev.hazydreams.hermesceleste.network.AuthenticationMaterial
 import dev.hazydreams.hermesceleste.network.AuthProvider
+import dev.hazydreams.hermesceleste.network.ConversationMessage
 import dev.hazydreams.hermesceleste.network.DashboardProfile
 import dev.hazydreams.hermesceleste.network.DashboardProbeResult
 import dev.hazydreams.hermesceleste.network.DashboardService
@@ -439,6 +440,14 @@ class CelesteViewModelAutoLoginTest {
             profile: String,
             limit: Int,
         ): List<StoredSession> = emptyList()
+
+        override suspend fun loadSessionMessages(
+            baseUrl: String,
+            credential: GatewayCredential,
+            sessionId: String,
+            profile: String,
+            limit: Int,
+        ): List<ConversationMessage> = emptyList()
 
         override suspend fun markSessionRead(
             baseUrl: String,

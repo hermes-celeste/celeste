@@ -36,6 +36,8 @@ import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -1387,9 +1389,38 @@ internal class CelesteController(
         reconciling = true
         bufferedEvents.clear()
         try {
-            val resumed = activeGateway.resumeStoredSession(storedSessionId, clientSource)
+            val snapshot = mutableState.value
+            val connection = snapshot.probe
+            val activeCredential = credential
+            val profile = snapshot.activeSummary?.profile ?: snapshot.selectedProfile
+            val (resumed, persistedMessages) = coroutineScope {
+                val persisted = if (connection != null && activeCredential != null && profile.isNotBlank()) {
+                    async {
+                        try {
+                            dashboard.loadSessionMessages(
+                                baseUrl = connection.baseUrl,
+                                credential = activeCredential,
+                                sessionId = storedSessionId,
+                                profile = profile,
+                            )
+                        } catch (error: CancellationException) {
+                            throw error
+                        } catch (_: Throwable) {
+                            emptyList()
+                        }
+                    }
+                } else {
+                    null
+                }
+                val runtime = activeGateway.resumeStoredSession(storedSessionId, clientSource)
+                runtime to persisted?.await().orEmpty()
+            }
             if (gateway !== activeGateway) return
-            applyResumedSession(resumed)
+            applyResumedSession(
+                resumed.copy(
+                    messages = persistedMessages.ifEmpty { resumed.messages },
+                ),
+            )
             val events = bufferedEvents.toList()
             bufferedEvents.clear()
             reconciling = false
@@ -1510,7 +1541,7 @@ internal class CelesteController(
                 val text = event.payload.string("text").orEmpty()
                 val alreadyStreamed = event.payload.boolean("already_streamed") == true
                 mutableState.value = mutableState.value.copy(
-                    messages = settleCurrentReasoning(mutableState.value.messages),
+                    messages = settleCurrentTurnSteps(mutableState.value.messages),
                 )
                 if (alreadyStreamed && mutableState.value.streamingText.isNotBlank()) {
                     finalizeAssistant(

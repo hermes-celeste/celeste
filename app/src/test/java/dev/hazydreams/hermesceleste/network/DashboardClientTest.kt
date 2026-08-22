@@ -589,6 +589,43 @@ class DashboardClientTest {
     }
 
     @Test
+    fun loadsPersistedTranscriptWithReasoningAndCompactedHistory() = runBlocking {
+        server.enqueue(
+            MockResponse.Builder()
+                .code(200)
+                .body(
+                    """{"session_id":"stored-42","messages":[{"id":1,"role":"user","content":"Inspect this"},{"id":2,"role":"assistant","content":"","reasoning":"I should read the file first.","tool_calls":[{"id":"call-1","function":{"name":"read_file","arguments":"{\"path\":\"README.md\"}"}}]},{"id":3,"role":"tool","content":"contents","tool_call_id":"call-1","tool_name":"read_file"},{"id":4,"role":"assistant","content":"Done"}],"pagination":{"limit":500,"offset":0,"order":"latest","returned":4}}""",
+                )
+                .build(),
+        )
+
+        val messages = DashboardClient().loadSessionMessages(
+            baseUrl = server.url("/").toString().trimEnd('/'),
+            credential = GatewayCredential.StaticToken("private-token"),
+            sessionId = "stored-42",
+            profile = "work",
+        )
+
+        assertEquals(listOf("user", "steps", "assistant"), messages.map { it.role })
+        val steps = messages.single { it.role == "steps" }.steps
+        assertEquals(
+            listOf(ConversationStepKind.Reasoning, ConversationStepKind.Tool),
+            steps.map { it.kind },
+        )
+        assertEquals("I should read the file first.", steps.first().detail)
+        assertEquals("read_file", steps.last().toolName)
+        assertEquals("{\"path\":\"README.md\"}", steps.last().context)
+        assertEquals("contents", steps.last().result)
+        val request = server.takeRequest()
+        assertEquals("/api/sessions/stored-42/messages", request.url.encodedPath)
+        assertEquals("work", request.url.queryParameter("profile"))
+        assertEquals("500", request.url.queryParameter("limit"))
+        assertEquals("latest", request.url.queryParameter("order"))
+        assertEquals("true", request.url.queryParameter("include_compacted"))
+        assertEquals("private-token", request.headers["X-Hermes-Session-Token"])
+    }
+
+    @Test
     fun listsProfilesWithTheOfficialStaticTokenHeader() = runTest {
         server.enqueue(
             MockResponse.Builder()

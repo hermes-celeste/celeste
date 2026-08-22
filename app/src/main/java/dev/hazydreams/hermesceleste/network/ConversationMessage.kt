@@ -166,7 +166,7 @@ private fun updateCurrentTurnSteps(
     stepsMessageId: String,
     transform: (List<ConversationStep>) -> List<ConversationStep>,
 ): List<ConversationMessage> {
-    val index = currentTurnStepsIndex(messages)
+    val index = activeStepsIndex(messages)
     if (index >= 0) {
         val previous = messages[index]
         val steps = transform(previous.steps)
@@ -184,6 +184,12 @@ private fun updateCurrentTurnSteps(
         pending = true,
         steps = steps,
     )
+}
+
+private fun activeStepsIndex(messages: List<ConversationMessage>): Int {
+    val index = messages.lastIndex
+    val turnStart = messages.indexOfLast { it.role == "user" }
+    return index.takeIf { it > turnStart && messages[it].role == "steps" } ?: -1
 }
 
 private fun currentTurnStepsIndex(messages: List<ConversationMessage>): Int {

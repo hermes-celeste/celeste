@@ -111,6 +111,7 @@ suspend fun GatewayConnection.interruptSession(runtimeSessionId: String): JsonOb
 
 internal fun decodeGatewayMessages(elements: List<JsonElement>): List<ConversationMessage> {
     val usedIds = mutableSetOf<String>()
+    val persistedToolCalls = mutableMapOf<String, Pair<String, String>>()
     var messages = emptyList<ConversationMessage>()
 
     fun uniqueMessageId(preferred: String?, fallback: String): String {
@@ -132,6 +133,14 @@ internal fun decodeGatewayMessages(elements: List<JsonElement>): List<Conversati
             ?: ""
 
         if (role == "assistant") {
+            (row["tool_calls"] as? JsonArray).orEmpty().forEach { callElement ->
+                val call = callElement as? JsonObject ?: return@forEach
+                val function = call["function"] as? JsonObject ?: return@forEach
+                val toolId = call.string("id")?.takeIf(String::isNotBlank) ?: return@forEach
+                val name = function.string("name")?.takeIf(String::isNotBlank) ?: "tool"
+                val context = function.string("arguments")?.takeIf(String::isNotBlank) ?: name
+                persistedToolCalls[toolId] = name to context
+            }
             val reasoning = sequenceOf("reasoning", "reasoning_content", "reasoning_details")
                 .mapNotNull(row::string)
                 .firstOrNull(String::isNotBlank)
@@ -148,18 +157,24 @@ internal fun decodeGatewayMessages(elements: List<JsonElement>): List<Conversati
         }
 
         if (role == "tool") {
-            val name = row.string("name") ?: row.string("tool_name") ?: "tool"
-            val context = text.ifBlank { row["args"]?.toString().orEmpty() }.ifBlank { name }
             val toolId = row.string("tool_id")
                 ?: row.string("tool_call_id")
                 ?: "${sourceIdentity ?: "resume-$index"}:tool"
+            val persistedCall = persistedToolCalls[toolId]
+            val name = row.string("name") ?: row.string("tool_name") ?: persistedCall?.first ?: "tool"
+            val context = row.string("context")
+                ?: persistedCall?.second
+                ?: row["args"]?.toString().orEmpty()
+            val result = row.string("result")
+                ?: row.string("content")
+                ?: ""
             messages = completeToolInCurrentTurn(
                 messages = messages,
                 id = toolId,
                 name = name,
-                context = context,
+                context = context.ifBlank { name },
                 summary = row.string("summary").orEmpty(),
-                result = row.string("result").orEmpty(),
+                result = result,
                 fallbackStepId = toolId,
                 stepsMessageId = "steps:${sourceIdentity ?: "resume-$index"}",
             )
