@@ -183,6 +183,31 @@ class HermesGatewayTest {
     }
 
     @Test
+    fun resumedAssistantMessageStartsANewActivityCapsuleForLaterReasoning() {
+        val messages = decodeGatewayMessages(
+            Json.parseToJsonElement(
+                """[
+                    {"row_id":1,"role":"user","text":"Inspect this"},
+                    {"row_id":2,"role":"assistant","reasoning":"First thought.","text":""},
+                    {"row_id":3,"role":"tool","tool_call_id":"call-1","name":"read_file","context":"app/Main.kt"},
+                    {"row_id":4,"role":"assistant","text":"I checked the first part."},
+                    {"row_id":5,"role":"assistant","reasoning":"Second thought.","text":""},
+                    {"row_id":6,"role":"assistant","text":"Finished."}
+                ]""".trimIndent(),
+            ).jsonArray,
+        )
+
+        assertEquals(
+            listOf("user", "steps", "assistant", "steps", "assistant"),
+            messages.map { it.role },
+        )
+        assertEquals("First thought.", messages[1].steps.first().detail)
+        assertEquals("I checked the first part.", messages[2].text)
+        assertEquals("Second thought.", messages[3].steps.single().detail)
+        assertTrue(messages.filter { it.role == "steps" }.flatMap { it.steps }.none { it.pending })
+    }
+
+    @Test
     fun resumedHistorySafelySkipsStructuredReasoningDetails() {
         val messages = decodeGatewayMessages(
             Json.parseToJsonElement(

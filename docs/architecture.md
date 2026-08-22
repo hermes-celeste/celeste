@@ -38,7 +38,7 @@ The four turn states are intentionally user-facing projections:
 - `Running` — Hermes owns an active turn.
 - `Reconnecting` — the draft remains local while Celeste restores the server relationship.
 
-Reasoning and tool events are reduced into one chronological `steps` transcript row for the current user turn. Adjacent reasoning deltas coalesce until a tool or assistant-message boundary, while tool starts and completions reconcile by stable Hermes tool ID. Compose renders that row as the compact **Thinking** affordance and presents the same projection in a separate **Steps** bottom sheet.
+Reasoning and tool events are reduced into chronological `steps` transcript rows for the current user turn. Adjacent reasoning deltas coalesce within the active segment, while tool starts and completions reconcile by stable Hermes tool ID. Interim assistant prose closes the current activity segment and appears in the transcript; later reasoning or tools begin a fresh **Thinking** row. Compose presents each row through the same separate **Steps** bottom sheet.
 
 Do not derive protocol truth from animation or view-local state.
 
@@ -110,7 +110,7 @@ Do not substitute one for the other because they happen to match in a test fixtu
 
 ## Projection behavior
 
-- Current `session.resume` history supplies persisted tool names and available context. Celeste presents that resumed detail in the same Steps projection as live activity.
+- `GET /api/sessions/{session_id}/messages` supplies the persisted display transcript, including compacted history, reasoning, and tool detail. `session.resume` binds the live runtime and supplies current turn state. Celeste presents both through the same Steps projection.
 - Interim/final assistant merging and completion deduplication use text- and prefix-based projection rules.
 - A newly persisted conversation keeps its current projected summary while active and receives refreshed catalog metadata on the next catalog load.
 

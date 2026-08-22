@@ -141,6 +141,14 @@ interface DashboardService {
         limit: Int = 20,
     ): List<StoredSession>
 
+    suspend fun loadSessionMessages(
+        baseUrl: String,
+        credential: GatewayCredential,
+        sessionId: String,
+        profile: String,
+        limit: Int = 500,
+    ): List<ConversationMessage>
+
     suspend fun markSessionRead(
         baseUrl: String,
         credential: GatewayCredential,
@@ -412,6 +420,41 @@ class DashboardClient(
                 decodeSearchSession(row, profile)
                     ?: throw InvalidDashboardResponse("Hermes returned an invalid session search result.")
             }
+        }
+    }
+
+    override suspend fun loadSessionMessages(
+        baseUrl: String,
+        credential: GatewayCredential,
+        sessionId: String,
+        profile: String,
+        limit: Int,
+    ): List<ConversationMessage> {
+        require(sessionId.isNotBlank()) { "Choose a Hermes session to open." }
+        require(profile.isNotBlank()) { "A Hermes profile is required." }
+        val boundedLimit = limit.coerceIn(1, 500)
+        return withContext(Dispatchers.IO) {
+            val url = "$baseUrl/api/sessions/$sessionId/messages".toHttpUrl().newBuilder()
+                .addQueryParameter("profile", profile)
+                .addQueryParameter("limit", boundedLimit.toString())
+                .addQueryParameter("order", "latest")
+                .addQueryParameter("include_compacted", "true")
+                .build()
+            val request = Request.Builder()
+                .url(url)
+                .header("Accept", "application/json")
+                .apply {
+                    if (credential is GatewayCredential.StaticToken) {
+                        header("X-Hermes-Session-Token", credential.value.trim())
+                    }
+                }
+                .get()
+                .build()
+            val root = executeJson(request, "Hermes conversation history") as? JsonObject
+                ?: throw InvalidDashboardResponse("Hermes returned no conversation history.")
+            val rows = root["messages"] as? JsonArray
+                ?: throw InvalidDashboardResponse("Hermes returned no conversation history.")
+            decodeGatewayMessages(rows)
         }
     }
 

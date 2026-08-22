@@ -7,6 +7,7 @@ import dev.hazydreams.hermesceleste.network.AuthenticationMaterial
 import dev.hazydreams.hermesceleste.network.AuthenticationRejected
 import dev.hazydreams.hermesceleste.network.AuthProvider
 import dev.hazydreams.hermesceleste.network.ConversationMessage
+import dev.hazydreams.hermesceleste.network.ConversationStep
 import dev.hazydreams.hermesceleste.network.ConversationStepKind
 import dev.hazydreams.hermesceleste.network.DashboardProbeResult
 import dev.hazydreams.hermesceleste.network.DashboardProfile
@@ -184,7 +185,7 @@ class CelesteViewModelTest {
     }
 
     @Test
-    fun assistantInterimSeparatesReasoningBlocksWithinTheTurn() = runTest {
+    fun assistantInterimEndsTheCurrentStepsCapsuleAndKeepsItsMessageVisible() = runTest {
         val gateway = FakeGateway()
         val viewModel = openConversation(gateway)
 
@@ -197,12 +198,16 @@ class CelesteViewModelTest {
         gateway.emit("message.complete", """{"content":"Finished.","status":"complete"}""")
         advanceUntilIdle()
 
-        val reasoning = viewModel.state.value.messages
-            .single { it.role == "steps" }
-            .steps
-            .filter { it.kind == ConversationStepKind.Reasoning }
-        assertEquals(listOf("First thought.", "Second thought."), reasoning.map { it.detail })
-        assertTrue(reasoning.none { it.pending })
+        val messages = viewModel.state.value.messages
+        assertEquals(
+            listOf("user", "steps", "assistant", "steps", "assistant"),
+            messages.map { it.role },
+        )
+        assertEquals("I checked the first part.", messages[2].text)
+        assertTrue(messages[2].interim)
+        assertEquals("First thought.", messages[1].steps.single().detail)
+        assertEquals("Second thought.", messages[3].steps.single().detail)
+        assertTrue(messages.filter { it.role == "steps" }.flatMap { it.steps }.none { it.pending })
         viewModel.controller.close()
     }
 
@@ -241,6 +246,53 @@ class CelesteViewModelTest {
         advanceUntilIdle()
 
         assertEquals(listOf("user", "assistant"), viewModel.state.value.messages.map { it.role })
+        viewModel.controller.close()
+    }
+
+    @Test
+    fun openingConversationUsesPersistedTranscriptReasoning() = runTest {
+        val gateway = FakeGateway().apply {
+            resumePayload = resumePayload(
+                messages = listOf(
+                    ConversationMessage(role = "user", text = "Inspect this", id = "resume-user"),
+                    ConversationMessage(role = "assistant", text = "Done", id = "resume-final"),
+                ),
+                running = false,
+            )
+        }
+        val dashboard = FakeDashboard(gateway).apply {
+            sessionMessages = listOf(
+                ConversationMessage(role = "user", text = "Inspect this", id = "stored-user"),
+                ConversationMessage(
+                    role = "steps",
+                    text = "",
+                    id = "stored-steps",
+                    steps = listOf(
+                        ConversationStep(
+                            id = "stored-reasoning",
+                            kind = ConversationStepKind.Reasoning,
+                            detail = "I should read the file first.",
+                        ),
+                    ),
+                ),
+                ConversationMessage(role = "assistant", text = "Done", id = "stored-final"),
+            )
+        }
+        val viewModel = CelesteViewModel(
+            dashboard = dashboard,
+            reconnectDelayMillis = { _, _ -> 0L },
+        )
+        viewModel.updateDashboardUrl("http://hermes.test:9119")
+        viewModel.findDashboard()
+        viewModel.loadSessions()
+        viewModel.openSession(dashboard.session)
+        advanceUntilIdle()
+
+        val messages = viewModel.state.value.messages
+        assertEquals(listOf("user", "steps", "assistant"), messages.map { it.role })
+        assertEquals("I should read the file first.", messages[1].steps.single().detail)
+        assertEquals(listOf(Triple("stored-42", "default", 500)), dashboard.sessionMessageRequests)
+        assertEquals(1, gateway.methods.count { it == "session.resume" })
         viewModel.controller.close()
     }
 
@@ -1192,6 +1244,8 @@ class CelesteViewModelTest {
         val searchResults = mutableMapOf<String, List<StoredSession>>()
         val searchGates = mutableMapOf<String, CompletableDeferred<Unit>>()
         val searchRequests = mutableListOf<Triple<String, String, Int>>()
+        val sessionMessageRequests = mutableListOf<Triple<String, String, Int>>()
+        var sessionMessages = emptyList<ConversationMessage>()
         val markReadRequests = mutableListOf<Pair<String, String>>()
         val pinRequests = mutableListOf<Triple<String, String, Boolean>>()
         val pinGates = mutableMapOf<Boolean, CompletableDeferred<Unit>>()
@@ -1266,6 +1320,17 @@ class CelesteViewModelTest {
                 withContext(NonCancellable) { searchGates[query]?.await() }
             }
             return searchResults[query].orEmpty()
+        }
+
+        override suspend fun loadSessionMessages(
+            baseUrl: String,
+            credential: GatewayCredential,
+            sessionId: String,
+            profile: String,
+            limit: Int,
+        ): List<ConversationMessage> {
+            sessionMessageRequests += Triple(sessionId, profile, limit)
+            return sessionMessages
         }
 
         override suspend fun markSessionRead(
