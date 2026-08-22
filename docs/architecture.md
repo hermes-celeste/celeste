@@ -36,7 +36,7 @@ The four turn states are intentionally user-facing projections:
 - `Synchronizing` — Celeste is establishing or reconciling authoritative state.
 - `Idle` — the active runtime can accept a prompt.
 - `Running` — Hermes owns an active turn.
-- `Reconnecting` — the draft remains local while Celeste restores the server relationship.
+- `Reconnecting` — the draft remains local and the stable composer stays visible while Celeste automatically restores the server relationship. Compose uses a warning-colored presence indicator for this recoverable state.
 
 Reasoning and tool events are reduced into chronological `steps` transcript rows for the current user turn. Adjacent reasoning deltas coalesce within the active segment, while tool starts and completions reconcile by stable Hermes tool ID. Interim assistant prose closes the current activity segment and appears in the transcript; later reasoning or tools begin a fresh **Thinking** row. Compose presents each row through the same separate **Steps** bottom sheet.
 
@@ -70,7 +70,7 @@ Provider cookies may rotate while Hermes refreshes a session. Celeste snapshots 
 6. Keep connection progress visible while opening a non-persisted draft runtime through the persistent gateway; publish the connected empty composer only after the runtime is ready. Resume durable history only when the user selects it from the drawer.
 7. Publish the draft into the catalog only after the first `prompt.submit` crosses Hermes' persistence boundary.
 8. Reduce gateway events into assistant messages, the current turn's chronological Steps projection, and turn state.
-9. On interruption, disconnect, or foreground recovery, ask the server for authoritative state before continuing.
+9. On interruption, disconnect, or foreground recovery, keep the local draft, reconnect automatically, and ask the server for authoritative state before continuing. Recoverable transport details stay inside the connection layer; definitive authentication rejection returns the user to connection setup.
 
 The dashboard remains the source of truth throughout this flow. Celeste holds a screen projection and unsent draft, not a competing history database.
 

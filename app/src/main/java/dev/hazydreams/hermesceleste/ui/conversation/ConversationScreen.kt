@@ -81,6 +81,7 @@ import dev.hazydreams.hermesceleste.ui.CelesteSurfacePrimary
 import dev.hazydreams.hermesceleste.ui.CelesteSurfaceRaised
 import dev.hazydreams.hermesceleste.ui.CelesteTextMuted
 import dev.hazydreams.hermesceleste.ui.CelesteTextPrimary
+import dev.hazydreams.hermesceleste.ui.CelesteWarning
 import dev.hazydreams.hermesceleste.ui.StatusMessage
 import kotlinx.coroutines.launch
 
@@ -97,7 +98,6 @@ internal fun ConversationScreen(
     onDraftChange: (String) -> Unit,
     onSend: () -> Unit,
     onInterrupt: () -> Unit,
-    onReconnect: () -> Unit,
     onOpenDrawer: () -> Unit,
     composerFocusRequest: Long? = null,
     onComposerFocusRequestHandled: (Long) -> Unit = {},
@@ -235,7 +235,6 @@ internal fun ConversationScreen(
                     focusManager.clearFocus()
                 },
                 onInterrupt = onInterrupt,
-                onReconnect = onReconnect,
                 focusRequest = composerFocusRequest,
                 onFocusRequestHandled = onComposerFocusRequestHandled,
             )
@@ -376,7 +375,6 @@ private fun ConversationComposer(
     onDraftChange: (String) -> Unit,
     onSend: () -> Unit,
     onInterrupt: () -> Unit,
-    onReconnect: () -> Unit,
     focusRequest: Long?,
     onFocusRequestHandled: (Long) -> Unit,
 ) {
@@ -422,7 +420,7 @@ private fun ConversationComposer(
                                 TurnState.Idle -> "Message Hermes…"
                                 TurnState.Running -> "Message Hermes…"
                                 TurnState.Synchronizing -> "Synchronizing…"
-                                TurnState.Reconnecting -> "Keep drafting while Hermes reconnects…"
+                                TurnState.Reconnecting -> "Message Hermes…"
                             },
                             color = CelesteTextMuted,
                             maxLines = 1,
@@ -464,19 +462,6 @@ private fun ConversationComposer(
                         Text("Stop", fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
                     }
 
-                    TurnState.Reconnecting -> OutlinedButton(
-                        onClick = onReconnect,
-                        modifier = Modifier
-                            .width(58.dp)
-                            .height(46.dp),
-                        shape = RoundedCornerShape(23.dp),
-                        border = BorderStroke(1.dp, CelesteAccent),
-                        colors = ButtonDefaults.outlinedButtonColors(contentColor = CelesteAccent),
-                        contentPadding = PaddingValues(0.dp),
-                    ) {
-                        Text("Retry", fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
-                    }
-
                     else -> Button(
                         onClick = onSend,
                         enabled = draft.isNotBlank() && turnState == TurnState.Idle,
@@ -514,7 +499,7 @@ private fun turnStateColor(turnState: TurnState): Color = when (turnState) {
     TurnState.Idle -> CelesteAccent
     TurnState.Running -> CelesteAccent
     TurnState.Synchronizing -> CelesteAccent
-    TurnState.Reconnecting -> CelesteError
+    TurnState.Reconnecting -> CelesteWarning
 }
 
 private val NavigationDrawerIcon: ImageVector by lazy {

@@ -968,7 +968,7 @@ internal class CelesteController(
                 if (gateway !== newGateway) return@onFailure
                 mutableState.value = mutableState.value.copy(
                     loadingMessage = null,
-                    errorMessage = error.message ?: "Could not open that Hermes conversation.",
+                    errorMessage = null,
                     turnState = TurnState.Reconnecting,
                 )
                 scheduleReconnect(wasRunning = false)
@@ -1348,7 +1348,7 @@ internal class CelesteController(
                 activeGateway.close()
                 mutableState.value = mutableState.value.copy(
                     turnState = TurnState.Reconnecting,
-                    errorMessage = health.exceptionOrNull()?.message ?: "Reconnecting to Hermes…",
+                    errorMessage = null,
                 )
                 scheduleReconnect(wasRunning = wasRunning, immediate = true)
             }
@@ -1377,7 +1377,7 @@ internal class CelesteController(
                     val wasRunning = mutableState.value.turnState == TurnState.Running
                     mutableState.value = mutableState.value.copy(
                         turnState = TurnState.Reconnecting,
-                        errorMessage = connectionState.reason,
+                        errorMessage = null,
                     )
                     scheduleReconnect(wasRunning)
                 }
@@ -1748,7 +1748,11 @@ internal class CelesteController(
         val activeGateway = gateway ?: return
         val storedSessionId = currentStoredSessionId ?: mutableState.value.activeSummary?.id ?: return
         if (reconnectJob?.isActive == true) return
-        mutableState.value = mutableState.value.copy(turnState = TurnState.Reconnecting)
+        mutableState.value = mutableState.value.copy(
+            turnState = TurnState.Reconnecting,
+            loadingMessage = null,
+            errorMessage = null,
+        )
         reconnectJob = controllerScope.launch {
             while (gateway === activeGateway) {
                 val delayMillis = if (immediate && reconnectAttempts == 0) {
@@ -1771,6 +1775,7 @@ internal class CelesteController(
                     return@launch
                 }
                 val failure = result.exceptionOrNull()
+                if (failure is CancellationException) throw failure
                 if (failure is AuthenticationRejected) {
                     val descriptor = currentDescriptor
                     reconnectJob = null
@@ -1781,7 +1786,7 @@ internal class CelesteController(
                 reconnectAttempts += 1
                 mutableState.value = mutableState.value.copy(
                     turnState = TurnState.Reconnecting,
-                    errorMessage = failure?.message ?: "Reconnecting to Hermes…",
+                    errorMessage = null,
                 )
             }
             reconnectJob = null

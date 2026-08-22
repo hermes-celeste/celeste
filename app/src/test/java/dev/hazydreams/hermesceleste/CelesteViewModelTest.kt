@@ -355,6 +355,45 @@ class CelesteViewModelTest {
     }
 
     @Test
+    fun transientReconnectKeepsTheDraftAndTransportDetailsOutOfTheConversation() = runTest {
+        val gateway = FakeGateway()
+        val dashboard = FakeDashboard(gateway)
+        val viewModel = CelesteViewModel(
+            dashboard = dashboard,
+            reconnectDelayMillis = { _, _ -> 1_000L },
+        )
+        viewModel.updateDashboardUrl("http://hermes.test:9119")
+        viewModel.findDashboard()
+        viewModel.loadSessions()
+        viewModel.openSession(dashboard.session)
+        advanceUntilIdle()
+        viewModel.updateDraft("Keep this draft")
+        try {
+            gateway.connectFailure = IOException("socket exploded")
+            gateway.disconnect("StandaloneCoroutine was cancelled")
+
+            assertEquals(TurnState.Reconnecting, viewModel.state.value.turnState)
+            assertEquals("Keep this draft", viewModel.state.value.draft)
+            assertNull(viewModel.state.value.errorMessage)
+
+            mainDispatcher.scheduler.advanceTimeBy(1_000L)
+            mainDispatcher.scheduler.runCurrent()
+            assertEquals(TurnState.Reconnecting, viewModel.state.value.turnState)
+            assertNull(viewModel.state.value.errorMessage)
+
+            gateway.connectFailure = null
+            mainDispatcher.scheduler.advanceTimeBy(1_000L)
+            mainDispatcher.scheduler.runCurrent()
+
+            assertEquals(TurnState.Idle, viewModel.state.value.turnState)
+            assertEquals("Keep this draft", viewModel.state.value.draft)
+            assertNull(viewModel.state.value.errorMessage)
+        } finally {
+            viewModel.controller.close()
+        }
+    }
+
+    @Test
     fun revokedProviderSessionStopsReconnectAndDeletesReusableAuthentication() = runTest {
         val gateway = FakeGateway()
         val dashboard = FakeDashboard(gateway, authRequired = true)
