@@ -581,6 +581,39 @@ fun ReconnectingPreviewScreenshot() {
 }
 
 @PreviewTest
+@Preview(name = "19 · Summarizing conversation", widthDp = 390, heightDp = 844, showBackground = true)
+@Composable
+fun CompactionStatusPreviewScreenshot() {
+    HermesCelesteTheme {
+        PreviewConversation(
+            messages = listOf(
+                ConversationMessage(
+                    role = "user",
+                    text = "Keep going after the context is summarized.",
+                    id = "preview-compaction-user",
+                ),
+                ConversationMessage(
+                    role = "steps",
+                    text = "",
+                    id = "preview-compaction-steps",
+                    pending = false,
+                    steps = listOf(
+                        ConversationStep(
+                            id = "preview-compaction-reasoning",
+                            kind = ConversationStepKind.Reasoning,
+                            detail = "Reviewing the conversation so far.",
+                            pending = false,
+                        ),
+                    ),
+                ),
+            ),
+            turnState = TurnState.Running,
+            isCompacting = true,
+        )
+    }
+}
+
+@PreviewTest
 @Preview(name = "18 · Resume exhausted", widthDp = 390, heightDp = 844, showBackground = true)
 @Composable
 fun ResumeExhaustedPreviewScreenshot() {
@@ -629,6 +662,7 @@ private fun PreviewConversation(
     streamingText: String = "",
     draft: String = "",
     turnState: TurnState,
+    isCompacting: Boolean = false,
     resumeExhausted: Boolean = false,
     errorMessage: String? = null,
     initiallyFollowLatest: Boolean = true,
@@ -641,6 +675,7 @@ private fun PreviewConversation(
         streamingText = streamingText,
         draft = draft,
         turnState = turnState,
+        isCompacting = isCompacting,
         resumeExhausted = resumeExhausted,
         loadingMessage = null,
         errorMessage = errorMessage,

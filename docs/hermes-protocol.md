@@ -84,10 +84,13 @@ The current reducer recognizes:
 - `message.start`, `message.delta`, `message.interim`, `message.complete`, `message.error`;
 - `reasoning.delta` and `reasoning.available`;
 - `message.interrupted`, `session.interrupted`, `session.busy`, `session.info`;
+- `status.update` with structured `compacting` and `compacted` kinds;
 - `tool.start` and `tool.complete`;
 - top-level `error`.
 
 `reasoning.delta` and `reasoning.available` provide display reasoning for the current activity segment. Interim assistant messages appear in the transcript and close that segment; later reasoning or tools begin a fresh Steps segment. `thinking.delta` carries provider/status activity for the running turn. Tool events correlate by `tool_id` (or the current equivalent tool-call ID alias), so simultaneous tools with the same name retain their own start order and completion detail.
+
+`status.update(kind = "compacting")` begins the active conversation's summarization status. `status.update(kind = "compacted")`, turn completion, or the first subsequent message, reasoning, thinking, tool, or MOA activity event clears it. Celeste uses fixed presentation copy for this structured lifecycle while other status kinds keep their own projections.
 
 Celeste loads persisted display history from `GET /api/sessions/{session_id}/messages` with the owning profile, `order=latest`, and `include_compacted=true`. Assistant rows may expose reasoning through `reasoning`, `reasoning_content`, or `reasoning_details`; their tool-call metadata correlates with following `role: "tool"` rows. Celeste reconstructs those rows into settled chronological Steps segments around assistant prose while `session.resume` binds the live runtime and current turn state. A connected resume receives the initial request plus four automatic retries; REST history remains visible throughout, and a user-initiated Retry begins a fresh bounded cycle.
 

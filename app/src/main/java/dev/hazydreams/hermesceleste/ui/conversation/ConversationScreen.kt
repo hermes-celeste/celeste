@@ -63,6 +63,8 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.graphics.vector.path
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.font.FontWeight
@@ -94,6 +96,7 @@ internal fun ConversationScreen(
     streamingText: String,
     draft: String,
     turnState: TurnState,
+    isCompacting: Boolean,
     resumeExhausted: Boolean,
     loadingMessage: String?,
     errorMessage: String?,
@@ -121,6 +124,7 @@ internal fun ConversationScreen(
     val transcriptKeys = remember(messages) { transcriptItemKeys(messages) }
     val visibleMessageCount = messages.size +
         (if (streamingText.isNotBlank()) 1 else 0) +
+        (if (isCompacting) 1 else 0) +
         (if (resumeExhausted) 1 else 0)
     val jumpToLatestVisible = remember(listState, visibleMessageCount) {
         derivedStateOf {
@@ -206,6 +210,22 @@ internal fun ConversationScreen(
                                 ConversationMessage(role = "assistant", text = streamingText, pending = true),
                                 streaming = true,
                             )
+                        }
+                    }
+                    if (isCompacting) {
+                        item(key = "compaction-status:$conversationKey") {
+                            Box(
+                                modifier = Modifier.semantics {
+                                    liveRegion = LiveRegionMode.Polite
+                                    stateDescription = "Summarizing conversation"
+                                },
+                            ) {
+                                StatusMessage(
+                                    message = "Summarizing conversation…",
+                                    color = CelesteAccent,
+                                    showSpinner = true,
+                                )
+                            }
                         }
                     }
                     if (resumeExhausted) {

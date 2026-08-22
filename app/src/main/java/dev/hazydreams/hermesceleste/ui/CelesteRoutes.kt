@@ -119,6 +119,7 @@ internal fun CelesteRoutes(
                         streamingText = ui.streamingText,
                         draft = ui.draft,
                         turnState = ui.turnState,
+                        isCompacting = ui.isCompacting,
                         resumeExhausted = ui.resumeExhausted,
                         loadingMessage = ui.loadingMessage,
                         errorMessage = ui.errorMessage,

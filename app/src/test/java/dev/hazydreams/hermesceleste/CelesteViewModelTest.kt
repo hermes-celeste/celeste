@@ -237,6 +237,43 @@ class CelesteViewModelTest {
     }
 
     @Test
+    fun compactionStatusFollowsStructuredLifecycleAndResumedOutput() = runTest {
+        val gateway = FakeGateway()
+        val viewModel = openConversation(gateway)
+
+        viewModel.updateDraft("Continue after summarizing")
+        viewModel.sendMessage()
+        gateway.emit("message.start")
+        gateway.emit(
+            "status.update",
+            """{"kind":"compacting","text":"server wording is not presentation copy"}""",
+        )
+        runCurrent()
+
+        assertTrue(viewModel.state.value.isCompacting)
+
+        gateway.emit("status.update", """{"kind":"process","text":"unrelated background work"}""")
+        runCurrent()
+        assertTrue(viewModel.state.value.isCompacting)
+
+        gateway.emit("status.update", """{"kind":"compacted","text":"complete"}""")
+        runCurrent()
+        assertFalse(viewModel.state.value.isCompacting)
+
+        gateway.emit("status.update", """{"kind":"compacting"}""")
+        gateway.emit("thinking.delta", """{"text":"Waiting for provider"}""")
+        runCurrent()
+        assertFalse(viewModel.state.value.isCompacting)
+        assertEquals(listOf("user"), viewModel.state.value.messages.map { it.role })
+
+        gateway.emit("status.update", """{"kind":"compacting"}""")
+        gateway.emit("message.complete", """{"content":"Ready","status":"complete"}""")
+        advanceUntilIdle()
+        assertFalse(viewModel.state.value.isCompacting)
+        viewModel.controller.close()
+    }
+
+    @Test
     fun thinkingDeltaDoesNotCreateSteps() = runTest {
         val gateway = FakeGateway()
         val viewModel = openConversation(gateway)
