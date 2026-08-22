@@ -23,7 +23,6 @@ import dev.hazydreams.hermesceleste.network.InvalidDashboardResponse
 import dev.hazydreams.hermesceleste.network.SessionCatalogPage
 import dev.hazydreams.hermesceleste.network.StoredSession
 import dev.hazydreams.hermesceleste.network.TransportUnavailable
-import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -63,7 +62,7 @@ class CelesteViewModelAutoLoginTest {
     }
 
     @Test
-    fun coldLaunchRestoresIntoAnUnpublishedDraft() = runTest {
+    fun coldLaunchRestoresIntoALocalDraftWithoutCreatingASession() = runTest {
         val descriptor = SavedConnectionDescriptor(
             baseUrl = "https://hermes.example.net",
             authMode = SavedAuthMode.Open,
@@ -79,40 +78,32 @@ class CelesteViewModelAutoLoginTest {
         assertEquals(ConnectionPhase.Connected, state.connectionPhase)
         assertEquals("https://hermes.example.net", state.dashboardUrl)
         assertEquals(listOf("stored-1"), state.sessions?.map { it.id })
-        assertEquals("stored-draft-1", state.activeSummary?.id)
+        assertNull(state.activeSummary)
+        assertEquals(TurnState.Idle, state.turnState)
         assertEquals(1L, viewModel.composerFocusRequest.value)
         assertTrue(viewModel.completeComposerFocusRequest(1L))
         assertNull(viewModel.composerFocusRequest.value)
-        assertEquals(1, dashboard.createSessionCalls)
+        assertEquals(0, dashboard.createSessionCalls)
         assertEquals(1, dashboard.probeCalls)
     }
 
     @Test
-    fun coldLaunchDoesNotExposeConnectedContentBeforeTheDraftIsReady() = runTest {
+    fun coldLaunchPublishesTheLocalDraftAsSoonAsTheCatalogIsReady() = runTest {
         val descriptor = SavedConnectionDescriptor(
             baseUrl = "https://hermes.example.net",
             authMode = SavedAuthMode.Open,
             expectsSecret = false,
         )
         val store = InMemoryConnectionStore(StoredConnection(descriptor, null))
-        val draftGate = CompletableDeferred<Unit>()
-        val dashboard = AutoLoginDashboard(openProbe).apply {
-            createSessionGate = draftGate
-        }
+        val dashboard = AutoLoginDashboard(openProbe)
 
         val viewModel = CelesteViewModel(dashboard = dashboard, connectionStore = store)
-        runCurrent()
-
-        assertEquals(ConnectionPhase.Restoring, viewModel.state.value.connectionPhase)
-        assertNull(viewModel.state.value.sessions)
-        assertNull(viewModel.state.value.activeSummary)
-
-        draftGate.complete(Unit)
         advanceUntilIdle()
 
         assertEquals(ConnectionPhase.Connected, viewModel.state.value.connectionPhase)
         assertEquals(listOf("stored-1"), viewModel.state.value.sessions?.map { it.id })
-        assertEquals("stored-draft-1", viewModel.state.value.activeSummary?.id)
+        assertNull(viewModel.state.value.activeSummary)
+        assertEquals(0, dashboard.createSessionCalls)
     }
 
     @Test
@@ -138,7 +129,7 @@ class CelesteViewModelAutoLoginTest {
     }
 
     @Test
-    fun rejectedLandingDraftReturnsToAuthentication() = runTest {
+    fun rejectedFirstSendReturnsToAuthentication() = runTest {
         val store = InMemoryConnectionStore()
         val dashboard = AutoLoginDashboard(passwordProbe).apply {
             gatewayConnectFailure = AuthenticationRejected("Hermes rejected the saved session.")
@@ -152,6 +143,9 @@ class CelesteViewModelAutoLoginTest {
         viewModel.updateUsername("celeste")
         viewModel.updatePassword("synthetic-password")
         viewModel.loadSessions()
+        advanceUntilIdle()
+        viewModel.updateDraft("Start securely")
+        viewModel.sendMessage()
         advanceUntilIdle()
 
         assertEquals(ConnectionPhase.AuthenticationRequired, viewModel.state.value.connectionPhase)
@@ -329,8 +323,8 @@ class CelesteViewModelAutoLoginTest {
         assertEquals(ConnectionPhase.Connected, viewModel.state.value.connectionPhase)
         assertEquals("https://new-hermes.example.net", store.load()?.descriptor?.baseUrl)
         assertEquals(SavedAuthMode.Open, viewModel.state.value.savedAuthMode)
-        assertEquals("stored-draft-2", viewModel.state.value.activeSummary?.id)
-        assertEquals(2, dashboard.createSessionCalls)
+        assertNull(viewModel.state.value.activeSummary)
+        assertEquals(0, dashboard.createSessionCalls)
     }
 
     @Test
@@ -395,7 +389,6 @@ class CelesteViewModelAutoLoginTest {
         var logoutCalls = 0
         var clearAuthenticationCalls = 0
         var createSessionCalls = 0
-        var createSessionGate: CompletableDeferred<Unit>? = null
         var gatewayConnectFailure: Throwable? = null
         var onLogout: (suspend () -> Unit)? = null
 
@@ -520,7 +513,6 @@ class CelesteViewModelAutoLoginTest {
                 params: JsonObject,
                 timeoutMillis: Long,
             ): JsonElement = if (method == "session.create") {
-                createSessionGate?.await()
                 createSessionCalls += 1
                 buildJsonObject {
                     put("session_id", "runtime-draft-$createSessionCalls")

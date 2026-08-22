@@ -21,6 +21,7 @@ import dev.hazydreams.hermesceleste.network.GatewayConnection
 import dev.hazydreams.hermesceleste.network.GatewayConnectionState
 import dev.hazydreams.hermesceleste.network.GatewayCredential
 import dev.hazydreams.hermesceleste.network.GatewayEvent
+import dev.hazydreams.hermesceleste.network.GatewayRpcException
 import dev.hazydreams.hermesceleste.network.ResumedSession
 import dev.hazydreams.hermesceleste.network.SessionCatalogPage
 import dev.hazydreams.hermesceleste.network.StoredSession
@@ -38,7 +39,9 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -91,6 +94,7 @@ internal data class CelesteUiState(
     val streamingText: String = "",
     val draft: String = "",
     val turnState: TurnState = TurnState.Idle,
+    val resumeExhausted: Boolean = false,
     val loadingMessage: String? = null,
     val errorMessage: String? = null,
 )
@@ -938,6 +942,7 @@ internal class CelesteController(
             streamingText = "",
             draft = "",
             turnState = TurnState.Synchronizing,
+            resumeExhausted = false,
             loadingMessage = "Opening ${summary.title.ifBlank { "conversation" }}…",
             errorMessage = null,
             isLoadingMoreSessions = false,
@@ -957,8 +962,10 @@ internal class CelesteController(
         gateway = newGateway
         observeGateway(newGateway)
         controllerScope.launch {
+            var resumeAttempted = false
             runCatching {
                 newGateway.connect()
+                resumeAttempted = true
                 reconcile(newGateway, summary.id)
             }.onSuccess {
                 if (gateway !== newGateway) return@onSuccess
@@ -966,12 +973,16 @@ internal class CelesteController(
                 mutableState.value = mutableState.value.copy(loadingMessage = null)
             }.onFailure { error ->
                 if (gateway !== newGateway) return@onFailure
+                currentCoroutineContext().ensureActive()
                 mutableState.value = mutableState.value.copy(
                     loadingMessage = null,
-                    errorMessage = error.message ?: "Could not open that Hermes conversation.",
+                    errorMessage = null,
                     turnState = TurnState.Reconnecting,
                 )
-                scheduleReconnect(wasRunning = false)
+                scheduleReconnect(
+                    wasRunning = false,
+                    initialResumeFailures = if (resumeAttempted) 1 else 0,
+                )
             }
         }
     }
@@ -985,16 +996,14 @@ internal class CelesteController(
         connectionWarning: String?,
     ) {
         val snapshot = mutableState.value
-        val connection = snapshot.probe ?: return
-        val activeCredential = credential ?: return
         closeGateway()
         mutableState.value = snapshot.copy(
-            connectionPhase = ConnectionPhase.Restoring,
+            connectionPhase = ConnectionPhase.Connected,
             savedAuthMode = currentDescriptor?.authMode,
-            sessions = null,
-            sessionCatalogTotal = 0,
-            nextSessionOffset = 0,
-            hasMoreSessions = false,
+            sessions = sessionPage.sessions,
+            sessionCatalogTotal = sessionPage.total,
+            nextSessionOffset = sessionPage.nextOffset,
+            hasMoreSessions = sessionPage.hasMore,
             isLoadingMoreSessions = false,
             sessionPageError = null,
             sessionSearchQuery = "",
@@ -1009,29 +1018,10 @@ internal class CelesteController(
             draft = "",
             password = password,
             sessionToken = sessionToken,
-            turnState = TurnState.Synchronizing,
-            loadingMessage = "Connecting to Hermes…",
+            turnState = TurnState.Idle,
+            resumeExhausted = false,
+            loadingMessage = null,
             errorMessage = connectionWarning,
-        )
-        createDraftRuntime(
-            connection = connection,
-            activeCredential = activeCredential,
-            selectedProfile = selectedProfile,
-            onRuntimeReady = { summary ->
-                completeDraftRuntime(
-                    summary = summary,
-                    sessionPage = sessionPage,
-                    connectionWarning = connectionWarning,
-                )
-            },
-            onRuntimeFailure = { error ->
-                mutableState.value = mutableState.value.copy(
-                    connectionPhase = ConnectionPhase.RestoreFailed,
-                    turnState = TurnState.Reconnecting,
-                    loadingMessage = null,
-                    errorMessage = error.message ?: "Could not create a Hermes conversation.",
-                )
-            },
         )
     }
 
@@ -1039,37 +1029,17 @@ internal class CelesteController(
 
     private fun startUserConversation(clearDraft: Boolean) {
         val snapshot = mutableState.value
-        val connection = snapshot.probe ?: return
-        val activeCredential = credential ?: return
-        val selectedProfile = snapshot.selectedProfile
+        if (snapshot.probe == null || credential == null) return
         closeGateway()
         mutableState.value = snapshot.copy(
             activeSummary = null,
             messages = emptyList(),
             streamingText = "",
             draft = if (clearDraft) "" else snapshot.draft,
-            turnState = TurnState.Synchronizing,
-            loadingMessage = "Starting a new $selectedProfile conversation…",
+            turnState = TurnState.Idle,
+            resumeExhausted = false,
+            loadingMessage = null,
             errorMessage = null,
-        )
-        createDraftRuntime(
-            connection = connection,
-            activeCredential = activeCredential,
-            selectedProfile = selectedProfile,
-            onRuntimeReady = { summary ->
-                completeDraftRuntime(
-                    summary = summary,
-                    sessionPage = null,
-                    connectionWarning = null,
-                )
-            },
-            onRuntimeFailure = { error ->
-                mutableState.value = mutableState.value.copy(
-                    turnState = TurnState.Reconnecting,
-                    loadingMessage = null,
-                    errorMessage = error.message ?: "Could not create a Hermes conversation.",
-                )
-            },
         )
     }
 
@@ -1120,6 +1090,7 @@ internal class CelesteController(
                 reconnectAttempts = 0
             }.onFailure { error ->
                 if (gateway !== newGateway) return@onFailure
+                currentCoroutineContext().ensureActive()
                 closeGateway()
                 if (error is AuthenticationRejected) {
                     invalidateReusableAuthentication(
@@ -1149,6 +1120,7 @@ internal class CelesteController(
             sessionPageError = null,
             activeSummary = summary,
             turnState = TurnState.Idle,
+            resumeExhausted = false,
             loadingMessage = null,
             errorMessage = connectionWarning,
         )
@@ -1218,13 +1190,20 @@ internal class CelesteController(
     }
 
     fun sendMessage() {
-        val activeGateway = gateway ?: return
         val snapshot = mutableState.value
-        val runtimeId = currentRuntimeSessionId ?: return
-        val storedSessionId = currentStoredSessionId ?: return
-        val summary = snapshot.activeSummary ?: return
         val text = snapshot.draft.trim()
         if (text.isBlank() || snapshot.turnState != TurnState.Idle) return
+        val submittedDraft = snapshot.draft
+        val activeGateway = gateway
+        val runtimeId = currentRuntimeSessionId
+        val storedSessionId = currentStoredSessionId
+        val summary = snapshot.activeSummary
+        if (activeGateway == null || runtimeId == null || storedSessionId == null || summary == null) {
+            if (summary == null && activeGateway == null && runtimeId == null && storedSessionId == null) {
+                createDraftRuntimeForFirstPrompt(snapshot)
+            }
+            return
+        }
 
         val localId = nextLocalMessageId("local")
         val submittedSession = SubmittedSession(
@@ -1254,27 +1233,96 @@ internal class CelesteController(
         // uncertain delivery must reconcile by stored ID and must never create/resend.
         currentSessionCanResume = true
         controllerScope.launch {
-            runCatching { activeGateway.submitPrompt(runtimeId, text) }
-                .onSuccess {
-                    if (isActiveSession(submittedSession)) {
-                        mutableState.value = mutableState.value.copy(
-                            messages = mutableState.value.messages.map { message ->
-                                if (message.id == localId) message.copy(pending = false) else message
-                            },
-                        )
-                    }
-                    if (shouldPublish) publishSubmittedSession(submittedSession)
-                }
-                .onFailure { error ->
-                    if (!isActiveSession(submittedSession)) return@onFailure
+            val result = runCatching { activeGateway.submitPrompt(runtimeId, text) }
+            if (result.isSuccess) {
+                if (isActiveSession(submittedSession)) {
                     mutableState.value = mutableState.value.copy(
-                        errorMessage = error.message ?: "Hermes could not send that message.",
+                        messages = mutableState.value.messages.map { message ->
+                            if (message.id == localId) message.copy(pending = false) else message
+                        },
                     )
-                    if (gateway === activeGateway) {
-                        runCatching { reconcile(activeGateway, currentStoredSessionId ?: return@launch) }
-                    }
                 }
+                if (shouldPublish) publishSubmittedSession(submittedSession)
+            } else {
+                if (!isActiveSession(submittedSession)) return@launch
+                val failure = result.exceptionOrNull() ?: return@launch
+                if (failure is GatewayRpcException && activeGateway.state.value == GatewayConnectionState.Connected) {
+                    val current = mutableState.value
+                    mutableState.value = current.copy(
+                        messages = current.messages.filterNot { it.id == localId },
+                        draft = current.draft.ifBlank { submittedDraft },
+                        turnState = TurnState.Idle,
+                        errorMessage = failure.message ?: "Hermes could not send that message.",
+                    )
+                    return@launch
+                }
+                recoverGatewayRequestFailure(
+                    activeGateway = activeGateway,
+                    failure = failure,
+                    wasRunning = true,
+                    definitiveTurnState = TurnState.Idle,
+                    definitiveMessage = "Hermes could not send that message.",
+                )
+            }
         }
+    }
+
+    private fun createDraftRuntimeForFirstPrompt(snapshot: CelesteUiState) {
+        val connection = snapshot.probe ?: return
+        val activeCredential = credential ?: return
+        mutableState.value = snapshot.copy(
+            turnState = TurnState.Synchronizing,
+            loadingMessage = null,
+            errorMessage = null,
+        )
+        createDraftRuntime(
+            connection = connection,
+            activeCredential = activeCredential,
+            selectedProfile = snapshot.selectedProfile,
+            onRuntimeReady = { summary ->
+                completeDraftRuntime(
+                    summary = summary,
+                    sessionPage = null,
+                    connectionWarning = null,
+                )
+                sendMessage()
+            },
+            onRuntimeFailure = {
+                mutableState.value = mutableState.value.copy(
+                    turnState = TurnState.Idle,
+                    loadingMessage = null,
+                    errorMessage = "Could not start the conversation. Your message is ready to send again.",
+                )
+            },
+        )
+    }
+
+    private suspend fun recoverGatewayRequestFailure(
+        activeGateway: GatewayConnection,
+        failure: Throwable,
+        wasRunning: Boolean,
+        definitiveTurnState: TurnState,
+        definitiveMessage: String,
+    ) {
+        currentCoroutineContext().ensureActive()
+        if (gateway !== activeGateway) return
+        if (failure is AuthenticationRejected) {
+            invalidateReusableAuthentication(currentDescriptor, mutableState.value.probe)
+            return
+        }
+        if (failure is GatewayRpcException && activeGateway.state.value == GatewayConnectionState.Connected) {
+            mutableState.value = mutableState.value.copy(
+                turnState = definitiveTurnState,
+                errorMessage = failure.message ?: definitiveMessage,
+            )
+            return
+        }
+        mutableState.value = mutableState.value.copy(
+            turnState = TurnState.Reconnecting,
+            errorMessage = null,
+        )
+        activeGateway.close()
+        scheduleReconnect(wasRunning = wasRunning, immediate = true)
     }
 
     fun interrupt() {
@@ -1286,12 +1334,17 @@ internal class CelesteController(
             errorMessage = null,
         )
         controllerScope.launch {
-            runCatching {
+            val result = runCatching {
                 activeGateway.interruptSession(runtimeId)
                 reconcile(activeGateway, currentStoredSessionId ?: return@launch)
-            }.onFailure { error ->
-                mutableState.value = mutableState.value.copy(
-                    errorMessage = error.message ?: "Hermes could not stop that turn.",
+            }
+            if (result.isFailure) {
+                recoverGatewayRequestFailure(
+                    activeGateway = activeGateway,
+                    failure = result.exceptionOrNull() ?: return@launch,
+                    wasRunning = true,
+                    definitiveTurnState = TurnState.Running,
+                    definitiveMessage = "Hermes could not stop that turn.",
                 )
             }
         }
@@ -1303,10 +1356,17 @@ internal class CelesteController(
             return
         }
         if (gateway == null) return
+        val wasRunning = mutableState.value.turnState == TurnState.Running
         reconnectJob?.cancel()
         reconnectJob = null
         reconnectAttempts = 0
-        scheduleReconnect(wasRunning = mutableState.value.turnState == TurnState.Running, immediate = true)
+        mutableState.value = mutableState.value.copy(
+            turnState = TurnState.Reconnecting,
+            resumeExhausted = false,
+            loadingMessage = null,
+            errorMessage = null,
+        )
+        scheduleReconnect(wasRunning = wasRunning, immediate = true)
     }
 
     fun onBackground() {
@@ -1329,28 +1389,38 @@ internal class CelesteController(
     fun onForeground() {
         val activeGateway = gateway ?: return
         val storedSessionId = currentStoredSessionId ?: return
+        if (mutableState.value.resumeExhausted) return
         if (foregroundCheckJob?.isActive == true || reconciling) return
         if (activeGateway.state.value != GatewayConnectionState.Connected) {
             reconnectNow()
             return
         }
         foregroundCheckJob = controllerScope.launch {
+            var resumeAttempted = false
             val health = runCatching {
                 activeGateway.request(
                     method = "session.list",
                     params = buildJsonObject { put("limit", 1) },
                     timeoutMillis = 8_000,
                 )
-                if (currentSessionCanResume) reconcile(activeGateway, storedSessionId)
+                if (currentSessionCanResume) {
+                    resumeAttempted = true
+                    reconcile(activeGateway, storedSessionId)
+                }
             }
             if (health.isFailure && gateway === activeGateway) {
+                currentCoroutineContext().ensureActive()
                 val wasRunning = mutableState.value.turnState == TurnState.Running
                 activeGateway.close()
                 mutableState.value = mutableState.value.copy(
                     turnState = TurnState.Reconnecting,
-                    errorMessage = health.exceptionOrNull()?.message ?: "Reconnecting to Hermes…",
+                    errorMessage = null,
                 )
-                scheduleReconnect(wasRunning = wasRunning, immediate = true)
+                scheduleReconnect(
+                    wasRunning = wasRunning,
+                    immediate = true,
+                    initialResumeFailures = if (resumeAttempted) 1 else 0,
+                )
             }
             foregroundCheckJob = null
         }
@@ -1377,7 +1447,7 @@ internal class CelesteController(
                     val wasRunning = mutableState.value.turnState == TurnState.Running
                     mutableState.value = mutableState.value.copy(
                         turnState = TurnState.Reconnecting,
-                        errorMessage = connectionState.reason,
+                        errorMessage = null,
                     )
                     scheduleReconnect(wasRunning)
                 }
@@ -1393,7 +1463,7 @@ internal class CelesteController(
             val connection = snapshot.probe
             val activeCredential = credential
             val profile = snapshot.activeSummary?.profile ?: snapshot.selectedProfile
-            val (resumed, persistedMessages) = coroutineScope {
+            val (resumedResult, persistedMessages) = coroutineScope {
                 val persisted = if (connection != null && activeCredential != null && profile.isNotBlank()) {
                     async {
                         try {
@@ -1412,10 +1482,19 @@ internal class CelesteController(
                 } else {
                     null
                 }
-                val runtime = activeGateway.resumeStoredSession(storedSessionId, clientSource)
+                val runtime = runCatching {
+                    activeGateway.resumeStoredSession(storedSessionId, clientSource)
+                }
                 runtime to persisted?.await().orEmpty()
             }
             if (gateway !== activeGateway) return
+            if (resumedResult.isFailure && persistedMessages.isNotEmpty()) {
+                mutableState.value = mutableState.value.copy(
+                    messages = persistedMessages,
+                    streamingText = "",
+                )
+            }
+            val resumed = resumedResult.getOrThrow()
             applyResumedSession(
                 resumed.copy(
                     messages = persistedMessages.ifEmpty { resumed.messages },
@@ -1448,6 +1527,7 @@ internal class CelesteController(
             } else {
                 TurnState.Idle
             },
+            resumeExhausted = false,
             errorMessage = null,
         )
         publishCurrentSession()
@@ -1731,6 +1811,7 @@ internal class CelesteController(
                     if (session.id == previousStoredId) updatedSummary else session
                 },
                 turnState = TurnState.Idle,
+                resumeExhausted = false,
                 errorMessage = null,
             )
             val events = bufferedEvents.toList()
@@ -1744,12 +1825,23 @@ internal class CelesteController(
         }
     }
 
-    private fun scheduleReconnect(wasRunning: Boolean, immediate: Boolean = false) {
+    private fun scheduleReconnect(
+        wasRunning: Boolean,
+        immediate: Boolean = false,
+        initialResumeFailures: Int = 0,
+    ) {
         val activeGateway = gateway ?: return
         val storedSessionId = currentStoredSessionId ?: mutableState.value.activeSummary?.id ?: return
+        if (mutableState.value.resumeExhausted) return
         if (reconnectJob?.isActive == true) return
-        mutableState.value = mutableState.value.copy(turnState = TurnState.Reconnecting)
+        mutableState.value = mutableState.value.copy(
+            turnState = TurnState.Reconnecting,
+            resumeExhausted = false,
+            loadingMessage = null,
+            errorMessage = null,
+        )
         reconnectJob = controllerScope.launch {
+            var resumeFailures = initialResumeFailures
             while (gateway === activeGateway) {
                 val delayMillis = if (immediate && reconnectAttempts == 0) {
                     0L
@@ -1757,8 +1849,10 @@ internal class CelesteController(
                     reconnectDelayMillis(reconnectAttempts, wasRunning)
                 }
                 if (delayMillis > 0) delay(delayMillis)
+                var resumeAttempted = false
                 val result = runCatching {
                     activeGateway.connect()
+                    resumeAttempted = true
                     if (currentSessionCanResume) {
                         reconcile(activeGateway, storedSessionId)
                     } else {
@@ -1771,6 +1865,7 @@ internal class CelesteController(
                     return@launch
                 }
                 val failure = result.exceptionOrNull()
+                currentCoroutineContext().ensureActive()
                 if (failure is AuthenticationRejected) {
                     val descriptor = currentDescriptor
                     reconnectJob = null
@@ -1778,10 +1873,24 @@ internal class CelesteController(
                     invalidateReusableAuthentication(descriptor)
                     return@launch
                 }
+                if (resumeAttempted) {
+                    resumeFailures += 1
+                    if (resumeFailures > MAX_RESUME_RETRIES) {
+                        reconnectJob = null
+                        mutableState.value = mutableState.value.copy(
+                            turnState = TurnState.Reconnecting,
+                            resumeExhausted = true,
+                            loadingMessage = null,
+                            errorMessage = null,
+                        )
+                        return@launch
+                    }
+                }
                 reconnectAttempts += 1
                 mutableState.value = mutableState.value.copy(
                     turnState = TurnState.Reconnecting,
-                    errorMessage = failure?.message ?: "Reconnecting to Hermes…",
+                    resumeExhausted = false,
+                    errorMessage = null,
                 )
             }
             reconnectJob = null
@@ -1835,6 +1944,7 @@ internal class CelesteController(
         private const val SESSION_SEARCH_LIMIT = 20
         private const val SESSION_SEARCH_DEBOUNCE_MILLIS = 200L
         private const val MAX_SESSION_ACTION_ERROR_LENGTH = 160
+        private const val MAX_RESUME_RETRIES = 4
 
         internal fun unpersistedInflightText(
             inflight: String,

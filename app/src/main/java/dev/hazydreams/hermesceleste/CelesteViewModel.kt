@@ -85,8 +85,6 @@ internal class CelesteViewModel(
 
     fun interrupt() = controller.interrupt()
 
-    fun reconnectNow() = controller.reconnectNow()
-
     fun onBackground() = controller.onBackground()
 
     fun onForeground() = controller.onForeground()

@@ -52,6 +52,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
@@ -81,6 +82,7 @@ import dev.hazydreams.hermesceleste.ui.CelesteSurfacePrimary
 import dev.hazydreams.hermesceleste.ui.CelesteSurfaceRaised
 import dev.hazydreams.hermesceleste.ui.CelesteTextMuted
 import dev.hazydreams.hermesceleste.ui.CelesteTextPrimary
+import dev.hazydreams.hermesceleste.ui.CelesteWarning
 import dev.hazydreams.hermesceleste.ui.StatusMessage
 import kotlinx.coroutines.launch
 
@@ -92,12 +94,13 @@ internal fun ConversationScreen(
     streamingText: String,
     draft: String,
     turnState: TurnState,
+    resumeExhausted: Boolean,
     loadingMessage: String?,
     errorMessage: String?,
     onDraftChange: (String) -> Unit,
     onSend: () -> Unit,
     onInterrupt: () -> Unit,
-    onReconnect: () -> Unit,
+    onRetryResume: () -> Unit,
     onOpenDrawer: () -> Unit,
     composerFocusRequest: Long? = null,
     onComposerFocusRequestHandled: (Long) -> Unit = {},
@@ -116,7 +119,9 @@ internal fun ConversationScreen(
     }
     val focusManager = LocalFocusManager.current
     val transcriptKeys = remember(messages) { transcriptItemKeys(messages) }
-    val visibleMessageCount = messages.size + if (streamingText.isNotBlank()) 1 else 0
+    val visibleMessageCount = messages.size +
+        (if (streamingText.isNotBlank()) 1 else 0) +
+        (if (resumeExhausted) 1 else 0)
     val jumpToLatestVisible = remember(listState, visibleMessageCount) {
         derivedStateOf {
             shouldShowJumpToLatest(
@@ -203,6 +208,11 @@ internal fun ConversationScreen(
                             )
                         }
                     }
+                    if (resumeExhausted) {
+                        item(key = "resume-exhausted:$conversationKey") {
+                            ResumeExhaustedCard(onRetry = onRetryResume)
+                        }
+                    }
                 }
             }
 
@@ -235,7 +245,6 @@ internal fun ConversationScreen(
                     focusManager.clearFocus()
                 },
                 onInterrupt = onInterrupt,
-                onReconnect = onReconnect,
                 focusRequest = composerFocusRequest,
                 onFocusRequestHandled = onComposerFocusRequestHandled,
             )
@@ -247,6 +256,46 @@ internal fun ConversationScreen(
             message = message,
             onDismiss = { openedStepsMessageId = null },
         )
+    }
+}
+
+@Composable
+private fun ResumeExhaustedCard(
+    onRetry: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Column(
+        modifier = modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(24.dp))
+            .background(CelesteSurfaceRaised)
+            .padding(22.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        Text(
+            text = "Couldn’t load this conversation",
+            color = CelesteTextPrimary,
+            style = MaterialTheme.typography.titleMedium,
+            fontWeight = FontWeight.SemiBold,
+        )
+        Text(
+            text = "Hermes couldn’t restore this conversation after several attempts. Check the connection, then try again.",
+            color = CelesteTextMuted,
+            style = MaterialTheme.typography.bodyMedium,
+        )
+        Button(
+            onClick = onRetry,
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(46.dp),
+            shape = RoundedCornerShape(23.dp),
+            colors = ButtonDefaults.buttonColors(
+                containerColor = CelesteAccent,
+                contentColor = CelesteAccentContent,
+            ),
+        ) {
+            Text("Retry", fontWeight = FontWeight.SemiBold)
+        }
     }
 }
 
@@ -376,7 +425,6 @@ private fun ConversationComposer(
     onDraftChange: (String) -> Unit,
     onSend: () -> Unit,
     onInterrupt: () -> Unit,
-    onReconnect: () -> Unit,
     focusRequest: Long?,
     onFocusRequestHandled: (Long) -> Unit,
 ) {
@@ -422,7 +470,7 @@ private fun ConversationComposer(
                                 TurnState.Idle -> "Message Hermes…"
                                 TurnState.Running -> "Message Hermes…"
                                 TurnState.Synchronizing -> "Synchronizing…"
-                                TurnState.Reconnecting -> "Keep drafting while Hermes reconnects…"
+                                TurnState.Reconnecting -> "Message Hermes…"
                             },
                             color = CelesteTextMuted,
                             maxLines = 1,
@@ -464,19 +512,6 @@ private fun ConversationComposer(
                         Text("Stop", fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
                     }
 
-                    TurnState.Reconnecting -> OutlinedButton(
-                        onClick = onReconnect,
-                        modifier = Modifier
-                            .width(58.dp)
-                            .height(46.dp),
-                        shape = RoundedCornerShape(23.dp),
-                        border = BorderStroke(1.dp, CelesteAccent),
-                        colors = ButtonDefaults.outlinedButtonColors(contentColor = CelesteAccent),
-                        contentPadding = PaddingValues(0.dp),
-                    ) {
-                        Text("Retry", fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
-                    }
-
                     else -> Button(
                         onClick = onSend,
                         enabled = draft.isNotBlank() && turnState == TurnState.Idle,
@@ -514,7 +549,7 @@ private fun turnStateColor(turnState: TurnState): Color = when (turnState) {
     TurnState.Idle -> CelesteAccent
     TurnState.Running -> CelesteAccent
     TurnState.Synchronizing -> CelesteAccent
-    TurnState.Reconnecting -> CelesteError
+    TurnState.Reconnecting -> CelesteWarning
 }
 
 private val NavigationDrawerIcon: ImageVector by lazy {
