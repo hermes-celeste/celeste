@@ -580,8 +580,12 @@ class DashboardClientTest {
         val canonical = decodeGatewayMessages(Json.parseToJsonElement(transcript).jsonArray)
 
         assertEquals(canonical, disposable.messages)
-        assertEquals(listOf("row-41", "resume-1", "resume-2", "resume-3", "final"), disposable.messages.map { it.id })
-        assertEquals(listOf(null, null, "terminal", "terminal", null), disposable.messages.map { it.toolName })
+        assertEquals(
+            listOf("row-41", "resume-1", "steps:resume-2", "final"),
+            disposable.messages.map { it.id },
+        )
+        val steps = disposable.messages.single { it.role == "steps" }.steps
+        assertEquals(listOf("terminal", "terminal"), steps.map { it.toolName })
     }
 
     @Test

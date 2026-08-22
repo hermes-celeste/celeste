@@ -105,6 +105,10 @@ internal fun ConversationScreen(
     var followLatest by remember(conversationKey, initiallyFollowLatest) {
         mutableStateOf(initiallyFollowLatest)
     }
+    var openedStepsMessageId by remember(conversationKey) { mutableStateOf<String?>(null) }
+    val openedStepsMessage = openedStepsMessageId?.let { id ->
+        messages.firstOrNull { message -> message.id == id && message.role == "steps" }
+    }
     val focusManager = LocalFocusManager.current
     val transcriptKeys = remember(messages) { transcriptItemKeys(messages) }
     val visibleMessageCount = messages.size + if (streamingText.isNotBlank()) 1 else 0
@@ -181,7 +185,10 @@ internal fun ConversationScreen(
                         items = messages,
                         key = { index, _ -> transcriptKeys[index] },
                     ) { _, message ->
-                        MessageBubble(message)
+                        MessageBubble(
+                            message = message,
+                            onOpenSteps = { openedStepsMessageId = message.id },
+                        )
                     }
                     if (streamingText.isNotBlank()) {
                         item(key = streamingTranscriptKey(conversationKey)) {
@@ -226,6 +233,13 @@ internal fun ConversationScreen(
                 onReconnect = onReconnect,
             )
         }
+    }
+
+    openedStepsMessage?.let { message ->
+        ConversationStepsSheet(
+            message = message,
+            onDismiss = { openedStepsMessageId = null },
+        )
     }
 }
 

@@ -45,7 +45,7 @@ Do not duplicate hexadecimal values here. Change tokens in code and validate aff
 - Standard user messages use a quiet rounded surface without a speaker label. Standard assistant responses are plain transcript text without a speaker label, rail, or generic response container.
 - User and assistant message bodies derive native rich Markdown from their canonical raw text. Tool input and output remain literal. Code and tables use a neutral raised surface, size from the available message width, and scroll internally rather than widening the transcript.
 - Sending a message opts into following the latest transcript content. Scrolling upward pauses automatic following during streaming; tapping the centered jump-to-latest control or manually reaching the bottom resumes it. Show the control immediately above the composer whenever content continues below the viewport.
-- Tool and system events remain labeled because their role is not inferable from conversational position; render them as neutral contained surfaces.
+- Routine reasoning and tool activity share one chronological per-turn projection. Keep only a compact **Thinking** entry in the transcript; tapping it opens the separate mobile **Steps** sheet. Do not expand activity inline or add a Show/Hide mode. Keep high-salience interactive surfaces such as approvals and user questions separate from this routine activity history.
 - Active work uses concise copy, semantic status color, and restrained progress treatment. It must not frame or illuminate the page.
 - Only expose controls and destinations with working behavior. Future drawer locations do not justify inert placeholders.
 

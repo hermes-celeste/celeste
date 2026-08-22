@@ -1,5 +1,6 @@
 package dev.hazydreams.hermesceleste
 
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
@@ -13,19 +14,24 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import com.android.tools.screenshot.PreviewTest
 import dev.hazydreams.hermesceleste.connection.SavedAuthMode
 import dev.hazydreams.hermesceleste.network.AuthProvider
 import dev.hazydreams.hermesceleste.network.ConversationMessage
+import dev.hazydreams.hermesceleste.network.ConversationStep
+import dev.hazydreams.hermesceleste.network.ConversationStepKind
 import dev.hazydreams.hermesceleste.network.DashboardProbeResult
 import dev.hazydreams.hermesceleste.network.DashboardProfile
 import dev.hazydreams.hermesceleste.network.StoredSession
 import dev.hazydreams.hermesceleste.ui.HermesCelesteTheme
 import dev.hazydreams.hermesceleste.ui.CelestePanel
 import dev.hazydreams.hermesceleste.ui.CelesteScreen
+import dev.hazydreams.hermesceleste.ui.CelesteSurfaceRaised
 import dev.hazydreams.hermesceleste.ui.conversation.ConversationScreen
+import dev.hazydreams.hermesceleste.ui.conversation.StepsSheetSurface
 import dev.hazydreams.hermesceleste.ui.gateway.ConnectionLoadingScreen
 import dev.hazydreams.hermesceleste.ui.gateway.ConnectionUnavailableScreen
 import dev.hazydreams.hermesceleste.ui.gateway.GatewaySettingsActions
@@ -80,22 +86,43 @@ private val previewSessions = listOf(
     ),
 )
 
+private val previewStepsMessage = ConversationMessage(
+    role = "steps",
+    text = "",
+    id = "preview-steps-1",
+    steps = listOf(
+        ConversationStep(
+            id = "preview-reasoning-1",
+            kind = ConversationStepKind.Reasoning,
+            detail = "I’ll compare the current gateway contract before changing the mobile projection.",
+        ),
+        ConversationStep(
+            id = "preview-tool-1",
+            kind = ConversationStepKind.Tool,
+            detail = "GatewaySessionApi.kt",
+            toolName = "read_file",
+            context = "GatewaySessionApi.kt",
+            summary = "Read the current resume projection.",
+        ),
+        ConversationStep(
+            id = "preview-reasoning-2",
+            kind = ConversationStepKind.Reasoning,
+            detail = "Reasoning and tool activity belong in one chronological mobile view.",
+        ),
+    ),
+)
+
 private val previewMessages = listOf(
     ConversationMessage(
         role = "user",
         text = "I want the mobile client to continue the exact conversation I started on Desktop.",
         id = "preview-user-1",
     ),
+    previewStepsMessage,
     ConversationMessage(
         role = "assistant",
         text = "It now resumes the shared server-side session instead of maintaining a separate mobile copy.",
         id = "preview-assistant-1",
-    ),
-    ConversationMessage(
-        role = "tool",
-        toolName = "protocol_reference",
-        text = "Compared the current Hermes gateway contract with the mobile reference client.",
-        id = "preview-tool-1",
     ),
 )
 
@@ -459,6 +486,46 @@ fun CompletedPreviewScreenshot() {
                     id = "preview-assistant-2",
                 ),
             ),
+            turnState = TurnState.Idle,
+        )
+    }
+}
+
+@PreviewTest
+@Preview(name = "23 · Conversation steps sheet", widthDp = 390, heightDp = 844, showBackground = true)
+@Composable
+fun ConversationStepsSheetPreviewScreenshot() {
+    HermesCelesteTheme {
+        Box(modifier = Modifier.fillMaxSize()) {
+            PreviewConversation(
+                messages = previewMessages,
+                turnState = TurnState.Idle,
+            )
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Color.Black.copy(alpha = 0.62f)),
+            )
+            Surface(
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .fillMaxWidth(),
+                color = CelesteSurfaceRaised,
+                shape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp),
+            ) {
+                StepsSheetSurface(previewStepsMessage)
+            }
+        }
+    }
+}
+
+@PreviewTest
+@Preview(name = "24 · Conversation steps entry", widthDp = 390, heightDp = 844, showBackground = true)
+@Composable
+fun ConversationStepsEntryPreviewScreenshot() {
+    HermesCelesteTheme {
+        PreviewConversation(
+            messages = previewMessages,
             turnState = TurnState.Idle,
         )
     }
