@@ -447,6 +447,22 @@ class CelesteViewModelAutoLoginTest {
             profile: String,
         ) = Unit
 
+        override suspend fun setSessionPinned(
+            baseUrl: String,
+            credential: GatewayCredential,
+            sessionId: String,
+            profile: String,
+            pinned: Boolean,
+        ): Boolean = pinned
+
+        override suspend fun renameSession(
+            baseUrl: String,
+            credential: GatewayCredential,
+            sessionId: String,
+            profile: String,
+            title: String,
+        ): String = title
+
         override suspend fun listProfiles(
             baseUrl: String,
             credential: GatewayCredential,

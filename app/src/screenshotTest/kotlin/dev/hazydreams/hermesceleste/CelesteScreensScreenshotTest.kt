@@ -1,7 +1,20 @@
 package dev.hazydreams.hermesceleste
 
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.tooling.preview.Preview
+import androidx.compose.ui.unit.dp
 import com.android.tools.screenshot.PreviewTest
 import dev.hazydreams.hermesceleste.connection.SavedAuthMode
 import dev.hazydreams.hermesceleste.network.AuthProvider
@@ -10,6 +23,7 @@ import dev.hazydreams.hermesceleste.network.DashboardProbeResult
 import dev.hazydreams.hermesceleste.network.DashboardProfile
 import dev.hazydreams.hermesceleste.network.StoredSession
 import dev.hazydreams.hermesceleste.ui.HermesCelesteTheme
+import dev.hazydreams.hermesceleste.ui.CelestePanel
 import dev.hazydreams.hermesceleste.ui.CelesteScreen
 import dev.hazydreams.hermesceleste.ui.conversation.ConversationScreen
 import dev.hazydreams.hermesceleste.ui.gateway.ConnectionLoadingScreen
@@ -19,6 +33,8 @@ import dev.hazydreams.hermesceleste.ui.gateway.GatewaySettingsScreen
 import dev.hazydreams.hermesceleste.ui.gateway.GatewaySettingsUiState
 import dev.hazydreams.hermesceleste.ui.gateway.SettingsScreen
 import dev.hazydreams.hermesceleste.ui.sessions.SessionNavigationDrawer
+import dev.hazydreams.hermesceleste.ui.sessions.RenameConversationDialog
+import dev.hazydreams.hermesceleste.ui.sessions.SessionRowActionItems
 
 private val previewSessions = listOf(
     StoredSession(
@@ -266,10 +282,114 @@ fun NavigationDrawerPreviewScreenshot() {
                 searchResults = emptyList(),
                 isSearchingSessions = false,
                 sessionSearchError = null,
+                sessionActionError = null,
                 onProfileSelected = {},
                 onSearchQueryChange = {},
                 onNewConversation = {},
                 onSessionSelected = {},
+                onSessionPinnedChange = { _, _ -> },
+                onSessionRename = { _, _, onComplete -> onComplete(null) },
+                onLoadMoreSessions = {},
+                onSettings = {},
+            )
+        }
+    }
+}
+
+@PreviewTest
+@Preview(name = "19 · Conversation actions menu", widthDp = 390, heightDp = 300, showBackground = true)
+@Composable
+fun ConversationActionsMenuPreviewScreenshot() {
+    HermesCelesteTheme {
+        CelesteScreen {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(24.dp),
+            ) {
+                CelestePanel(
+                    modifier = Modifier.fillMaxWidth(),
+                    contentPadding = PaddingValues(14.dp),
+                ) {
+                    Text("Dashboard connection notes", style = MaterialTheme.typography.bodyMedium)
+                }
+                Surface(
+                    modifier = Modifier
+                        .align(Alignment.TopStart)
+                        .padding(top = 58.dp)
+                        .width(164.dp),
+                    shape = RoundedCornerShape(12.dp),
+                    tonalElevation = 6.dp,
+                ) {
+                    androidx.compose.foundation.layout.Column {
+                        SessionRowActionItems(
+                            pinned = false,
+                            onPinnedChange = {},
+                            onRename = {},
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@PreviewTest
+@Preview(name = "20 · Rename conversation", widthDp = 390, heightDp = 844, showBackground = true)
+@Composable
+fun RenameConversationPreviewScreenshot() {
+    HermesCelesteTheme {
+        CelesteScreen {
+            RenameConversationDialog(
+                sessionId = "dashboard-notes",
+                currentTitle = "Dashboard connection notes",
+                onDismiss = {},
+                onRename = { _, _ -> },
+            )
+        }
+    }
+}
+
+@PreviewTest
+@Preview(
+    name = "21 · Rename conversation · narrow large text",
+    widthDp = 320,
+    heightDp = 700,
+    fontScale = 1.3f,
+    showBackground = true,
+)
+@Composable
+fun RenameConversationNarrowPreviewScreenshot() {
+    RenameConversationPreviewScreenshot()
+}
+
+@PreviewTest
+@Preview(name = "22 · Pin failure", widthDp = 390, heightDp = 844, showBackground = true)
+@Composable
+fun SessionPinFailurePreviewScreenshot() {
+    HermesCelesteTheme {
+        CelesteScreen {
+            SessionNavigationDrawer(
+                sessions = previewSessions,
+                profiles = listOf(DashboardProfile(name = "default", isDefault = true)),
+                selectedProfile = "default",
+                selectedSessionId = "visual-layer",
+                loadingMessage = null,
+                errorMessage = null,
+                hasMoreSessions = false,
+                isLoadingMoreSessions = false,
+                sessionPageError = null,
+                searchQuery = "",
+                searchResults = emptyList(),
+                isSearchingSessions = false,
+                sessionSearchError = null,
+                sessionActionError = "Could not update that pin.",
+                onProfileSelected = {},
+                onSearchQueryChange = {},
+                onNewConversation = {},
+                onSessionSelected = {},
+                onSessionPinnedChange = { _, _ -> },
+                onSessionRename = { _, _, onComplete -> onComplete(null) },
                 onLoadMoreSessions = {},
                 onSettings = {},
             )

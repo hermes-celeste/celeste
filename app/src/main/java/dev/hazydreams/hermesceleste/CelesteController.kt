@@ -76,6 +76,7 @@ internal data class CelesteUiState(
     val sessionSearchResults: List<StoredSession> = emptyList(),
     val isSearchingSessions: Boolean = false,
     val sessionSearchError: String? = null,
+    val sessionActionError: String? = null,
     val profiles: List<DashboardProfile> = listOf(DashboardProfile(name = "default", isDefault = true)),
     val selectedProfile: String = "default",
     val activeSummary: StoredSession? = null,
@@ -196,6 +197,9 @@ internal class CelesteController(
     private var connectionAttempt = 0L
     private var sessionPageAttempt = 0L
     private var sessionSearchAttempt = 0L
+    private var sessionActionAttempt = 0L
+    private val pinActionAttempts = mutableMapOf<String, Long>()
+    private val renameActionAttempts = mutableMapOf<String, Long>()
     private val connectionStoreMutex = Mutex()
     private var currentDescriptor: SavedConnectionDescriptor? = null
     private var reconnectAttempts = 0
@@ -307,6 +311,129 @@ internal class CelesteController(
             }
         }
     }
+
+    fun setSessionPinned(summary: StoredSession, pinned: Boolean) {
+        val connection = mutableState.value.probe ?: return
+        val activeCredential = credential ?: return
+        val sessionId = summary.id
+        val previousPinned = currentSession(sessionId)?.pinned ?: summary.pinned
+        val actionAttempt = ++sessionActionAttempt
+        val connectionGeneration = connectionAttempt
+        pinActionAttempts[sessionId] = actionAttempt
+        updateSession(sessionId, sessionActionError = null) { it.copy(pinned = pinned) }
+
+        controllerScope.launch {
+            try {
+                val confirmedPinned = dashboard.setSessionPinned(
+                    baseUrl = connection.baseUrl,
+                    credential = activeCredential,
+                    sessionId = sessionId,
+                    profile = summary.profile,
+                    pinned = pinned,
+                )
+                if (!isCurrentSessionAction(pinActionAttempts, sessionId, actionAttempt, connectionGeneration)) {
+                    return@launch
+                }
+                updateSession(sessionId, sessionActionError = null) { it.copy(pinned = confirmedPinned) }
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: Throwable) {
+                if (!isCurrentSessionAction(pinActionAttempts, sessionId, actionAttempt, connectionGeneration)) {
+                    return@launch
+                }
+                updateSession(
+                    sessionId = sessionId,
+                    sessionActionError = boundedActionError(error, "Could not update that pin."),
+                ) { it.copy(pinned = previousPinned) }
+            } finally {
+                if (pinActionAttempts[sessionId] == actionAttempt) pinActionAttempts.remove(sessionId)
+            }
+        }
+    }
+
+    fun renameSession(
+        summary: StoredSession,
+        title: String,
+        onComplete: (String?) -> Unit,
+    ) {
+        val trimmedTitle = title.trim()
+        if (trimmedTitle.isEmpty()) {
+            onComplete("Enter a conversation name.")
+            return
+        }
+        val connection = mutableState.value.probe
+        val activeCredential = credential
+        if (connection == null || activeCredential == null) {
+            onComplete("Hermes is not connected.")
+            return
+        }
+        val sessionId = summary.id
+        val actionAttempt = ++sessionActionAttempt
+        val connectionGeneration = connectionAttempt
+        renameActionAttempts[sessionId] = actionAttempt
+
+        controllerScope.launch {
+            try {
+                val confirmedTitle = dashboard.renameSession(
+                    baseUrl = connection.baseUrl,
+                    credential = activeCredential,
+                    sessionId = sessionId,
+                    profile = summary.profile,
+                    title = trimmedTitle,
+                )
+                if (!isCurrentSessionAction(renameActionAttempts, sessionId, actionAttempt, connectionGeneration)) {
+                    return@launch
+                }
+                updateSession(sessionId, sessionActionError = null) { it.copy(title = confirmedTitle) }
+                onComplete(null)
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: Throwable) {
+                if (!isCurrentSessionAction(renameActionAttempts, sessionId, actionAttempt, connectionGeneration)) {
+                    return@launch
+                }
+                onComplete(boundedActionError(error, "Could not rename that conversation."))
+            } finally {
+                if (renameActionAttempts[sessionId] == actionAttempt) renameActionAttempts.remove(sessionId)
+            }
+        }
+    }
+
+    private fun currentSession(sessionId: String): StoredSession? =
+        mutableState.value.sessions?.firstOrNull { it.id == sessionId }
+            ?: mutableState.value.sessionSearchResults.firstOrNull { it.id == sessionId }
+            ?: mutableState.value.activeSummary?.takeIf { it.id == sessionId }
+
+    private fun updateSession(
+        sessionId: String,
+        sessionActionError: String?,
+        transform: (StoredSession) -> StoredSession,
+    ) {
+        val current = mutableState.value
+        mutableState.value = current.copy(
+            sessions = current.sessions?.map { session ->
+                if (session.id == sessionId) transform(session) else session
+            },
+            sessionSearchResults = current.sessionSearchResults.map { session ->
+                if (session.id == sessionId) transform(session) else session
+            },
+            activeSummary = current.activeSummary?.let { session ->
+                if (session.id == sessionId) transform(session) else session
+            },
+            sessionActionError = sessionActionError,
+        )
+    }
+
+    private fun isCurrentSessionAction(
+        attempts: Map<String, Long>,
+        sessionId: String,
+        actionAttempt: Long,
+        connectionGeneration: Long,
+    ): Boolean =
+        attempts[sessionId] == actionAttempt && isCurrentConnectionAttempt(connectionGeneration)
+
+    private fun boundedActionError(error: Throwable, fallback: String): String =
+        error.message?.takeIf(String::isNotBlank)?.take(MAX_SESSION_ACTION_ERROR_LENGTH) ?: fallback
 
     fun findDashboard() {
         val rawUrl = mutableState.value.dashboardUrl
@@ -742,6 +869,8 @@ internal class CelesteController(
         cancelSessionPageLoad()
         cancelSessionSearch()
         cancelSessionMetadataUpdates()
+        pinActionAttempts.clear()
+        renameActionAttempts.clear()
         return connectionAttempt
     }
 
@@ -1629,6 +1758,7 @@ internal class CelesteController(
         private const val SESSION_PAGE_SIZE = 15
         private const val SESSION_SEARCH_LIMIT = 20
         private const val SESSION_SEARCH_DEBOUNCE_MILLIS = 200L
+        private const val MAX_SESSION_ACTION_ERROR_LENGTH = 160
 
         internal fun unpersistedInflightText(
             inflight: String,

@@ -49,6 +49,25 @@ class SessionSectionsTest {
     }
 
     @Test
+    fun exposesOnlyPinOrUnpinAndRenameToTalkBack() {
+        var pinned: Boolean? = null
+        var renameCount = 0
+
+        val pinActions = sessionRowAccessibilityActions(
+            pinned = false,
+            onPinnedChange = { pinned = it },
+            onRename = { renameCount += 1 },
+        )
+
+        assertEquals(listOf("Pin", "Rename"), pinActions.map { it.label })
+        assertTrue(pinActions[0].action())
+        assertEquals(true, pinned)
+        assertTrue(pinActions[1].action())
+        assertEquals(1, renameCount)
+        assertEquals("Unpin", sessionRowActionLabels(pinned = true).pin)
+    }
+
+    @Test
     fun requestsNextPageOnlyWhileScrollingNearTheEnd() {
         assertTrue(
             shouldRequestNextSessionPage(

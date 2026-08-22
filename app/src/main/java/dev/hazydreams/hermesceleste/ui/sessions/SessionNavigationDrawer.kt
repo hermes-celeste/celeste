@@ -76,10 +76,13 @@ internal fun SessionNavigationDrawer(
     searchResults: List<StoredSession>,
     isSearchingSessions: Boolean,
     sessionSearchError: String?,
+    sessionActionError: String?,
     onProfileSelected: (String) -> Unit,
     onSearchQueryChange: (String) -> Unit,
     onNewConversation: () -> Unit,
     onSessionSelected: (StoredSession) -> Unit,
+    onSessionPinnedChange: (StoredSession, Boolean) -> Unit,
+    onSessionRename: (StoredSession, String, (String?) -> Unit) -> Unit,
     onLoadMoreSessions: () -> Unit,
     onSettings: () -> Unit,
 ) {
@@ -146,13 +149,14 @@ internal fun SessionNavigationDrawer(
                 }
             }
 
-            if (loadingMessage != null || errorMessage != null) {
+            if (loadingMessage != null || errorMessage != null || sessionActionError != null) {
                 Column(
                     modifier = Modifier.padding(horizontal = 4.dp, vertical = 10.dp),
                     verticalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
                     loadingMessage?.let { StatusMessage(it, CelesteAccent, showSpinner = true) }
                     errorMessage?.let { StatusMessage(it, CelesteError) }
+                    sessionActionError?.let { StatusMessage(it, CelesteError) }
                 }
             } else {
                 Spacer(Modifier.height(18.dp))
@@ -171,6 +175,8 @@ internal fun SessionNavigationDrawer(
                 isSearchingSessions = isSearchingSessions,
                 sessionSearchError = sessionSearchError,
                 onSessionSelected = onSessionSelected,
+                onSessionPinnedChange = onSessionPinnedChange,
+                onSessionRename = onSessionRename,
                 onLoadMoreSessions = onLoadMoreSessions,
                 modifier = Modifier
                     .weight(1f)
