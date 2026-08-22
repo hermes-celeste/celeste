@@ -175,9 +175,31 @@ class HermesGatewayTest {
             listOf(ConversationStepKind.Reasoning, ConversationStepKind.Tool, ConversationStepKind.Reasoning),
             steps.map { it.kind },
         )
-        assertEquals(listOf("First I should inspect the file.", "app/Main.kt", "The file confirms the UI boundary."), steps.map { it.detail })
+        assertEquals("First I should inspect the file.", steps[0].detail)
+        assertEquals("app/Main.kt", steps[1].context)
+        assertEquals("The file confirms the UI boundary.", steps[2].detail)
         assertEquals("call-1", steps[1].id)
         assertTrue(steps.none { it.pending })
+    }
+
+    @Test
+    fun resumedHistorySafelySkipsStructuredReasoningDetails() {
+        val messages = decodeGatewayMessages(
+            Json.parseToJsonElement(
+                """[
+                    {"row_id":1,"role":"user","text":"Inspect this"},
+                    {"row_id":2,"role":"assistant","reasoning_details":[{"type":"summary","text":"Internal metadata"}],"text":"Checking"},
+                    {"row_id":3,"role":"tool","tool_call_id":"call-1","name":"read_file","context":"app/Main.kt"},
+                    {"row_id":4,"role":"assistant","text":"Done"}
+                ]""".trimIndent(),
+            ).jsonArray,
+        )
+
+        assertEquals(listOf("user", "assistant", "steps", "assistant"), messages.map { it.role })
+        assertEquals(listOf("Inspect this", "Checking", "", "Done"), messages.map { it.text })
+        val step = messages.single { it.role == "steps" }.steps.single()
+        assertEquals(ConversationStepKind.Tool, step.kind)
+        assertEquals("app/Main.kt", step.context)
     }
 
     @Test

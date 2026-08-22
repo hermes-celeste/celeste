@@ -8,7 +8,7 @@ enum class ConversationStepKind {
 data class ConversationStep(
     val id: String,
     val kind: ConversationStepKind,
-    val detail: String,
+    val detail: String = "",
     val toolName: String? = null,
     val context: String = "",
     val summary: String = "",
@@ -32,14 +32,16 @@ internal fun appendReasoningToCurrentTurn(
     replaceTail: Boolean,
     stepsMessageId: String,
 ): List<ConversationMessage> {
-    if (text.isBlank()) return messages
+    if (text.isEmpty()) return messages
     return updateCurrentTurnSteps(messages, stepsMessageId) { steps ->
         val tail = steps.lastOrNull()
-        if (tail?.kind == ConversationStepKind.Reasoning) {
+        if (tail?.kind == ConversationStepKind.Reasoning && tail.pending) {
             steps.dropLast(1) + tail.copy(
                 detail = if (replaceTail) text else tail.detail + text,
                 pending = true,
             )
+        } else if (text.isBlank()) {
+            steps
         } else {
             steps + ConversationStep(
                 id = id,
@@ -69,7 +71,6 @@ internal fun startToolInCurrentTurn(
     val next = ConversationStep(
         id = id,
         kind = ConversationStepKind.Tool,
-        detail = context,
         toolName = name,
         context = context,
         pending = true,
@@ -80,7 +81,6 @@ internal fun startToolInCurrentTurn(
         settled.toMutableList().also { steps ->
             steps[existingIndex] = steps[existingIndex].copy(
                 toolName = name,
-                detail = context.ifBlank { steps[existingIndex].detail },
                 context = context.ifBlank { steps[existingIndex].context },
                 pending = true,
             )
@@ -108,7 +108,6 @@ internal fun completeToolInCurrentTurn(
         current + ConversationStep(
             id = id?.takeIf(String::isNotBlank) ?: fallbackStepId,
             kind = ConversationStepKind.Tool,
-            detail = summary.ifBlank { context.ifBlank { result } },
             toolName = name,
             context = context,
             summary = summary,
@@ -119,9 +118,6 @@ internal fun completeToolInCurrentTurn(
         current.toMutableList().also { steps ->
             val previous = steps[existingIndex]
             steps[existingIndex] = previous.copy(
-                detail = summary.ifBlank {
-                    previous.context.ifBlank { context.ifBlank { result.ifBlank { previous.detail } } }
-                },
                 toolName = name,
                 context = previous.context.ifBlank { context },
                 summary = summary,
@@ -142,7 +138,7 @@ internal fun settleCurrentReasoning(messages: List<ConversationMessage>): List<C
         next[stepIndex] = next[stepIndex].copy(pending = false)
     }
     return messages.toMutableList().also { next ->
-        next[index] = message.copy(steps = steps, pending = steps.any(ConversationStep::pending))
+        next[index] = message.copy(steps = steps)
     }
 }
 
@@ -150,13 +146,19 @@ internal fun settleCurrentTurnSteps(messages: List<ConversationMessage>): List<C
     val index = currentTurnStepsIndex(messages)
     if (index < 0) return messages
     val message = messages[index]
-    if (!message.pending && message.steps.none(ConversationStep::pending)) return messages
+    val settled = message.settledSteps()
+    if (settled === message) return messages
     return messages.toMutableList().also { next ->
-        next[index] = message.copy(
-            pending = false,
-            steps = message.steps.map { it.copy(pending = false) },
-        )
+        next[index] = settled
     }
+}
+
+internal fun ConversationMessage.settledSteps(): ConversationMessage {
+    if (role != "steps" || (!pending && steps.none(ConversationStep::pending))) return this
+    return copy(
+        pending = false,
+        steps = steps.map { it.copy(pending = false) },
+    )
 }
 
 private fun updateCurrentTurnSteps(
@@ -169,7 +171,7 @@ private fun updateCurrentTurnSteps(
         val previous = messages[index]
         val steps = transform(previous.steps)
         return messages.toMutableList().also { next ->
-            next[index] = previous.copy(steps = steps, pending = steps.any(ConversationStep::pending))
+            next[index] = previous.copy(steps = steps, pending = true)
         }
     }
 
@@ -179,7 +181,7 @@ private fun updateCurrentTurnSteps(
         role = "steps",
         text = "",
         id = stepsMessageId,
-        pending = steps.any(ConversationStep::pending),
+        pending = true,
         steps = steps,
     )
 }

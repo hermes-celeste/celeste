@@ -128,6 +128,85 @@ class CelesteViewModelTest {
     }
 
     @Test
+    fun structuredToolResultCompletesTheStepAndTurn() = runTest {
+        val gateway = FakeGateway()
+        val viewModel = openConversation(gateway)
+
+        viewModel.updateDraft("Inspect the structured result")
+        viewModel.sendMessage()
+        gateway.emit("message.start")
+        gateway.emit(
+            "tool.start",
+            """{"tool_id":"tool-json","name":"read_file","context":"report.json"}""",
+        )
+        gateway.emit(
+            "tool.complete",
+            """{"tool_id":"tool-json","name":"read_file","summary":"Read report","result":{"items":[1,2]}}""",
+        )
+        runCurrent()
+
+        val activeSteps = viewModel.state.value.messages.single { it.role == "steps" }
+        assertTrue(activeSteps.pending)
+        assertFalse(activeSteps.steps.single().pending)
+
+        gateway.emit("message.complete", """{"content":"Done","status":"complete"}""")
+        advanceUntilIdle()
+
+        val state = viewModel.state.value
+        val tool = state.messages.single { it.role == "steps" }.steps.single()
+        assertEquals(TurnState.Idle, state.turnState)
+        assertEquals("Read report", tool.summary)
+        assertEquals("{\"items\":[1,2]}", tool.result)
+        assertFalse(tool.pending)
+        viewModel.controller.close()
+    }
+
+    @Test
+    fun reasoningWhitespaceDeltasPreserveTokenSpacing() = runTest {
+        val gateway = FakeGateway()
+        val viewModel = openConversation(gateway)
+
+        viewModel.updateDraft("Inspect this")
+        viewModel.sendMessage()
+        gateway.emit("message.start")
+        gateway.emit("reasoning.delta", """{"text":"Inspect"}""")
+        gateway.emit("reasoning.delta", """{"text":" "}""")
+        gateway.emit("reasoning.delta", """{"text":"the file"}""")
+        gateway.emit("message.complete", """{"content":"Done","status":"complete"}""")
+        advanceUntilIdle()
+
+        val reasoning = viewModel.state.value.messages
+            .single { it.role == "steps" }
+            .steps
+            .single { it.kind == ConversationStepKind.Reasoning }
+        assertEquals("Inspect the file", reasoning.detail)
+        viewModel.controller.close()
+    }
+
+    @Test
+    fun assistantInterimSeparatesReasoningBlocksWithinTheTurn() = runTest {
+        val gateway = FakeGateway()
+        val viewModel = openConversation(gateway)
+
+        viewModel.updateDraft("Explain while you work")
+        viewModel.sendMessage()
+        gateway.emit("message.start")
+        gateway.emit("reasoning.delta", """{"text":"First thought."}""")
+        gateway.emit("message.interim", """{"text":"I checked the first part."}""")
+        gateway.emit("reasoning.delta", """{"text":"Second thought."}""")
+        gateway.emit("message.complete", """{"content":"Finished.","status":"complete"}""")
+        advanceUntilIdle()
+
+        val reasoning = viewModel.state.value.messages
+            .single { it.role == "steps" }
+            .steps
+            .filter { it.kind == ConversationStepKind.Reasoning }
+        assertEquals(listOf("First thought.", "Second thought."), reasoning.map { it.detail })
+        assertTrue(reasoning.none { it.pending })
+        viewModel.controller.close()
+    }
+
+    @Test
     fun sameNameParallelToolsCompleteByStableId() = runTest {
         val gateway = FakeGateway()
         val viewModel = openConversation(gateway)

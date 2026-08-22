@@ -1509,6 +1509,9 @@ internal class CelesteController(
             "message.interim" -> {
                 val text = event.payload.string("text").orEmpty()
                 val alreadyStreamed = event.payload.boolean("already_streamed") == true
+                mutableState.value = mutableState.value.copy(
+                    messages = settleCurrentReasoning(mutableState.value.messages),
+                )
                 if (alreadyStreamed && mutableState.value.streamingText.isNotBlank()) {
                     finalizeAssistant(
                         text.ifBlank { mutableState.value.streamingText },
@@ -1571,7 +1574,7 @@ internal class CelesteController(
 
             "reasoning.delta", "reasoning.available" -> {
                 val text = event.payload.string("text").orEmpty()
-                if (text.isNotBlank()) {
+                if (text.isNotEmpty()) {
                     if (mutableState.value.streamingText.isNotBlank()) {
                         finalizeAssistant(keepRunning = true, interim = true)
                     }

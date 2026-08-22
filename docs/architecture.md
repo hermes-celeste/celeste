@@ -38,7 +38,7 @@ The four turn states are intentionally user-facing projections:
 - `Running` — Hermes owns an active turn.
 - `Reconnecting` — the draft remains local while Celeste restores the server relationship.
 
-Reasoning and tool events are reduced into one chronological `steps` transcript row for the current user turn. Adjacent reasoning deltas coalesce until a tool or assistant-message boundary, while tool starts and completions reconcile by stable Hermes tool ID. Compose renders that row as the compact **Thinking** affordance and reads the same projection in a separate **Steps** bottom sheet; it does not duplicate raw activity throughout the chat.
+Reasoning and tool events are reduced into one chronological `steps` transcript row for the current user turn. Adjacent reasoning deltas coalesce until a tool or assistant-message boundary, while tool starts and completions reconcile by stable Hermes tool ID. Compose renders that row as the compact **Thinking** affordance and presents the same projection in a separate **Steps** bottom sheet.
 
 Do not derive protocol truth from animation or view-local state.
 
@@ -108,11 +108,11 @@ Do not substitute one for the other because they happen to match in a test fixtu
 - Recovered in-flight assistant text may include a prefix already present in persisted history. Render only the unpersisted suffix.
 - Attach the event collector before connecting. `HermesGateway.events` has no replay and a bounded extra buffer, so late collectors can miss conversational events.
 
-## Projection limitations
+## Projection behavior
 
-- Current `session.resume` history exposes persisted tool rows with their name and available context but does not guarantee the complete live tool result payload. Celeste shows the truthful resumed detail available from Hermes instead of inventing parity with live events.
-- Interim/final assistant merging and completion deduplication are text- and prefix-based projection rules, not protocol identity guarantees.
-- The projected summary for a newly persisted conversation is not refreshed from `session.list` while that conversation remains active.
+- Current `session.resume` history supplies persisted tool names and available context. Celeste presents that resumed detail in the same Steps projection as live activity.
+- Interim/final assistant merging and completion deduplication use text- and prefix-based projection rules.
+- A newly persisted conversation keeps its current projected summary while active and receives refreshed catalog metadata on the next catalog load.
 
 Regression coverage for these invariants belongs to `CelesteController` and `HermesGateway`; see [`testing.md`](testing.md) for the current host-test locations.
 

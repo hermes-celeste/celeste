@@ -99,7 +99,6 @@ private val previewStepsMessage = ConversationMessage(
         ConversationStep(
             id = "preview-tool-1",
             kind = ConversationStepKind.Tool,
-            detail = "GatewaySessionApi.kt",
             toolName = "read_file",
             context = "GatewaySessionApi.kt",
             summary = "Read the current resume projection.",

@@ -12,7 +12,6 @@ class ConversationStepsSheetTest {
         val concise = ConversationStep(
             id = "read-1",
             kind = ConversationStepKind.Tool,
-            detail = "unused",
             toolName = "read_file",
             context = "GatewaySessionApi.kt",
             summary = "Read the resume projection",

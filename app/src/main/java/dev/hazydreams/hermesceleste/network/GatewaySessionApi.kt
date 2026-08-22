@@ -174,16 +174,7 @@ internal fun decodeGatewayMessages(elements: List<JsonElement>): List<Conversati
         )
     }
 
-    return messages.map { message ->
-        if (message.role == "steps") {
-            message.copy(
-                pending = false,
-                steps = message.steps.map { it.copy(pending = false) },
-            )
-        } else {
-            message
-        }
-    }
+    return messages.map(ConversationMessage::settledSteps)
 }
 
 private fun JsonElement?.scalarIdentity(): String? =
@@ -211,7 +202,7 @@ private fun JsonElement.asObject(errorMessage: String): JsonObject =
     this as? JsonObject ?: throw IOException(errorMessage)
 
 internal fun JsonObject.string(key: String): String? =
-    get(key)?.jsonPrimitive?.contentOrNull
+    (get(key) as? JsonPrimitive)?.contentOrNull
 
 internal fun JsonObject.boolean(key: String): Boolean? =
     get(key)?.jsonPrimitive?.booleanOrNull
