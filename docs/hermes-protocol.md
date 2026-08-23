@@ -2,114 +2,80 @@
 
 ## Authority
 
-The installed current Hermes server and Desktop implementation is the authority for routes, response shapes, events, and lifecycle behavior. Before implementing or changing a protocol feature, inspect the matching official source. Relevant locations include:
+The installed official Hermes server and Desktop implementation define routes, payloads, events, and lifecycle behavior. Inspect current source before changing protocol code. Celeste supports that current surface rather than maintaining legacy fallbacks.
 
-- `hermes_cli/dashboard_auth/routes.py` — providers, password login, cookies, and WebSocket tickets;
-- `hermes_cli/web_server.py` — dashboard status and `/api/ws` admission;
-- `tui_gateway/methods_session.py` — session listing, creation, resume, interruption, and mutation;
-- `tui_gateway/ws.py` — JSON-RPC framing, events, and WebSocket lifecycle.
+Primary references include dashboard auth routes, dashboard web routers, `tui_gateway/methods_session.py`, and `tui_gateway/ws.py`.
 
-External documentation cannot override current source. Celeste supports only this current protocol surface; missing required routes, payloads, methods, or events are incompatible and must fail clearly rather than activating an older fallback.
+## Address and transport
 
-## Base URL and route joining
+`DashboardUrlPolicy` normalizes the user address and preserves any path prefix when joining routes.
 
-`DashboardUrlPolicy` normalizes the user-entered base address. Preserve any dashboard path prefix when joining HTTP and WebSocket routes.
-
-- Accept `http` and `https` only.
-- Add `http://` to a scheme-less private or Tailscale address.
-- Allow cleartext HTTP only for loopback, private IPv4/IPv6, link-local, Tailscale CGNAT or `*.ts.net`, `.local`, and single-label LAN hosts.
+- Accept HTTP and HTTPS dashboard addresses.
+- Add HTTP to scheme-less private, LAN, Tailscale, local, and single-label hosts.
+- Limit cleartext HTTP to loopback, private, link-local, LAN, and Tailscale destinations.
 - Require HTTPS for public hosts.
-- Reject user info, query strings, and fragments in a base address.
+- Reject user info, query strings, and fragments.
 
-Transport security and sensitive data rules live in [`security.md`](security.md).
+The gateway endpoint is `/api/ws`, using `ws` or `wss` to match the dashboard. Provider-authenticated sessions mint a fresh one-use ticket for each connection; static machine-token and open-loopback admission use their current server contracts.
+
+A successful WebSocket upgrade is not readiness. Wait for `gateway.ready` before sending persistent-session RPCs or reporting Connected.
 
 ## HTTP surface
 
 | Route | Purpose |
 | --- | --- |
-| `GET /api/status` | Probe reachability, version, and whether authentication is required |
-| `GET /api/auth/providers` | Discover configured authentication providers and password support |
-| `POST /auth/password-login` | Establish a provider-authenticated cookie session |
-| `POST /auth/logout` | Best-effort provider session revocation and cookie clearing; returns a `302` login redirect |
-| `POST /api/auth/ws-ticket` | Mint a short-lived, one-use WebSocket ticket from the cookie session |
-| `GET /api/profiles` | Read the server’s profile catalog |
-| `GET /api/sessions` | Read recent, pinned, scheduled, and unread stored-conversation metadata |
-| `GET /api/sessions/search` | Search durable conversation history by session identity and indexed message content |
-| `PATCH /api/sessions/{session_id}` | Update authoritative conversation metadata such as title, pinned state, and the read watermark |
+| `GET /api/status` | Probe reachability, version, and authentication requirement |
+| `GET /api/auth/providers` | Discover password and provider support |
+| `POST /auth/password-login` | Establish a cookie-authenticated session |
+| `POST /auth/logout` | Best-effort provider logout |
+| `POST /api/auth/ws-ticket` | Mint a one-use WebSocket ticket |
+| `GET /api/profiles` | Read profiles |
+| `GET /api/sessions` | Page stored-conversation metadata |
+| `GET /api/sessions/search` | Search durable history |
+| `GET /api/sessions/{id}/messages` | Read persisted transcript history |
+| `PATCH /api/sessions/{id}` | Update title, pin, and read state |
 
-Static-token profile requests use `X-Hermes-Session-Token`. Cookie-authenticated requests use the client’s private cookie jar. Celeste may Keystore-encrypt unexpired Hermes access, refresh, and provider cookies for the exact normalized endpoint; it never persists PKCE cookies, one-use WebSocket tickets, or passwords.
+Static-token requests use `X-Hermes-Session-Token`; cookie sessions use the private client cookie jar. The shared HTTP client does not follow redirects.
 
-Current Hermes requires `GET /api/profiles`. A missing route, authentication rejection, rate limiting, other HTTP or transport failure, or malformed response remains a failure.
+Session catalog pages use recent server ordering, 15-row windows, and response paging metadata. Preserve pinned backfill, deduplicate by stored session ID, and keep loaded rows when a later page fails. Search uses the server-default profile and a bounded server result set; stale responses cannot replace a newer query.
 
-Session discovery requires `GET /api/sessions` with archived sessions excluded, 15-row `limit` and `offset` pages, and server-side recent ordering by `last_active` with `started_at` as the data fallback. The response's `total`, `limit`, and `offset` metadata controls exhaustion; advance by the requested page window rather than by response length because Hermes may append pinned sessions beyond that window. Deduplicate this pinned backfill by stable stored session ID while preserving the progressively loaded catalog. Compact rows are authoritative for profile, source, model, pinned, and unread state; `source: "cron"` identifies a scheduled run. Opening an unread row sends `PATCH /api/sessions/{session_id}` with `unread: false` and its profile context. A failed read acknowledgement does not block opening the conversation; later authoritative metadata may restore unread state. Pin/Unpin sends the same PATCH with `pinned` and the row's owning `profile`; Celeste applies the move optimistically but accepts the response's authoritative pinned state and restores the prior field on failure. Rename sends a trimmed non-empty `title` with the owning `profile`, keeps the prior title visible while the request runs, then uses Hermes' returned title or presents its validation error without inventing a local result. Missing routes, authentication rejection, rate limiting, other HTTP or transport failures, and malformed responses remain failures instead of silently changing transports.
+Pin and read changes may update the projection optimistically, then accept Hermes as authoritative. Rename keeps the existing title until Hermes accepts a trimmed nonblank replacement.
 
-Conversation search uses `GET /api/sessions/search` with a trimmed `q`, the server-default profile, and `limit=20`. Current Hermes searches session IDs first and indexed message content second, resolves compressed lineages to their live tips, and returns a bounded result list rather than offset metadata. Celeste therefore does not invent search pagination. It strips Hermes FTS highlight markers before rendering snippets, merges already-loaded matches ahead of server hits by stored session ID, ignores stale debounced responses, and leaves the paged catalog untouched so clearing search restores it exactly.
+Persisted history loads with `order=latest` and `include_compacted=true`. The transcript decoder combines assistant prose, reasoning, tool calls/results, and structured process markers into the same projection used by live events.
 
-The shared HTTP client does not follow redirects. Reverse proxies must expose the expected routes directly under the normalized base path.
-
-## WebSocket admission
-
-The gateway endpoint is `/api/ws` using `ws` or `wss` to match the base URL.
-
-- Provider-authenticated sessions mint a fresh one-use ticket for each connection and use `?ticket=...`.
-- Desktop-launched or test dashboards may provide an ephemeral machine session token through `?token=...`.
-- Tokenless access is a loopback development behavior, not a public deployment mode.
-
-A successful HTTP WebSocket upgrade is not protocol readiness. Wait for the `gateway.ready` event before setting `Connected`.
-
-The disposable live-contract resume path sends its request from `onOpen` and does not wait for `gateway.ready`. The lifecycle-owned production gateway does wait. Do not generalize the disposable-path behavior to persistent conversation RPCs.
-
-## JSON-RPC
-
-Requests use JSON-RPC 2.0 with a unique string ID, method, and params. `HermesGateway` correlates responses by ID and fails all pending requests when a socket is replaced or disconnected.
-
-Celeste currently uses:
+## JSON-RPC surface
 
 | Method | Identity | Purpose |
 | --- | --- | --- |
-| `session.list` | none | Foreground health check on the lifecycle-owned gateway |
-| `session.create` | profile | Create the profile-scoped runtime for a local draft's first Send |
-| `session.resume` | stored session ID | Attach to durable history and recover runtime state |
+| `session.list` | none | Foreground gateway health check |
+| `session.create` | profile | Create the runtime for a local draft’s first Send |
+| `session.resume` | stored session ID | Bind durable history to a runtime |
 | `prompt.submit` | runtime session ID | Persist and begin a user turn |
-| `session.interrupt` | runtime session ID | Stop active work before reconciling history |
+| `session.interrupt` | runtime session ID | Stop work before reconciliation |
 
-Creation and resume include `source: "android"` and a terminal column count. Treat these as protocol inputs, not UI labels.
-
-Hermes does not insert a durable session row during `session.create`. The row is created lazily by the first `prompt.submit`. Celeste may therefore prepare the empty composer on launch, but it must keep that draft out of the conversation catalog until prompt submission succeeds or authoritative reconciliation confirms the submission.
+Creation and resume include `source: "android"` and terminal columns. Hermes creates the durable session row lazily on first prompt submission, so an untouched local draft stays out of the catalog.
 
 ## Event projection
 
-The current reducer recognizes:
+Celeste recognizes message lifecycle, interim assistant prose, reasoning, tools, interruption, busy/session status, compaction, background-process completion, and top-level errors.
 
-- `message.start`, `message.delta`, `message.interim`, `message.complete`, `message.error`;
-- `reasoning.delta` and `reasoning.available`;
-- `message.interrupted`, `session.interrupted`, `session.busy`, `session.info`;
-- `status.update` with structured `compacting`, `compacted`, and `process` kinds;
-- `tool.start` and `tool.complete`;
-- top-level `error`.
+- Reasoning and tools form chronological Steps segments.
+- Interim assistant messages remain ordinary transcript prose and split adjacent Steps segments.
+- `thinking.delta` is transient activity status, not a persisted reasoning step.
+- Tool start and completion correlate by stable tool-call identity.
+- Compaction status begins and ends from structured lifecycle events.
+- Background-process completion produces one compact result row with details available on demand.
+- Notifications with a blank session ID apply to the active conversation; nonblank mismatched runtime IDs are ignored.
 
-`reasoning.delta` and `reasoning.available` provide display reasoning for the current activity segment. Interim assistant messages appear in the transcript and close that segment; later reasoning or tools begin a fresh Steps segment. `thinking.delta` carries provider/status activity for the running turn. Tool events correlate by `tool_id` (or the current equivalent tool-call ID alias), so simultaneous tools with the same name retain their own start order and completion detail.
+`session.resume` binds runtime state while the dashboard history route supplies persisted display history. Resume retries are bounded, preserve readable history, and end in an explicit Retry surface.
 
-`status.update(kind = "compacting")` begins the active conversation's summarization status. `status.update(kind = "compacted")`, turn completion, or the first subsequent message, reasoning, thinking, tool, or MOA activity event clears it. Celeste uses fixed presentation copy for this structured lifecycle while other status kinds keep their own projections.
+## Update workflow
 
-`status.update(kind = "process")` carries Hermes' completed background-process marker with process ID, terminal status, exit code, command, and output. Celeste projects the live marker into one compact process row and bounds the retained output while preserving its newest tail. Hermes also persists that marker as a synthetic user turn; restored-history decoding uses the same parser and process identity so live and reopened conversations present the same result instead of duplicating it as ordinary chat prose.
+1. Inspect the installed Hermes server and Desktop source.
+2. Compare Celeste’s request, decoder, reducer, and lifecycle behavior.
+3. Add a focused protocol or state regression using synthetic data.
+4. Run the affected unit and lint boundaries.
+5. Use the opt-in live contract when route admission or response shape changes.
+6. Update this document only for durable protocol contracts.
 
-Celeste loads persisted display history from `GET /api/sessions/{session_id}/messages` with the owning profile, `order=latest`, and `include_compacted=true`. Assistant rows may expose reasoning through `reasoning`, `reasoning_content`, or `reasoning_details`; their tool-call metadata correlates with following `role: "tool"` rows. Celeste reconstructs those rows into settled chronological Steps segments around assistant prose while `session.resume` binds the live runtime and current turn state. A connected resume receives the initial request plus four automatic retries; REST history remains visible throughout, and a user-initiated Retry begins a fresh bounded cycle.
-
-Event names, payloads, and ordering are verified against current Hermes source and covered by focused decoding/state tests. This document records the cross-event semantics that connect those implementation points.
-
-Notifications with a blank `session_id` are accepted for the active conversation. Only a non-empty mismatched runtime ID is filtered out. `gateway.ready` is consumed as transport readiness and is not emitted as a conversation event.
-
-## Protocol update workflow
-
-For a protocol change:
-
-1. Inspect the installed official Hermes implementation.
-2. Compare the existing Celeste request, decoder, and state reducer.
-3. Evaluate lifecycle, failure, and mobile edge cases against Celeste’s architecture.
-4. Add a focused MockWebServer or state-reducer regression.
-5. Run the relevant unit suite.
-6. Use the opt-in real-dashboard contract test when route admission, authentication, or server response shape changed.
-7. Update this document only when a route, invariant, protocol rule, or source location changed.
-
-Never paste live payloads containing credentials, messages, tool output, attachments, or personal identifiers into docs or fixtures.
+Never commit real credentials, messages, tool output, attachments, paths, or identifiers as fixtures or documentation.

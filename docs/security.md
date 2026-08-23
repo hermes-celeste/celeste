@@ -2,79 +2,46 @@
 
 ## Trust boundary
 
-Celeste connects directly to a user-supplied Hermes dashboard. The dashboard is authoritative and may expose private conversations, tool activity, files, credentials, and agent controls. Treat all received content and connection material as sensitive.
-
-Celeste currently requests only `INTERNET`. Add Android permissions only for an implemented feature and document the data path before requesting them.
+Celeste connects directly to a user-supplied Hermes dashboard. Dashboard content and connection material are sensitive. The app requests network access; additional Android permissions require a shipped feature and an explicit data path.
 
 ## Transport
 
-Require HTTPS for public hosts. Plain HTTP is limited by `DashboardUrlPolicy` to loopback, private/LAN, link-local, and Tailscale addresses. Keep this validation at the network boundary rather than relying on UI copy.
-
-`android:usesCleartextTraffic="true"` permits Android to make connections that the application policy then restricts. Do not weaken or bypass `DashboardUrlPolicy` when adding alternate connection entry points.
+Require HTTPS for public hosts. `DashboardUrlPolicy` limits plain HTTP to loopback, private, LAN, link-local, and Tailscale destinations even though the Android manifest permits cleartext traffic.
 
 ## Credentials
 
-Supported credential forms are:
+Supported credentials are open-loopback access, a machine session token, and a provider-authenticated cookie session.
 
-- no credential for open loopback development;
-- a machine session token;
-- a provider-authenticated cookie session that mints one-use WebSocket tickets.
+Passwords and one-use WebSocket tickets remain in process memory. Reusable static tokens and the Hermes cookies required for session restoration may be persisted only through `ConnectionStore`.
 
-Passwords and WebSocket tickets are process-memory only. Passwords are never persisted; successful provider login persists only the Hermes access, refresh, and provider cookies needed to restore the authenticated session. Static tokens and those session cookies may be remembered as encrypted reusable authentication material. Clear password and token fields from UI state after every connection attempt. Do not place credentials in:
+Never place credentials in Compose saved state, ordinary preferences or databases, plaintext files, logs, exceptions, analytics, clipboard helpers, fixtures, screenshots, documentation, shell history, or committed environment files.
 
-- Compose saved state or `rememberSaveable`;
-- `Bundle`, ordinary DataStore/SharedPreferences, databases, or plaintext files;
-- logs, crash messages, analytics, clipboard helpers, fixtures, screenshots, or documentation;
-- command history or committed environment files.
+`AndroidConnectionStore` keeps safe endpoint/account metadata in private preferences and AES-GCM encrypts reusable authentication with a non-exportable, unlocked-device Android Keystore key. Ciphertext lives in `noBackupFilesDir`; authenticated data binds it to application ID, format version, endpoint, and authentication mode. There is no plaintext fallback.
 
-`AndroidConnectionStore` keeps the normalized endpoint, authentication mode, provider, and optional username in a private descriptor preference. Reusable authentication is AES-GCM encrypted with a non-exportable Android Keystore key that requires the device to be unlocked. Ciphertext lives in `noBackupFilesDir`; additional authenticated data binds it to the application ID, format version, exact normalized endpoint including path prefix, and authentication mode. There is no plaintext or weak-storage fallback.
+Restored cookies must be unexpired, belong to the saved host, and match its path. PKCE and unrelated cookies are excluded. Definitive authentication rejection removes reusable authentication; connectivity, timeout, rate-limit, malformed-response, and server failures preserve it for explicit Retry.
 
-`ConnectionStore` defines the platform-neutral persistence contract; Android Keystore is the only production implementation today. A future iOS target must provide equivalent Keychain-backed protection and preserve Sign out, Forget connection, endpoint binding, rotation, redaction, and failure semantics. Shared code must never introduce a plaintext fallback to avoid writing a platform adapter.
+Cookie rotation is persisted after successful restoration and on app background through serialized store access. Connection generations prevent late writes from recreating cleared authentication.
 
-Restored provider cookies must be unexpired Hermes session cookies for the exact saved host and a path matching the normalized endpoint. PKCE and unrelated cookies are never exported. Definitive 401/403 rejection deletes reusable authentication and pauses later automatic attempts; offline, timeout, 429, malformed response, and server failures retain the encrypted material for explicit Retry.
-
-Provider access and refresh cookies can rotate. After a successful cold restore and when the app moves to the background, Celeste re-encrypts the latest cookie-jar state through serialized store access. Sign out and Forget connection invalidate the active connection generation before cleanup so a late refresh write cannot recreate deleted authentication material.
-
-`Sign out` makes a best-effort `/auth/logout` request, clears the in-memory cookie jar, deletes encrypted authentication material and its Keystore key, and retains only safe prefill metadata. `Forget connection` additionally deletes the descriptor. Neither action depends on the server being reachable before local cleanup can complete.
+Sign out performs best-effort server logout, clears in-memory authentication, and removes the encrypted secret while retaining safe prefill metadata. Forget connection also removes the descriptor.
 
 ## One-use WebSocket tickets
 
-A cookie-authenticated connection mints a fresh ticket at `/api/auth/ws-ticket` for each WebSocket attempt. Never reuse, persist, or log a ticket. Reconnect through the endpoint provider so it can mint a new ticket.
-
-WebSocket tokens and tickets appear in URL query parameters by protocol design. Do not log full WebSocket URLs, OkHttp requests, request-bearing exceptions, proxy traces, or network-inspection exports.
+Mint a fresh ticket for every cookie-authenticated WebSocket attempt. Never reuse, persist, or log tickets or full WebSocket URLs.
 
 ## Private application data
 
-The manifest disables backup. `backup_rules.xml` and `data_extraction_rules.xml` additionally exclude every application-data domain plus the named `celeste_connection.xml` descriptor from cloud backup and device transfer. Encrypted authentication material is under `noBackupFilesDir`. Keep the named exclusion and broad defense-in-depth exclusions aligned with any storage change.
+The manifest disables backup. Backup and extraction rules exclude application-data domains and the connection descriptor; encrypted material resides under `noBackupFilesDir`.
 
-Password fields are visually masked, but the app does not currently set `FLAG_SECURE`. Masking does not provide storage encryption, screenshot blocking, clipboard protection, or recording protection. Do not use real credentials in review screenshots or recordings.
+Celeste does not persist conversation content or transmit it outside the configured dashboard. Explicit transcript selection and code-block Copy may place only user-selected content on the device clipboard. Automatic copying and credential copying are forbidden.
 
-Celeste must not persist private conversation content or transmit it outside the user-configured Hermes dashboard. Normal transcript selection and the explicit code-block Copy action may place only the content the user chose onto the device clipboard. That user-initiated, device-local handoff is allowed; it is not Celeste persistence or exfiltration. Never write conversation content to the clipboard automatically, never place credentials there, and do not retain a second application-owned copy after the operation. Clipboard lifetime, history, and access after an explicit copy are controlled by the operating system and the device owner.
+Use synthetic data in tests. Never log or fixture real message bodies, assistant output, private tool context/results, attachments, file paths, dashboard addresses, profile/session identifiers, authenticated payloads, or live-test credentials.
 
-Do not log or fixture:
-
-- message bodies or assistant output;
-- tool names paired with private arguments/results;
-- attachment content or file paths;
-- dashboard addresses when they identify a private network;
-- profile/session identifiers from a real server;
-- live-test credentials or raw authenticated payloads.
-
-Use synthetic values in tests and `[REDACTED]` in documentation.
+Visual password masking is not screenshot or recording protection. Review media must use synthetic credentials.
 
 ## Test-build signing
 
-GitHub Actions signs the downloadable debug APK with a dedicated test-only key stored in repository Actions secrets. The key exists only to make successive test APKs update-compatible. It must never sign a release or store build.
-
-Do not commit, print, upload as an artifact, or reuse the test keystore or its password. The workflow decodes it into the runner's temporary directory only for packaging and removes it in an `always()` cleanup step. A release signing identity requires a separate design and explicit project-owner approval.
+GitHub Actions signs the downloadable debug APK with a dedicated test-only identity so successive test builds can update-install. The keystore and password remain in Actions secrets, exist only temporarily on the runner, and never sign a release or store build.
 
 ## Authentication changes
 
-For a new authentication mode:
-
-1. verify current Hermes server behavior;
-2. identify every credential-bearing hop;
-3. keep transport/authentication independent of Compose;
-4. define memory, persistence, redaction, expiry, logout, and backup behavior;
-5. add admission and failure-path tests;
-6. update [`hermes-protocol.md`](hermes-protocol.md) for protocol facts and this document for security boundaries.
+A new authentication mode must define every credential-bearing hop, memory and persistence behavior, redaction, expiry, logout, backup policy, failure semantics, and boundary tests before implementation.

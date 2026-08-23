@@ -2,84 +2,45 @@
 
 ## Evidence by boundary
 
-Match verification to what changed:
-
 | Change | Required evidence |
 | --- | --- |
-| Documentation only | Link/terminology audit and `git diff --check` |
-| Portable controller, state, or protocol logic | Focused unit tests for the affected controller, state, or protocol behavior |
-| URL, authentication, HTTP, or WebSocket behavior | Focused MockWebServer/gateway regressions; use the live contract when server admission or shape changed |
-| Compose layout, copy, color, or interaction state | Relevant unit checks plus focused host rendering, visual review, and validation of the affected previews |
-| Manifest, resources, launcher, packaging, or install behavior | Local `lintDebug`, GitHub Actions packaging, and device verification when behavior crosses onto Android |
-| Release milestone | Targeted local evidence, a successful full GitHub Actions run and GitHub-built APK, and meaningful real-device flows |
+| Documentation | Link and terminology audit plus `git diff --check` |
+| Controller, state, or protocol | Focused host-unit tests at the owning boundary |
+| HTTP, authentication, or WebSocket | Focused MockWebServer or gateway regressions |
+| Compose presentation or interaction | Focused logic checks, host rendering, and visual review |
+| Manifest, resources, or packaging | `lintDebug`, GitHub packaging, and device verification when applicable |
+| Release milestone | Targeted local evidence, successful GitHub Actions, GitHub-built APK, and meaningful device flows |
 
-Always run `git diff --check`. Disclose any changed runtime surface that was not exercised.
+Always run `git diff --check` and disclose changed runtime surfaces that were not exercised.
 
-## Local scope versus CI
+## Local scope and CI
 
-Local verification is intentionally targeted. During implementation, run only the test class, preview, lint task, or contract that owns the behavior being changed. For visual work, render and validate the affected previews, inspect them, and update accepted references only after project-owner approval.
+Run focused tests, lint, or screenshot scenarios during development. GitHub Actions owns the complete unit, lint, screenshot, coverage, and packaging matrix. Broaden local verification when a change crosses several boundaries or while diagnosing CI.
 
-Do not run the complete GitHub Actions matrix locally as a routine pre-push or post-edit ritual. GitHub Actions owns full unit, lint, screenshot, and packaging regression after each push. Run broader local suites only when a change crosses several boundaries, shared infrastructure makes focused selection unreliable, or a CI failure needs local diagnosis.
-
-## Unit and protocol tests
-
-Tests live under `app/src/test`.
-
-The repository does not have shared Kotlin Multiplatform source sets yet. Portable controller/protocol tests still run as Android host-unit tests, but they should exercise injected contracts without requiring Activity, AndroidX `ViewModel`, or device APIs. Move them to shared tests when the build boundary exists. Android adapters retain Android-specific unit, lint, screenshot, packaging, and device evidence. A future iOS target will require its own runtime, accessibility, lifecycle, and system-integration checks; shared tests alone will not establish iOS quality.
-
-- `DashboardUrlPolicyTest` owns URL normalization and cleartext admission.
-- `DashboardClientTest` owns HTTP/authentication and short WebSocket operations.
-- `ConnectionStoreTest` owns bootstrap decisions, secret redaction, Sign out versus Forget semantics, and ciphertext endpoint binding.
-- `BackupExclusionTest` owns named descriptor exclusions across legacy backup, cloud backup, and device transfer rules.
-- `HermesGatewayTest` owns readiness, request correlation, events, endpoint refresh, disconnect behavior, and restored process-result decoding.
-- `BackgroundProcessResultTest` owns the current Hermes completion-marker parser, identity, status, and output bounds.
-- `ConversationEventReducerTest` owns pure transcript, reasoning, tool, process-result, streaming, turn-state, and compaction projection.
-- `SessionCatalogCoordinatorTest` owns paging, search, metadata reconciliation, optimistic pin/rename actions, and stale catalog-request rejection.
-- `CelesteViewModelTest` is the current host-unit location for `CelesteController` session creation/resume, session-scoped asynchronous publication, event admission/integration, interruption, reconnect, host lifetime, and no-resend invariants. New portable behavior should exercise the controller directly even while older cases still enter through the thin Android adapter. `CelesteViewModelAutoLoginTest` owns cold restore, connected-readiness gating, typed recovery, remembered login, and cleanup transitions.
-- `LiveHermesDashboardTest` is the opt-in real-server contract.
-
-Add a regression at the lowest layer that owns the failure. Portable application and host-lifetime invariants belong to direct controller tests even when a socket symptom exposed them; Android lifecycle wiring belongs to the ViewModel adapter tests.
-
-Mock WebSocket tests use real time with `runBlocking`. Do not convert them to `runTest`: virtual-time advancement can outrun real MockWebServer callbacks and create false timeouts. Pure coroutine/state tests can use `runTest`.
-
-When a change genuinely warrants the complete local unit suite, run:
-
-```bash
-scripts/celeste-env ./gradlew --no-daemon testDebugUnitTest
-```
+Pure state tests may use `runTest`. Mock WebSocket tests use real time with `runBlocking` because virtual time can outrun MockWebServer callbacks.
 
 ## Host-rendered Compose screenshots
 
-The screenshot scenarios live in `app/src/screenshotTest`; accepted PNGs live in `app/src/screenshotTestDebug/reference`. The current matrix covers Gateway setup, password sign-in, Settings and connected Gateway management, saved-connection restoration and recovery, the empty conversation landing and navigation drawer, drawer search, conversation row actions, rename at normal and narrow large-text widths, pin failure, composing, rich Markdown at normal and narrow phone widths, jump-to-latest navigation, streaming, completion, reconnection, active conversation compaction, Thinking activity, and compact background-process results with their inspection sheet.
+Scenarios live in `app/src/screenshotTest`; accepted references live in `app/src/screenshotTestDebug/reference`.
 
-Validate one affected preview during iteration:
+Validate a focused scenario with:
 
 ```bash
 scripts/celeste-env ./gradlew --no-daemon validateDebugScreenshotTest --tests '*PreviewScreenshot*'
 ```
 
-When broad local screenshot validation is warranted, run:
-
-```bash
-scripts/celeste-env ./gradlew --no-daemon validateDebugScreenshotTest
-```
-
-For an intentionally accepted visual change, update references only after project-owner review:
+Update accepted references only after project-owner visual approval, using separate update and validation invocations:
 
 ```bash
 scripts/celeste-env ./gradlew --no-daemon updateDebugScreenshotTest
 scripts/celeste-env ./gradlew --no-daemon validateDebugScreenshotTest
 ```
 
-Run update and validation in separate Gradle invocations. A combined task graph can validate stale references before the update runs.
-
-A reference update is not proof by itself. Inspect the generated images for clipping, hierarchy, contrast, copy, and state accuracy.
-
-The screenshot plugin and validation API are experimental, and the current references use exact image comparison. Toolchain, font, renderer, dimensions, preview names, and dependency changes can alter baselines. Host-rendered LayoutLib screenshots do not verify real-device rendering, IME behavior, lifecycle/process death, platform accessibility, or networking.
+Inspect rendered output for clipping, hierarchy, contrast, copy, and state accuracy. LayoutLib does not verify IME behavior, lifecycle, device accessibility, networking, or physical-device rendering.
 
 ## Live Hermes contract
 
-Pass the dashboard URL and optional ephemeral token only through the process environment:
+The opt-in live test lists and resumes a real stored session. Supply its dashboard URL and optional ephemeral token only through process environment:
 
 ```bash
 HERMES_CELESTE_LIVE_URL=http://127.0.0.1:9119 \
@@ -88,24 +49,16 @@ scripts/celeste-env ./gradlew --no-daemon testDebugUnitTest \
   --tests 'dev.hazydreams.hermesceleste.network.LiveHermesDashboardTest'
 ```
 
-The test lists and resumes a real stored session. It skips when the URL is absent. Never print or persist the token. Remove temporary token files and stop any dashboard process created for the test.
+The test skips when no URL is supplied. Never print, persist, or fixture the token or real transcript data.
 
 ## APK and device cadence
 
-Do not assemble, retrieve, inspect, or install APKs in agent workflows. Use host tests per change; GitHub Actions verifies packaging on pull requests and produces the consistently signed test APK only from successful `main` runs. The project owner retrieves that artifact from GitHub and handles real-device installation and updates.
+Do not assemble or install APKs in agent workflows. Pull requests verify packaging; successful `main` runs publish the consistently signed `Hermes-Celeste-latest.apk` test artifact. The project owner retrieves and update-installs it so application data is preserved.
 
-Real-device feedback remains valuable for Android-only behavior such as lifecycle transitions, IME/insets, system back, permissions, network changes, launcher assets, and performance. Record owner-reported flows and device conditions rather than reporting “tested on device” without specifics.
-
-There is currently no `app/src/androidTest` suite. The configured instrumentation runner and connected-device tasks do not constitute device coverage; report Android runtime behavior as untested unless it was explicitly exercised.
-
-Base-path-prefixed dashboard routing is supported in source but does not yet have a direct MockWebServer regression. Add one when route joining changes.
+Host tests cannot establish Android runtime behavior. Record device, build, and observed flow for IME, lifecycle, system navigation, accessibility, networking, permissions, and performance claims.
 
 ## GitHub Actions
 
-`.github/workflows/android.yml` runs the repository checks on pull requests. Pull requests must pass unit tests, lint, screenshot validation, and debug APK assembly without publishing an artifact.
+The Android workflow runs unit tests, lint, screenshot validation, coverage, and debug packaging. Codecov is informational.
 
-The `Verify` job generates `app/build/reports/kover/reportDebug.xml` from local JVM unit tests and uploads it to Codecov using GitHub OIDC. Codecov project and patch statuses are informational, and its pull-request comment includes both project and patch coverage as the primary summary; coverage does not gate merges. The report includes the full application source, including Compose UI, but Kover does not measure screenshot or device execution.
-
-A successful `main` run, including a manually dispatched run, publishes `Hermes-Celeste-latest.apk` as the current test build. The workflow uploads the new APK before deleting older artifacts with the same name, then verifies that exactly one remains. A failed build cannot remove the last known-good package. GitHub requires artifacts to expire; the current APK uses the maximum 90-day retention and requires GitHub sign-in to download.
-
-The test APK is a debug build signed with a dedicated test-only identity, not a release or store artifact. Install it only for project testing. Each successful build uses the same application ID and test signing identity so Android can update-install it over an earlier GitHub Actions build while preserving application data. A locally built debug APK has a different signing identity and cannot update a GitHub-built installation.
+The published test APK uses a dedicated test-only signing identity and replaces older artifacts only after a successful upload. It is not a release or store build.
