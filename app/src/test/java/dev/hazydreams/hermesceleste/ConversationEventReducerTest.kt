@@ -189,6 +189,45 @@ BUILD SUCCESSFUL
     }
 
     @Test
+    fun processCompletionDoesNotSplitTheActiveToolSteps() {
+        val completion = """[IMPORTANT: Background process proc_old completed normally (exit code 0).
+Command: ./gradlew test
+Output:
+BUILD SUCCESSFUL
+]""".trimIndent()
+        val processEvent = GatewayEvent(
+            type = "status.update",
+            sessionId = "runtime-7",
+            payload = buildJsonObject {
+                put("kind", "process")
+                put("text", completion)
+            },
+        )
+
+        val result = reduceEvents(
+            event("message.start"),
+            event(
+                "tool.start",
+                """{"tool_id":"tool-current","name":"read_file","context":"Current.kt"}""",
+            ),
+            processEvent,
+            event(
+                "tool.complete",
+                """{"tool_id":"tool-current","name":"read_file","summary":"Read current file","result":"42 lines"}""",
+            ),
+            event("message.complete", """{"content":"Done","status":"complete"}"""),
+        )
+
+        assertEquals(listOf("user", "steps", "process", "assistant"), result.projection.messages.map { it.role })
+        val thinking = result.projection.messages.single { it.role == "steps" }
+        val tool = thinking.steps.single()
+        assertEquals("tool-current", tool.id)
+        assertEquals("Read current file", tool.summary)
+        assertFalse(thinking.pending)
+        assertFalse(tool.pending)
+    }
+
+    @Test
     fun thinkingDeltaDoesNotCreateSteps() {
         val result = reduceEvents(
             event("message.start"),
