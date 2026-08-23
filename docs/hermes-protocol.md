@@ -52,6 +52,7 @@ Persisted history loads with `order=latest` and `include_compacted=true`. The tr
 | `session.resume` | stored session ID | Bind durable history to a runtime |
 | `prompt.submit` | runtime session ID | Persist and begin a user turn |
 | `session.interrupt` | runtime session ID | Stop work before reconciliation |
+| `clarify.respond` | clarification request ID | Answer or skip a pending clarification |
 
 Creation and resume include `source: "android"` and terminal columns. Hermes creates the durable session row lazily on first prompt submission, so an untouched local draft stays out of the catalog.
 
@@ -65,6 +66,7 @@ Celeste recognizes message lifecycle, interim assistant prose, reasoning, tools,
 - Tool start and completion correlate by stable tool-call identity.
 - File-edit calls aggregate by assistant turn and path into one Changes projection backed by structured diffs.
 - Todo lifecycle events replace the active session’s task projection from their ordered stable-ID snapshot; an empty snapshot or an ended turn clears active work.
+- Clarification requests remain inline and actionable across resume, then settle into compact question-and-answer transcript content.
 - Compaction status begins and ends from structured lifecycle events.
 - Background-process completion produces one compact result row with details available on demand.
 - Notifications with a blank session ID apply to the active conversation; nonblank mismatched runtime IDs are ignored.

@@ -223,6 +223,53 @@ One test failed
     }
 
     @Test
+    fun persistedClarificationRestoresAsCompactQuestionAndAnswerContent() {
+        val messages = decodeGatewayMessages(
+            Json.parseToJsonElement(
+                """[
+                    {"row_id":41,"role":"user","text":"Help me choose"},
+                    {"role":"tool","tool_call_id":"clarify-1","name":"clarify","result":"{\"question\":\"Which target?\",\"choices_offered\":[\"Staging\",\"Production\"],\"user_response\":\"Staging\"}"},
+                    {"row_id":43,"role":"assistant","text":"Continuing with staging."}
+                ]""".trimIndent(),
+            ).jsonArray,
+        )
+
+        assertEquals(listOf("user", "clarification", "assistant"), messages.map { it.role })
+        val clarification = messages[1]
+        assertTrue(!clarification.pending)
+        assertEquals("Which target?", clarification.clarification?.question)
+        assertEquals("Staging", clarification.clarification?.answer)
+        assertEquals("clarify:clarify-1", clarification.id)
+    }
+
+    @Test
+    fun multiSelectClarificationPreservesTransportValuesAndCleansSettledLabels() {
+        val pending = ConversationMessage(
+            role = "clarification",
+            text = "",
+            id = "clarify:clarify-1",
+            pending = true,
+            clarification = ClarificationExchange(
+                requestId = "request-1",
+                question = "Which checks?",
+                choices = listOf("Tests (Recommended)", "Docs"),
+                multiSelect = true,
+            ),
+        )
+        val encoded = encodeClarificationChoices(listOf("Tests (Recommended)", "Docs"))
+
+        assertEquals("[\"Tests (Recommended)\",\"Docs\"]", encoded)
+        val settled = settleClarificationLocally(
+            messages = listOf(pending),
+            messageId = pending.id!!,
+            requestId = "request-1",
+            answer = encoded,
+        ).single()
+        assertTrue(!settled.pending)
+        assertEquals("Tests, Docs", settled.clarification?.answer)
+    }
+
+    @Test
     fun canonicalMessageDecoderHandlesContentAndToolAliases() {
         val messages = decodeGatewayMessages(
             Json.parseToJsonElement(

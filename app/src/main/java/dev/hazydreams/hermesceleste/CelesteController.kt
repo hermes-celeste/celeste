@@ -23,7 +23,11 @@ import dev.hazydreams.hermesceleste.network.StoredSession
 import dev.hazydreams.hermesceleste.network.TaskProgress
 import dev.hazydreams.hermesceleste.network.createSession
 import dev.hazydreams.hermesceleste.network.interruptSession
+import dev.hazydreams.hermesceleste.network.markClarificationSubmitting
+import dev.hazydreams.hermesceleste.network.resetClarificationSubmission
+import dev.hazydreams.hermesceleste.network.respondToClarification
 import dev.hazydreams.hermesceleste.network.resumeStoredSession
+import dev.hazydreams.hermesceleste.network.settleClarificationLocally
 import dev.hazydreams.hermesceleste.network.submitPrompt
 import kotlin.math.min
 import kotlinx.coroutines.CancellationException
@@ -955,6 +959,62 @@ internal class CelesteController(
                     definitiveMessage = "Hermes could not send that message.",
                 )
             }
+        }
+    }
+
+    fun respondToClarification(messageId: String, requestId: String, answer: String) {
+        val snapshot = mutableState.value
+        val activeGateway = gateway ?: return
+        val runtimeId = currentRuntimeSessionId ?: return
+        val requestIsPending = snapshot.messages.any { message ->
+            message.id == messageId &&
+                message.pending &&
+                message.clarification?.requestId == requestId &&
+                !message.clarification.submitting
+        }
+        if (!requestIsPending) return
+
+        mutableState.value = snapshot.copy(
+            messages = markClarificationSubmitting(snapshot.messages, messageId, requestId),
+            errorMessage = null,
+        )
+        controllerScope.launch {
+            val result = runCatching { activeGateway.respondToClarification(requestId, answer) }
+            if (gateway !== activeGateway || currentRuntimeSessionId != runtimeId) return@launch
+            if (result.isSuccess) {
+                mutableState.value = mutableState.value.copy(
+                    messages = settleClarificationLocally(
+                        messages = mutableState.value.messages,
+                        messageId = messageId,
+                        requestId = requestId,
+                        answer = answer,
+                    ),
+                    errorMessage = null,
+                )
+                return@launch
+            }
+
+            val failure = result.exceptionOrNull() ?: return@launch
+            mutableState.value = mutableState.value.copy(
+                messages = resetClarificationSubmission(
+                    messages = mutableState.value.messages,
+                    messageId = messageId,
+                    requestId = requestId,
+                ),
+            )
+            if (failure is GatewayRpcException && activeGateway.state.value == GatewayConnectionState.Connected) {
+                mutableState.value = mutableState.value.copy(
+                    errorMessage = failure.message ?: "Hermes could not send that answer.",
+                )
+                return@launch
+            }
+            recoverGatewayRequestFailure(
+                activeGateway = activeGateway,
+                failure = failure,
+                wasRunning = true,
+                definitiveTurnState = TurnState.Running,
+                definitiveMessage = "Hermes could not send that answer.",
+            )
         }
     }
 

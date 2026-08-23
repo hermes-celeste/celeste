@@ -25,6 +25,7 @@ data class ConversationMessage(
     val steps: List<ConversationStep> = emptyList(),
     val processResult: BackgroundProcessResult? = null,
     val fileEdits: List<FileEditOperation> = emptyList(),
+    val clarification: ClarificationExchange? = null,
 )
 
 internal fun appendReasoningToCurrentTurn(

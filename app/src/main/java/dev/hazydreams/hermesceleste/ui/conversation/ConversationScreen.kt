@@ -107,6 +107,7 @@ internal fun ConversationScreen(
     onComposerFocusRequestHandled: (Long) -> Unit = {},
     initiallyFollowLatest: Boolean = true,
     jumpToLatestVisibleOverride: Boolean? = null,
+    onClarificationRespond: (messageId: String, requestId: String, answer: String) -> Unit = { _, _, _ -> },
 ) {
     val listState = rememberLazyListState()
     val coroutineScope = rememberCoroutineScope()
@@ -206,6 +207,7 @@ internal fun ConversationScreen(
                         MessageBubble(
                             message = message,
                             onOpenInspection = { openedInspectionMessageId = message.id },
+                            onClarificationRespond = onClarificationRespond,
                         )
                     }
                     if (streamingText.isNotBlank()) {
