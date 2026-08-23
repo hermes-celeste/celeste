@@ -5,11 +5,15 @@ import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.ModalNavigationDrawer
 import androidx.compose.material3.rememberDrawerState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import dev.hazydreams.hermesceleste.CelesteUiState
 import dev.hazydreams.hermesceleste.CelesteController
 import dev.hazydreams.hermesceleste.ConnectionPhase
@@ -34,6 +38,16 @@ internal fun CelesteRoutes(
     val activeSummary = ui.activeSummary
     val sessions = ui.sessions
     var destination by rememberSaveable { mutableStateOf(CelesteDestination.Content) }
+    val focusManager = LocalFocusManager.current
+    val keyboardController = LocalSoftwareKeyboardController.current
+    val dismissConversationInput = {
+        focusManager.clearFocus(force = true)
+        keyboardController?.hide()
+    }
+
+    LaunchedEffect(destination) {
+        if (destination != CelesteDestination.Content) dismissConversationInput()
+    }
 
     when (destination) {
         CelesteDestination.Settings -> {
@@ -67,6 +81,11 @@ internal fun CelesteRoutes(
 
                 BackHandler(enabled = drawerState.isOpen) {
                     drawerScope.launch { drawerState.close() }
+                }
+                LaunchedEffect(drawerState) {
+                    snapshotFlow { drawerState.targetValue }.collect { targetValue ->
+                        if (targetValue == DrawerValue.Open) dismissConversationInput()
+                    }
                 }
                 ModalNavigationDrawer(
                     drawerState = drawerState,
@@ -127,7 +146,10 @@ internal fun CelesteRoutes(
                         onSend = controller::sendMessage,
                         onInterrupt = controller::interrupt,
                         onRetryResume = controller::reconnectNow,
-                        onOpenDrawer = { drawerScope.launch { drawerState.open() } },
+                        onOpenDrawer = {
+                            dismissConversationInput()
+                            drawerScope.launch { drawerState.open() }
+                        },
                         composerFocusRequest = composerFocusRequest,
                         onComposerFocusRequestHandled = onComposerFocusRequestHandled,
                     )
