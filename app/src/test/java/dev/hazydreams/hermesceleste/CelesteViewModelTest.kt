@@ -347,7 +347,10 @@ class CelesteViewModelTest {
         viewModel.updateDraft("Possibly accepted")
         viewModel.sendMessage()
         gateway.resumePayload = resumePayload(
-            messages = listOf(ConversationMessage(role = "user", text = "Possibly accepted")),
+            messages = listOf(
+                ConversationMessage(role = "user", text = "First"),
+                ConversationMessage(role = "user", text = "Possibly accepted"),
+            ),
             running = true,
         )
         gateway.promptFailure = IOException("socket closed during submit")
@@ -357,6 +360,58 @@ class CelesteViewModelTest {
         assertTrue(viewModel.state.value.queuedPrompts.isEmpty())
         assertEquals(TurnState.Running, viewModel.state.value.turnState)
         assertEquals(2, gateway.methods.count { it == "prompt.submit" })
+        viewModel.controller.close()
+    }
+
+    @Test
+    fun repeatedPriorTextDoesNotClearAnUnacceptedUncertainPrompt() = runTest {
+        val gateway = FakeGateway()
+        val viewModel = openConversation(gateway)
+        advanceUntilIdle()
+
+        viewModel.updateDraft("continue")
+        viewModel.sendMessage()
+        viewModel.updateDraft("continue")
+        viewModel.sendMessage()
+        gateway.resumePayload = resumePayload(
+            messages = listOf(ConversationMessage(role = "user", text = "continue")),
+            running = false,
+        )
+        gateway.promptFailure = IOException("socket closed during submit")
+        gateway.emit("message.complete", """{"content":"First done","status":"complete"}""")
+        advanceUntilIdle()
+
+        assertTrue(viewModel.state.value.isQueuePaused)
+        assertEquals(listOf("continue"), viewModel.state.value.queuedPrompts.map { it.text })
+        assertTrue(viewModel.state.value.queuedPrompts.single().deliveryUncertain)
+        viewModel.controller.close()
+    }
+
+    @Test
+    fun queuedTurnCanFailBeforePublishingActivityAndTheQueueKeepsDraining() = runTest {
+        val gateway = FakeGateway()
+        val viewModel = openConversation(gateway)
+        advanceUntilIdle()
+
+        viewModel.updateDraft("First")
+        viewModel.sendMessage()
+        viewModel.updateDraft("Second")
+        viewModel.sendMessage()
+        viewModel.updateDraft("Third")
+        viewModel.sendMessage()
+        gateway.emit("message.complete", """{"content":"First done","status":"complete"}""")
+        advanceUntilIdle()
+
+        gateway.emit("message.error", """{"message":"Second failed immediately"}""")
+        advanceUntilIdle()
+
+        assertTrue(viewModel.state.value.queuedPrompts.isEmpty())
+        assertEquals(TurnState.Running, viewModel.state.value.turnState)
+        assertEquals(
+            listOf("First", "Second", "Third"),
+            gateway.requests.filter { it.first == "prompt.submit" }
+                .map { it.second["text"]?.jsonPrimitive?.content },
+        )
         viewModel.controller.close()
     }
 

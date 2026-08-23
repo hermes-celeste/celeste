@@ -1017,6 +1017,7 @@ internal class CelesteController(
             } + 1,
         )
         val shouldPublish = !currentSessionPublished
+        val userMessageCountBeforeSubmit = snapshot.messages.count { it.role == "user" }
         mutableState.value = snapshot.copy(
             messages = snapshot.messages + ConversationMessage(
                 role = "user",
@@ -1072,7 +1073,11 @@ internal class CelesteController(
                                 parkedQueueSessions += storedSessionId
                             }
                         } else {
-                            markQueuedPromptDeliveryUncertain(storedSessionId, queuedPrompt.id)
+                            markQueuedPromptDeliveryUncertain(
+                                sessionId = storedSessionId,
+                                promptId = queuedPrompt.id,
+                                userMessageCountBeforeSubmit = userMessageCountBeforeSubmit,
+                            )
                         }
                     }
                     return@launch
@@ -1101,7 +1106,11 @@ internal class CelesteController(
                 }
                 if (queuedPrompt != null) {
                     queuedTurnAwaitingActivitySessionId = null
-                    markQueuedPromptDeliveryUncertain(storedSessionId, queuedPrompt.id)
+                    markQueuedPromptDeliveryUncertain(
+                        sessionId = storedSessionId,
+                        promptId = queuedPrompt.id,
+                        userMessageCountBeforeSubmit = userMessageCountBeforeSubmit,
+                    )
                 }
                 recoverGatewayRequestFailure(
                     activeGateway = activeGateway,
@@ -1541,7 +1550,10 @@ internal class CelesteController(
             queuedTurnAwaitingActivitySessionId == storedSessionId
         val startsQueuedTurn = awaitingQueuedActivity && event.startsQueuedTurnActivity()
         if (startsQueuedTurn) queuedTurnAwaitingActivitySessionId = null
-        if (awaitingQueuedActivity && !startsQueuedTurn && event.settlesTurn()) return
+        if (awaitingQueuedActivity && !startsQueuedTurn && event.isStaleQueuedSettleCandidate()) return
+        if (awaitingQueuedActivity && !startsQueuedTurn && event.settlesTurn()) {
+            queuedTurnAwaitingActivitySessionId = null
+        }
         val reduction = reduceConversationEvent(
             projection = ConversationProjection(
                 messages = current.messages,
@@ -1709,10 +1721,21 @@ internal class CelesteController(
         }
     }
 
-    private fun markQueuedPromptDeliveryUncertain(sessionId: String, promptId: String) {
+    private fun markQueuedPromptDeliveryUncertain(
+        sessionId: String,
+        promptId: String,
+        userMessageCountBeforeSubmit: Int,
+    ) {
         val queue = queuedPromptsBySession[sessionId] ?: return
         queue.replaceAll { prompt ->
-            if (prompt.id == promptId) prompt.copy(deliveryUncertain = true) else prompt
+            if (prompt.id == promptId) {
+                prompt.copy(
+                    deliveryUncertain = true,
+                    userMessageCountBeforeSubmit = userMessageCountBeforeSubmit,
+                )
+            } else {
+                prompt
+            }
         }
         parkedQueueSessions += sessionId
         refreshActiveQueueProjection(sessionId)
@@ -1720,14 +1743,20 @@ internal class CelesteController(
 
     private fun reconcileUncertainQueuedPrompts(resumed: ResumedSession) {
         val queue = queuedPromptsBySession[resumed.storedSessionId] ?: return
-        val representedUserText = sequenceOf(
+        val representedLiveUserText = sequenceOf(
             resumed.inflightUserText,
             resumed.queuedUserText,
-            resumed.messages.lastOrNull { it.role == "user" }?.text.orEmpty(),
         ).map(::normalizedPromptText).filter(String::isNotEmpty).toSet()
-        if (representedUserText.isEmpty()) return
+        val resumedUserMessages = resumed.messages.filter { it.role == "user" }
+        val latestResumedUserText = resumedUserMessages.lastOrNull()?.text?.let(::normalizedPromptText).orEmpty()
         queue.removeAll { prompt ->
-            prompt.deliveryUncertain && normalizedPromptText(prompt.text) in representedUserText
+            if (!prompt.deliveryUncertain) return@removeAll false
+            val normalizedText = normalizedPromptText(prompt.text)
+            normalizedText in representedLiveUserText ||
+                (
+                    prompt.userMessageCountBeforeSubmit?.let { resumedUserMessages.size > it } == true &&
+                        normalizedText == latestResumedUserText
+                    )
         }
         if (queue.isEmpty()) {
             queuedPromptsBySession.remove(resumed.storedSessionId)
@@ -1847,6 +1876,13 @@ private fun GatewayEvent.settlesTurn(): Boolean = when (type) {
     "message.interrupted",
     "session.interrupted",
     -> true
+    "session.busy" -> payload.boolean("busy") == false
+    "session.info" -> payload.boolean("running") == false
+    else -> false
+}
+
+private fun GatewayEvent.isStaleQueuedSettleCandidate(): Boolean = when (type) {
+    "message.complete" -> true
     "session.busy" -> payload.boolean("busy") == false
     "session.info" -> payload.boolean("running") == false
     else -> false
