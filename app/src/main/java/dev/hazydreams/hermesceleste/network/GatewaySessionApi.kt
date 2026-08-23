@@ -161,29 +161,33 @@ internal fun decodeGatewayMessages(elements: List<JsonElement>): List<Conversati
             val reasoning = sequenceOf("reasoning", "reasoning_content", "reasoning_details")
                 .mapNotNull(row::string)
                 .firstOrNull(String::isNotBlank)
-                ?.let { stripCodexCommentaryFromReasoning(it, commentary) }
-                ?.takeIf(String::isNotBlank)
-            if (reasoning != null) {
-                messages = appendReasoningToCurrentTurn(
-                    messages = messages,
-                    id = "${sourceIdentity ?: "resume-$index"}:reasoning",
-                    text = reasoning,
-                    replaceTail = false,
-                    stepsMessageId = "steps:${sourceIdentity ?: "resume-$index"}",
-                )
-            }
-            commentary.forEachIndexed { commentaryIndex, commentaryText ->
-                messages = settleCurrentTurnSteps(messages)
-                val baseIdentity = sourceIdentity ?: "resume-$index"
-                messages = messages + ConversationMessage(
-                    role = "assistant",
-                    text = commentaryText,
-                    id = uniqueMessageId(
-                        preferred = "$baseIdentity:commentary-$commentaryIndex",
-                        fallback = "resume-$index-commentary-$commentaryIndex",
-                    ),
-                    interim = true,
-                )
+            val baseIdentity = sourceIdentity ?: "resume-$index"
+            var reasoningIndex = 0
+            var commentaryIndex = 0
+            restoredAssistantSegments(reasoning, commentary).forEach { segment ->
+                if (segment.commentary) {
+                    messages = settleCurrentTurnSteps(messages)
+                    messages = messages + ConversationMessage(
+                        role = "assistant",
+                        text = segment.text,
+                        id = uniqueMessageId(
+                            preferred = "$baseIdentity:commentary-$commentaryIndex",
+                            fallback = "resume-$index-commentary-$commentaryIndex",
+                        ),
+                        interim = true,
+                    )
+                    commentaryIndex += 1
+                } else {
+                    val segmentIndex = reasoningIndex++
+                    val identitySuffix = if (segmentIndex == 0) "" else "-$segmentIndex"
+                    messages = appendReasoningToCurrentTurn(
+                        messages = messages,
+                        id = "$baseIdentity:reasoning$identitySuffix",
+                        text = segment.text,
+                        replaceTail = false,
+                        stepsMessageId = "steps:$baseIdentity$identitySuffix",
+                    )
+                }
             }
             if (text.isBlank()) return@forEachIndexed
         }
@@ -226,6 +230,11 @@ internal fun decodeGatewayMessages(elements: List<JsonElement>): List<Conversati
 
 private const val MIN_COMMENTARY_STRIP_LENGTH = 12
 
+private data class RestoredAssistantSegment(
+    val text: String,
+    val commentary: Boolean,
+)
+
 private fun JsonObject.codexCommentaryMessages(): List<String> {
     val items = when (val rawItems = get("codex_message_items")) {
         is JsonArray -> rawItems
@@ -255,25 +264,67 @@ private fun JsonObject.codexCommentaryMessages(): List<String> {
     }
 }
 
-private fun stripCodexCommentaryFromReasoning(
-    reasoning: String,
+private fun restoredAssistantSegments(
+    reasoning: String?,
     commentary: List<String>,
-): String {
-    var result = reasoning
-    var changed = false
-    commentary.forEach { text ->
-        val candidate = text.trim()
-        if (candidate.length >= MIN_COMMENTARY_STRIP_LENGTH && result.contains(candidate)) {
-            result = result.replaceFirst(candidate, "")
-            changed = true
-        }
+): List<RestoredAssistantSegment> {
+    val visibleCommentary = commentary.map(String::trim).filter(String::isNotBlank)
+    val visibleReasoning = reasoning?.takeIf(String::isNotBlank)
+    if (visibleCommentary.isEmpty()) {
+        return visibleReasoning
+            ?.let { listOf(RestoredAssistantSegment(text = it, commentary = false)) }
+            .orEmpty()
     }
-    if (!changed) return reasoning
-    return result
+
+    fun fallback(): List<RestoredAssistantSegment> = buildList {
+        visibleReasoning?.let { add(RestoredAssistantSegment(text = it, commentary = false)) }
+        visibleCommentary.forEach { add(RestoredAssistantSegment(text = it, commentary = true)) }
+    }
+
+    if (visibleReasoning == null || visibleCommentary.any { it.length < MIN_COMMENTARY_STRIP_LENGTH }) {
+        return fallback()
+    }
+
+    var searchStart = 0
+    val positions = visibleCommentary.map { text ->
+        val index = visibleReasoning.indexOfCommentaryBlock(text, searchStart)
+        if (index < 0) return fallback()
+        searchStart = index + text.length
+        index
+    }
+
+    return buildList {
+        var reasoningStart = 0
+        positions.forEachIndexed { index, commentaryStart ->
+            cleanedRestoredReasoning(visibleReasoning.substring(reasoningStart, commentaryStart))
+                .takeIf(String::isNotBlank)
+                ?.let { add(RestoredAssistantSegment(text = it, commentary = false)) }
+            val commentaryText = visibleCommentary[index]
+            add(RestoredAssistantSegment(text = commentaryText, commentary = true))
+            reasoningStart = commentaryStart + commentaryText.length
+        }
+        cleanedRestoredReasoning(visibleReasoning.substring(reasoningStart))
+            .takeIf(String::isNotBlank)
+            ?.let { add(RestoredAssistantSegment(text = it, commentary = false)) }
+    }
+}
+
+private fun String.indexOfCommentaryBlock(candidate: String, startIndex: Int): Int {
+    var index = indexOf(candidate, startIndex)
+    while (index >= 0) {
+        val end = index + candidate.length
+        val beginsAtBoundary = index == 0 || (index >= 2 && substring(index - 2, index) == "\n\n")
+        val endsAtBoundary = end == length || (end + 2 <= length && substring(end, end + 2) == "\n\n")
+        if (beginsAtBoundary && endsAtBoundary) return index
+        index = indexOf(candidate, startIndex = index + 1)
+    }
+    return -1
+}
+
+private fun cleanedRestoredReasoning(reasoning: String): String = reasoning
         .replace(Regex("""(\n\s*<!--\s*-->\s*)+(\n|$)"""), "\n")
         .replace(Regex("""\n{3,}"""), "\n\n")
         .trim()
-}
 
 private fun JsonElement?.scalarIdentity(): String? =
     (this as? JsonPrimitive)?.contentOrNull?.takeIf(String::isNotBlank)

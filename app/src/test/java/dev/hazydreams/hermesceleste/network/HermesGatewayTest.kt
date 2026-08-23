@@ -204,6 +204,7 @@ One test failed
     @Test
     fun restoredCodexCommentaryBecomesAssistantProseAndLeavesGenuineReasoning() {
         val commentary = "Checking PR mergeability and reviews"
+        val laterReasoning = "Verify the merged state after commentary."
         val messages = decodeGatewayMessages(
             buildJsonArray {
                 add(
@@ -217,7 +218,7 @@ One test failed
                     buildJsonObject {
                         put("row_id", 2)
                         put("role", "assistant")
-                        put("reasoning", "Compare current state.\n\n$commentary")
+                        put("reasoning", "Compare current state.\n\n$commentary\n\n$laterReasoning")
                         put(
                             "codex_message_items",
                             """[{"type":"message","role":"assistant","phase":"commentary","content":[{"type":"output_text","text":"$commentary"}]}]""",
@@ -250,7 +251,12 @@ One test failed
         assertEquals("Compare current state.", messages[1].steps.single().detail)
         assertEquals(commentary, messages[2].text)
         assertTrue(messages[2].interim)
-        assertEquals("terminal", messages[3].steps.single().toolName)
+        assertEquals(
+            listOf(ConversationStepKind.Reasoning, ConversationStepKind.Tool),
+            messages[3].steps.map { it.kind },
+        )
+        assertEquals(laterReasoning, messages[3].steps[0].detail)
+        assertEquals("terminal", messages[3].steps[1].toolName)
         assertTrue(messages.filter { it.role == "steps" }.flatMap { it.steps }.none { it.pending })
     }
 

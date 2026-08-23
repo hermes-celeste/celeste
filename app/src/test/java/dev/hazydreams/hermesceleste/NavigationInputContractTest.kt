@@ -23,12 +23,16 @@ class NavigationInputContractTest {
     }
 
     @Test
-    fun leavingConversationContentDismissesComposerInput() {
+    fun leavingOrLosingConversationContentDismissesComposerInput() {
         val routes = celesteRoutes().readText()
 
         assertTrue(
-            "Settings and Gateway navigation should dismiss composer focus",
-            routes.contains("if (destination != CelesteDestination.Content) dismissConversationInput()"),
+            "Navigation and authentication loss should dismiss composer focus whenever conversation content disappears",
+            routes.contains(
+                "val conversationContentVisible = destination == CelesteDestination.Content && sessions != null",
+            ) &&
+                routes.contains("LaunchedEffect(conversationContentVisible)") &&
+                routes.contains("if (!conversationContentVisible) dismissConversationInput()"),
         )
     }
 

@@ -38,6 +38,7 @@ internal fun CelesteRoutes(
     val activeSummary = ui.activeSummary
     val sessions = ui.sessions
     var destination by rememberSaveable { mutableStateOf(CelesteDestination.Content) }
+    val conversationContentVisible = destination == CelesteDestination.Content && sessions != null
     val focusManager = LocalFocusManager.current
     val keyboardController = LocalSoftwareKeyboardController.current
     val dismissConversationInput = {
@@ -45,8 +46,8 @@ internal fun CelesteRoutes(
         keyboardController?.hide()
     }
 
-    LaunchedEffect(destination) {
-        if (destination != CelesteDestination.Content) dismissConversationInput()
+    LaunchedEffect(conversationContentVisible) {
+        if (!conversationContentVisible) dismissConversationInput()
     }
 
     when (destination) {
