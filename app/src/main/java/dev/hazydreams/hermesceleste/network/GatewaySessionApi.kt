@@ -1,6 +1,7 @@
 package dev.hazydreams.hermesceleste.network
 
 import java.io.IOException
+import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonNull
@@ -156,9 +157,12 @@ internal fun decodeGatewayMessages(elements: List<JsonElement>): List<Conversati
                 val context = function.string("arguments")?.takeIf(String::isNotBlank) ?: name
                 persistedToolCalls[toolId] = name to context
             }
+            val commentary = row.codexCommentaryMessages()
             val reasoning = sequenceOf("reasoning", "reasoning_content", "reasoning_details")
                 .mapNotNull(row::string)
                 .firstOrNull(String::isNotBlank)
+                ?.let { stripCodexCommentaryFromReasoning(it, commentary) }
+                ?.takeIf(String::isNotBlank)
             if (reasoning != null) {
                 messages = appendReasoningToCurrentTurn(
                     messages = messages,
@@ -166,6 +170,19 @@ internal fun decodeGatewayMessages(elements: List<JsonElement>): List<Conversati
                     text = reasoning,
                     replaceTail = false,
                     stepsMessageId = "steps:${sourceIdentity ?: "resume-$index"}",
+                )
+            }
+            commentary.forEachIndexed { commentaryIndex, commentaryText ->
+                messages = settleCurrentTurnSteps(messages)
+                val baseIdentity = sourceIdentity ?: "resume-$index"
+                messages = messages + ConversationMessage(
+                    role = "assistant",
+                    text = commentaryText,
+                    id = uniqueMessageId(
+                        preferred = "$baseIdentity:commentary-$commentaryIndex",
+                        fallback = "resume-$index-commentary-$commentaryIndex",
+                    ),
+                    interim = true,
                 )
             }
             if (text.isBlank()) return@forEachIndexed
@@ -205,6 +222,57 @@ internal fun decodeGatewayMessages(elements: List<JsonElement>): List<Conversati
     }
 
     return messages.map(ConversationMessage::settledSteps)
+}
+
+private const val MIN_COMMENTARY_STRIP_LENGTH = 12
+
+private fun JsonObject.codexCommentaryMessages(): List<String> {
+    val items = when (val rawItems = get("codex_message_items")) {
+        is JsonArray -> rawItems
+        is JsonPrimitive -> rawItems.contentOrNull
+            ?.takeIf(String::isNotBlank)
+            ?.let { encoded ->
+                runCatching { Json.parseToJsonElement(encoded) as? JsonArray }.getOrNull()
+            }
+        else -> null
+    } ?: return emptyList()
+
+    return items.mapNotNull { itemElement ->
+        val item = itemElement as? JsonObject ?: return@mapNotNull null
+        if (item.string("type") != "message") return@mapNotNull null
+        if (!item.string("role").isNullOrBlank() && item.string("role") != "assistant") {
+            return@mapNotNull null
+        }
+        if (!item.string("phase").orEmpty().trim().equals("commentary", ignoreCase = true)) {
+            return@mapNotNull null
+        }
+        val content = item["content"] as? JsonArray ?: return@mapNotNull null
+        content.mapNotNull { partElement ->
+            val part = partElement as? JsonObject ?: return@mapNotNull null
+            if (part.string("type") != "output_text") return@mapNotNull null
+            part.string("text")?.takeIf(String::isNotBlank)
+        }.joinToString(separator = "").trim().takeIf(String::isNotBlank)
+    }
+}
+
+private fun stripCodexCommentaryFromReasoning(
+    reasoning: String,
+    commentary: List<String>,
+): String {
+    var result = reasoning
+    var changed = false
+    commentary.forEach { text ->
+        val candidate = text.trim()
+        if (candidate.length >= MIN_COMMENTARY_STRIP_LENGTH && result.contains(candidate)) {
+            result = result.replaceFirst(candidate, "")
+            changed = true
+        }
+    }
+    if (!changed) return reasoning
+    return result
+        .replace(Regex("""(\n\s*<!--\s*-->\s*)+(\n|$)"""), "\n")
+        .replace(Regex("""\n{3,}"""), "\n\n")
+        .trim()
 }
 
 private fun JsonElement?.scalarIdentity(): String? =

@@ -11,6 +11,7 @@ import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonArray
@@ -198,6 +199,174 @@ One test failed
         val steps = messages.single { it.role == "steps" }.steps
         assertEquals(listOf("terminal", "terminal"), steps.map { it.toolName })
         assertEquals(listOf("row-41", "resume-1", "steps:resume-2", "final"), messages.map { it.id })
+    }
+
+    @Test
+    fun restoredCodexCommentaryBecomesAssistantProseAndLeavesGenuineReasoning() {
+        val commentary = "Checking PR mergeability and reviews"
+        val messages = decodeGatewayMessages(
+            buildJsonArray {
+                add(
+                    buildJsonObject {
+                        put("row_id", 1)
+                        put("role", "user")
+                        put("text", "Merge it")
+                    },
+                )
+                add(
+                    buildJsonObject {
+                        put("row_id", 2)
+                        put("role", "assistant")
+                        put("reasoning", "Compare current state.\n\n$commentary")
+                        put(
+                            "codex_message_items",
+                            """[{"type":"message","role":"assistant","phase":"commentary","content":[{"type":"output_text","text":"$commentary"}]}]""",
+                        )
+                    },
+                )
+                add(
+                    buildJsonObject {
+                        put("row_id", 3)
+                        put("role", "tool")
+                        put("tool_call_id", "call-1")
+                        put("name", "terminal")
+                        put("context", "gh pr view 75")
+                    },
+                )
+                add(
+                    buildJsonObject {
+                        put("row_id", 4)
+                        put("role", "assistant")
+                        put("text", "Merged.")
+                    },
+                )
+            },
+        )
+
+        assertEquals(
+            listOf("user", "steps", "assistant", "steps", "assistant"),
+            messages.map { it.role },
+        )
+        assertEquals("Compare current state.", messages[1].steps.single().detail)
+        assertEquals(commentary, messages[2].text)
+        assertTrue(messages[2].interim)
+        assertEquals("terminal", messages[3].steps.single().toolName)
+        assertTrue(messages.filter { it.role == "steps" }.flatMap { it.steps }.none { it.pending })
+    }
+
+    @Test
+    fun restoredCodexSidecarOnlyProjectsCommentaryPhase() {
+        val messages = decodeGatewayMessages(
+            buildJsonArray {
+                add(
+                    buildJsonObject {
+                        put("row_id", 1)
+                        put("role", "user")
+                        put("text", "Inspect this")
+                    },
+                )
+                add(
+                    buildJsonObject {
+                        put("row_id", 2)
+                        put("role", "assistant")
+                        put("reasoning", "Genuine reasoning remains.")
+                        put(
+                            "codex_message_items",
+                            buildJsonArray {
+                                add(
+                                    buildJsonObject {
+                                        put("type", "message")
+                                        put("role", "assistant")
+                                        put("phase", "commentary")
+                                        put(
+                                            "content",
+                                            buildJsonArray {
+                                                add(
+                                                    buildJsonObject {
+                                                        put("type", "output_text")
+                                                        put("text", "Reading the current implementation.")
+                                                    },
+                                                )
+                                            },
+                                        )
+                                    },
+                                )
+                                add(
+                                    buildJsonObject {
+                                        put("type", "message")
+                                        put("role", "assistant")
+                                        put("phase", "analysis")
+                                        put(
+                                            "content",
+                                            buildJsonArray {
+                                                add(
+                                                    buildJsonObject {
+                                                        put("type", "output_text")
+                                                        put("text", "Provider scratchpad")
+                                                    },
+                                                )
+                                            },
+                                        )
+                                    },
+                                )
+                                add(
+                                    buildJsonObject {
+                                        put("type", "message")
+                                        put("role", "assistant")
+                                        put("phase", "final_answer")
+                                        put(
+                                            "content",
+                                            buildJsonArray {
+                                                add(
+                                                    buildJsonObject {
+                                                        put("type", "output_text")
+                                                        put("text", "The final answer")
+                                                    },
+                                                )
+                                            },
+                                        )
+                                    },
+                                )
+                            },
+                        )
+                    },
+                )
+            },
+        )
+
+        assertEquals(listOf("user", "steps", "assistant"), messages.map { it.role })
+        assertEquals("Genuine reasoning remains.", messages[1].steps.single().detail)
+        assertEquals("Reading the current implementation.", messages[2].text)
+    }
+
+    @Test
+    fun missingAndMalformedCodexSidecarsLeaveOtherModelsUnchanged() {
+        fun transcript(sidecar: String?): JsonArray = buildJsonArray {
+            add(
+                buildJsonObject {
+                    put("row_id", 1)
+                    put("role", "user")
+                    put("text", "Inspect this")
+                },
+            )
+            add(
+                buildJsonObject {
+                    put("row_id", 2)
+                    put("role", "assistant")
+                    put("reasoning", "Current provider reasoning.")
+                    put("text", "Current provider answer.")
+                    if (sidecar != null) put("codex_message_items", sidecar)
+                },
+            )
+        }
+
+        val existingProjection = decodeGatewayMessages(transcript(sidecar = null))
+        val malformedProjection = decodeGatewayMessages(transcript(sidecar = "not-json"))
+
+        assertEquals(existingProjection, malformedProjection)
+        assertEquals(listOf("user", "steps", "assistant"), malformedProjection.map { it.role })
+        assertEquals("Current provider reasoning.", malformedProjection[1].steps.single().detail)
+        assertEquals("Current provider answer.", malformedProjection[2].text)
     }
 
     @Test
