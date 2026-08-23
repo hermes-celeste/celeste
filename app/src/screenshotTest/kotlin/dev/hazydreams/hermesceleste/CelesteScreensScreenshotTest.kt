@@ -20,6 +20,8 @@ import androidx.compose.ui.unit.dp
 import com.android.tools.screenshot.PreviewTest
 import dev.hazydreams.hermesceleste.connection.SavedAuthMode
 import dev.hazydreams.hermesceleste.network.AuthProvider
+import dev.hazydreams.hermesceleste.network.BackgroundProcessResult
+import dev.hazydreams.hermesceleste.network.BackgroundProcessState
 import dev.hazydreams.hermesceleste.network.ConversationMessage
 import dev.hazydreams.hermesceleste.network.ConversationStep
 import dev.hazydreams.hermesceleste.network.ConversationStepKind
@@ -31,6 +33,7 @@ import dev.hazydreams.hermesceleste.ui.CelestePanel
 import dev.hazydreams.hermesceleste.ui.CelesteScreen
 import dev.hazydreams.hermesceleste.ui.CelesteSurfaceRaised
 import dev.hazydreams.hermesceleste.ui.conversation.ConversationScreen
+import dev.hazydreams.hermesceleste.ui.conversation.ProcessResultSheetSurface
 import dev.hazydreams.hermesceleste.ui.conversation.StepsSheetSurface
 import dev.hazydreams.hermesceleste.ui.gateway.ConnectionLoadingScreen
 import dev.hazydreams.hermesceleste.ui.gateway.ConnectionUnavailableScreen
@@ -109,6 +112,41 @@ private val previewStepsMessage = ConversationMessage(
             detail = "Reasoning and tool activity belong in one chronological mobile view.",
         ),
     ),
+)
+
+private val previewPendingStepsMessage = ConversationMessage(
+    role = "steps",
+    text = "",
+    id = "preview-steps-active",
+    pending = true,
+    steps = listOf(
+        ConversationStep(
+            id = "preview-reasoning-active",
+            kind = ConversationStepKind.Reasoning,
+            detail = "Checking the gateway projection.",
+            pending = true,
+        ),
+    ),
+)
+
+private val previewProcessResult = BackgroundProcessResult(
+    processId = "proc_42",
+    state = BackgroundProcessState.Completed,
+    status = "Completed normally",
+    command = "./gradlew :app:testDebugUnitTest",
+    output = """> Task :app:compileDebugKotlin
+> Task :app:testDebugUnitTest
+
+BUILD SUCCESSFUL in 1m 18s
+27 actionable tasks: 21 executed, 6 up-to-date""",
+    exitCode = 0,
+)
+
+private val previewProcessMessage = ConversationMessage(
+    role = "process",
+    text = "",
+    id = "process:proc_42",
+    processResult = previewProcessResult,
 )
 
 private val previewMessages = listOf(
@@ -526,6 +564,77 @@ fun ConversationStepsEntryPreviewScreenshot() {
         PreviewConversation(
             messages = previewMessages,
             turnState = TurnState.Idle,
+        )
+    }
+}
+
+@PreviewTest
+@Preview(name = "25 · Background process entry", widthDp = 390, heightDp = 844, showBackground = true)
+@Composable
+fun BackgroundProcessEntryPreviewScreenshot() {
+    HermesCelesteTheme {
+        PreviewConversation(
+            messages = listOf(
+                ConversationMessage(
+                    role = "user",
+                    text = "Run the focused Android checks.",
+                    id = "preview-process-user",
+                ),
+                previewProcessMessage,
+                ConversationMessage(
+                    role = "assistant",
+                    text = "The focused checks passed.",
+                    id = "preview-process-assistant",
+                ),
+            ),
+            turnState = TurnState.Idle,
+        )
+    }
+}
+
+@PreviewTest
+@Preview(name = "26 · Background process sheet", widthDp = 390, heightDp = 844, showBackground = true)
+@Composable
+fun BackgroundProcessSheetPreviewScreenshot() {
+    HermesCelesteTheme {
+        Box(modifier = Modifier.fillMaxSize()) {
+            PreviewConversation(
+                messages = listOf(previewProcessMessage),
+                turnState = TurnState.Idle,
+            )
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Color.Black.copy(alpha = 0.62f)),
+            )
+            Surface(
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .fillMaxWidth(),
+                color = CelesteSurfaceRaised,
+                shape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp),
+            ) {
+                ProcessResultSheetSurface(previewProcessResult)
+            }
+        }
+    }
+}
+
+@PreviewTest
+@Preview(name = "27 · Active thinking entry", widthDp = 390, heightDp = 844, showBackground = true)
+@Composable
+fun ActiveThinkingEntryPreviewScreenshot() {
+    HermesCelesteTheme {
+        PreviewConversation(
+            messages = listOf(
+                ConversationMessage(
+                    role = "user",
+                    text = "Inspect the process completion path.",
+                    id = "preview-thinking-user",
+                ),
+                previewPendingStepsMessage,
+            ),
+            turnState = TurnState.Running,
         )
     }
 }

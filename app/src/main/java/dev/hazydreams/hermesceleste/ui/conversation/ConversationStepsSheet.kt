@@ -1,5 +1,13 @@
 package dev.hazydreams.hermesceleste.ui.conversation
 
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.StartOffset
+import androidx.compose.animation.core.StartOffsetType
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -15,6 +23,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -22,21 +31,15 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.SolidColor
-import androidx.compose.ui.graphics.StrokeCap
-import androidx.compose.ui.graphics.StrokeJoin
-import androidx.compose.ui.graphics.vector.ImageVector
-import androidx.compose.ui.graphics.vector.path
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.role
@@ -50,7 +53,7 @@ import dev.hazydreams.hermesceleste.network.ConversationStep
 import dev.hazydreams.hermesceleste.network.ConversationStepKind
 import dev.hazydreams.hermesceleste.ui.CelesteAccent
 import dev.hazydreams.hermesceleste.ui.CelesteHairline
-import dev.hazydreams.hermesceleste.ui.CelesteSurfaceRaised
+
 import dev.hazydreams.hermesceleste.ui.CelesteTextMuted
 import dev.hazydreams.hermesceleste.ui.CelesteTextPrimary
 
@@ -74,7 +77,7 @@ internal fun StepsTranscriptEntry(
             .padding(horizontal = 8.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        StepStatusDot(pending = message.pending)
+        ThinkingPulse(pending = message.pending)
         Spacer(Modifier.width(11.dp))
         Text(
             text = "Thinking",
@@ -84,7 +87,7 @@ internal fun StepsTranscriptEntry(
             fontWeight = FontWeight.SemiBold,
         )
         Icon(
-            imageVector = StepsChevronIcon,
+            imageVector = InspectionChevronIcon,
             contentDescription = null,
             modifier = Modifier.size(18.dp),
             tint = CelesteTextMuted,
@@ -92,36 +95,66 @@ internal fun StepsTranscriptEntry(
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-internal fun ConversationStepsSheet(
-    message: ConversationMessage,
-    onDismiss: () -> Unit,
-) {
-    if (message.steps.isEmpty()) return
-    ModalBottomSheet(
-        onDismissRequest = onDismiss,
-        containerColor = CelesteSurfaceRaised,
-        contentColor = CelesteTextPrimary,
-        scrimColor = Color.Black.copy(alpha = 0.62f),
-        shape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp),
-        dragHandle = null,
-    ) {
-        StepsSheetSurface(message)
+internal fun StepsSheetSurface(message: ConversationMessage) {
+    InspectionSheetSurface {
+        StepsSheetContent(message)
     }
 }
 
 @Composable
-internal fun StepsSheetSurface(message: ConversationMessage) {
-    Column(modifier = Modifier.fillMaxWidth()) {
-        Box(
-            modifier = Modifier
-                .align(Alignment.CenterHorizontally)
-                .padding(top = 10.dp, bottom = 8.dp)
-                .size(width = 48.dp, height = 5.dp)
-                .background(CelesteHairline, RoundedCornerShape(3.dp)),
-        )
-        StepsSheetContent(message)
+private fun ThinkingPulse(
+    pending: Boolean,
+    modifier: Modifier = Modifier,
+) {
+    val offsets = listOf(1.dp, (-2).dp, 1.dp)
+    if (!pending) {
+        Row(
+            modifier = modifier.width(23.dp).height(12.dp),
+            horizontalArrangement = Arrangement.spacedBy(3.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            offsets.forEachIndexed { index, offset ->
+                Box(
+                    Modifier
+                        .offset(y = offset)
+                        .size(if (index == 1) 5.dp else 4.dp)
+                        .background(CelesteTextMuted.copy(alpha = if (index == 1) 0.9f else 0.55f), CircleShape),
+                )
+            }
+        }
+        return
+    }
+
+    val transition = rememberInfiniteTransition(label = "Thinking pulse")
+    Row(
+        modifier = modifier.width(23.dp).height(12.dp),
+        horizontalArrangement = Arrangement.spacedBy(3.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        offsets.forEachIndexed { index, offset ->
+            val alpha by transition.animateFloat(
+                initialValue = 0.35f,
+                targetValue = 1f,
+                animationSpec = infiniteRepeatable(
+                    animation = tween(durationMillis = 520, easing = FastOutSlowInEasing),
+                    repeatMode = RepeatMode.Reverse,
+                    initialStartOffset = StartOffset(index * 150, StartOffsetType.FastForward),
+                ),
+                label = "Thinking pulse ${index + 1}",
+            )
+            Box(
+                Modifier
+                    .offset(y = offset)
+                    .size(if (index == 1) 5.dp else 4.dp)
+                    .graphicsLayer {
+                        this.alpha = alpha
+                        scaleX = 0.75f + alpha * 0.25f
+                        scaleY = scaleX
+                    }
+                    .background(CelesteAccent, CircleShape),
+            )
+        }
     }
 }
 
@@ -318,25 +351,4 @@ internal fun stepDetail(step: ConversationStep): String = when (step.kind) {
 private fun boundedStepDetail(value: String, maximum: Int = 420): String {
     if (value.length <= maximum) return value
     return value.take(maximum).trimEnd() + "…"
-}
-
-private val StepsChevronIcon: ImageVector by lazy {
-    ImageVector.Builder(
-        name = "Open steps",
-        defaultWidth = 24.dp,
-        defaultHeight = 24.dp,
-        viewportWidth = 24f,
-        viewportHeight = 24f,
-    ).apply {
-        path(
-            stroke = SolidColor(Color.Black),
-            strokeLineWidth = 1.8f,
-            strokeLineCap = StrokeCap.Round,
-            strokeLineJoin = StrokeJoin.Round,
-        ) {
-            moveTo(9f, 5f)
-            lineTo(16f, 12f)
-            lineTo(9f, 19f)
-        }
-    }.build()
 }

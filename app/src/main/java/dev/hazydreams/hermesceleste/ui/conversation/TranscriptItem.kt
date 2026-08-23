@@ -50,12 +50,13 @@ internal fun transcriptItemKeys(messages: List<ConversationMessage>): List<Strin
 internal fun MessageBubble(
     message: ConversationMessage,
     streaming: Boolean = false,
-    onOpenSteps: () -> Unit = {},
+    onOpenInspection: () -> Unit = {},
 ) {
     when (message.role) {
         "user" -> UserMessage(message, streaming)
         "assistant" -> AssistantMessage(message, streaming)
-        "steps" -> StepsTranscriptEntry(message, onOpenSteps)
+        "steps" -> StepsTranscriptEntry(message, onOpenInspection)
+        "process" -> ProcessResultTranscriptEntry(message, onOpenInspection)
         else -> LabeledMessage(message)
     }
 }

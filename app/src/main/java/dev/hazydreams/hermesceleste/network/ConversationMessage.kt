@@ -23,6 +23,7 @@ data class ConversationMessage(
     val pending: Boolean = false,
     val interim: Boolean = false,
     val steps: List<ConversationStep> = emptyList(),
+    val processResult: BackgroundProcessResult? = null,
 )
 
 internal fun appendReasoningToCurrentTurn(
@@ -187,9 +188,15 @@ private fun updateCurrentTurnSteps(
 }
 
 private fun activeStepsIndex(messages: List<ConversationMessage>): Int {
-    val index = messages.lastIndex
     val turnStart = messages.indexOfLast { it.role == "user" }
-    return index.takeIf { it > turnStart && messages[it].role == "steps" } ?: -1
+    for (index in messages.lastIndex downTo (turnStart + 1)) {
+        when (messages[index].role) {
+            "process" -> continue
+            "steps" -> return index.takeIf { messages[index].pending } ?: -1
+            else -> return -1
+        }
+    }
+    return -1
 }
 
 private fun currentTurnStepsIndex(messages: List<ConversationMessage>): Int {

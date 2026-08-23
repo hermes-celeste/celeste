@@ -5,10 +5,12 @@ import dev.hazydreams.hermesceleste.network.GatewayEvent
 import dev.hazydreams.hermesceleste.network.appendReasoningToCurrentTurn
 import dev.hazydreams.hermesceleste.network.boolean
 import dev.hazydreams.hermesceleste.network.completeToolInCurrentTurn
+import dev.hazydreams.hermesceleste.network.parseBackgroundProcessResult
 import dev.hazydreams.hermesceleste.network.settleCurrentReasoning
 import dev.hazydreams.hermesceleste.network.settleCurrentTurnSteps
 import dev.hazydreams.hermesceleste.network.startToolInCurrentTurn
 import dev.hazydreams.hermesceleste.network.string
+import dev.hazydreams.hermesceleste.network.upsertBackgroundProcessResult
 
 internal data class ConversationProjection(
     val messages: List<ConversationMessage>,
@@ -59,6 +61,12 @@ internal fun reduceConversationEvent(
         "status.update" -> when (event.payload.string("kind")) {
             "compacting" -> next.copy(isCompacting = true)
             "compacted" -> next.copy(isCompacting = false)
+            "process" -> event.payload.string("text")
+                ?.let(::parseBackgroundProcessResult)
+                ?.let { result ->
+                    next.copy(messages = upsertBackgroundProcessResult(next.messages, result))
+                }
+                ?: next
             else -> next
         }
 
