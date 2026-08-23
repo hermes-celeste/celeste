@@ -62,7 +62,7 @@ internal fun startClarificationInCurrentTurn(
         clarification = clarification,
     )
     return if (existingIndex < 0) {
-        messages + message
+        appendCurrentTurnMessage(messages, message)
     } else {
         messages.toMutableList().also { it[existingIndex] = message }
     }
@@ -102,7 +102,7 @@ internal fun bindClarificationRequest(
         )
     }
     return if (existingIndex < 0) {
-        messages + nextMessage
+        appendCurrentTurnMessage(messages, nextMessage)
     } else {
         messages.toMutableList().also { it[existingIndex] = nextMessage }
     }
@@ -132,7 +132,7 @@ internal fun completeClarificationInCurrentTurn(
         clarification = result.copy(submitting = false),
     )
     return if (existingIndex < 0) {
-        messages + nextMessage
+        appendCurrentTurnMessage(messages, nextMessage)
     } else {
         messages.toMutableList().also { it[existingIndex] = nextMessage }
     }

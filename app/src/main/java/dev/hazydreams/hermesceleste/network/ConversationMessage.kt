@@ -156,6 +156,20 @@ internal fun settleCurrentTurnSteps(messages: List<ConversationMessage>): List<C
     }
 }
 
+internal fun appendCurrentTurnMessage(
+    messages: List<ConversationMessage>,
+    message: ConversationMessage,
+): List<ConversationMessage> {
+    val changesIndex = currentTurnChangesIndex(messages)
+    if (changesIndex < 0) return messages + message
+    return messages.toMutableList().also { next -> next.add(changesIndex, message) }
+}
+
+internal fun currentTurnContentTailIndex(messages: List<ConversationMessage>): Int {
+    val changesIndex = currentTurnChangesIndex(messages)
+    return if (changesIndex < 0) messages.lastIndex else changesIndex - 1
+}
+
 internal fun ConversationMessage.settledSteps(): ConversationMessage {
     if (role != "steps" || (!pending && steps.none(ConversationStep::pending))) return this
     return copy(
@@ -187,9 +201,7 @@ private fun updateCurrentTurnSteps(
         pending = true,
         steps = steps,
     )
-    val changesIndex = currentTurnChangesIndexForSteps(messages)
-    if (changesIndex < 0) return messages + message
-    return messages.toMutableList().also { next -> next.add(changesIndex, message) }
+    return appendCurrentTurnMessage(messages, message)
 }
 
 private fun activeStepsIndex(messages: List<ConversationMessage>): Int {
@@ -212,7 +224,7 @@ private fun currentTurnStepsIndex(messages: List<ConversationMessage>): Int {
     return -1
 }
 
-private fun currentTurnChangesIndexForSteps(messages: List<ConversationMessage>): Int {
+private fun currentTurnChangesIndex(messages: List<ConversationMessage>): Int {
     val turnStart = messages.indexOfLast { it.role == "user" }
     for (index in (turnStart + 1)..messages.lastIndex) {
         if (messages[index].role == "changes") return index

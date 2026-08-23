@@ -3,6 +3,7 @@ package dev.hazydreams.hermesceleste
 import dev.hazydreams.hermesceleste.network.ConversationMessage
 import dev.hazydreams.hermesceleste.network.GatewayEvent
 import dev.hazydreams.hermesceleste.network.TaskProgress
+import dev.hazydreams.hermesceleste.network.appendCurrentTurnMessage
 import dev.hazydreams.hermesceleste.network.appendReasoningToCurrentTurn
 import dev.hazydreams.hermesceleste.network.bindClarificationRequest
 import dev.hazydreams.hermesceleste.network.boolean
@@ -11,6 +12,7 @@ import dev.hazydreams.hermesceleste.network.clearUnansweredClarifications
 import dev.hazydreams.hermesceleste.network.completeClarificationInCurrentTurn
 import dev.hazydreams.hermesceleste.network.completeFileEditInCurrentTurn
 import dev.hazydreams.hermesceleste.network.completeToolInCurrentTurn
+import dev.hazydreams.hermesceleste.network.currentTurnContentTailIndex
 import dev.hazydreams.hermesceleste.network.fileEditDiff
 import dev.hazydreams.hermesceleste.network.fileEditPaths
 import dev.hazydreams.hermesceleste.network.isFileEditTool
@@ -341,22 +343,28 @@ private fun ConversationProjection.finalizeAssistant(
         streamingText.startsWith(suppliedContent) -> streamingText
         else -> suppliedContent
     }.trimEnd()
-    val previous = messages.lastOrNull()
+    val previousIndex = currentTurnContentTailIndex(messages)
+    val previous = messages.getOrNull(previousIndex)
     val continuesInterim = !interim &&
         previous?.role == "assistant" &&
         previous.interim &&
         finalText.isNotBlank() &&
         (finalText.startsWith(previous.text) || previous.text.startsWith(finalText))
     val nextMessages = when {
-        continuesInterim -> messages.dropLast(1) + previous.copy(
-            text = if (finalText.length >= previous.text.length) finalText else previous.text,
-            interim = false,
-        )
+        continuesInterim -> messages.toMutableList().also { next ->
+            next[previousIndex] = previous.copy(
+                text = if (finalText.length >= previous.text.length) finalText else previous.text,
+                interim = false,
+            )
+        }
         finalText.isNotBlank() && previous?.let { it.role == "assistant" && it.text == finalText } != true ->
-            messages + ConversationMessage(
-                role = "assistant",
-                text = finalText,
-                interim = interim,
+            appendCurrentTurnMessage(
+                messages = messages,
+                message = ConversationMessage(
+                    role = "assistant",
+                    text = finalText,
+                    interim = interim,
+                ),
             )
         else -> messages
     }

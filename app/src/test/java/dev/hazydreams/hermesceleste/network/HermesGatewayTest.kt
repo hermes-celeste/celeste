@@ -350,6 +350,38 @@ One test failed
     }
 
     @Test
+    fun restoredChangesStayAtTheEndWithoutReorderingCommentaryAndLaterActivity() {
+        val messages = decodeGatewayMessages(
+            Json.parseToJsonElement(
+                """[
+                    {"row_id":1,"role":"user","text":"Fix the queue"},
+                    {"row_id":2,"role":"assistant","reasoning":"Plan the edit.","tool_calls":[{"id":"edit-a","function":{"name":"patch","arguments":"{\"path\":\"App.kt\"}"}}]},
+                    {"row_id":3,"role":"tool","tool_call_id":"edit-a","tool_name":"patch","content":"{\"diff\":\"a/App.kt → b/App.kt\\n@@\\n-old\\n+new\"}"},
+                    {"row_id":4,"role":"assistant","reasoning":"Check the first result.\n\nThe edit is in; I’m checking it.\n\nRun the focused tests.","codex_message_items":[{"type":"message","role":"assistant","phase":"commentary","content":[{"type":"output_text","text":"The edit is in; I’m checking it."}]}],"tool_calls":[{"id":"test-a","function":{"name":"terminal","arguments":"{\"command\":\"./gradlew focusedTest\"}"}}]},
+                    {"row_id":5,"role":"tool","tool_call_id":"test-a","tool_name":"terminal","content":"Tests passed"},
+                    {"row_id":6,"role":"assistant","reasoning":"Verify the diff.","tool_calls":[{"id":"read-a","function":{"name":"read_file","arguments":"{\"path\":\"App.kt\"}"}}]},
+                    {"row_id":7,"role":"tool","tool_call_id":"read-a","tool_name":"read_file","content":"Read App.kt"},
+                    {"row_id":8,"role":"assistant","text":"Everything checks out."}
+                ]""".trimIndent(),
+            ).jsonArray,
+        )
+
+        assertEquals(
+            listOf("user", "steps", "assistant", "steps", "assistant", "changes"),
+            messages.map { it.role },
+        )
+        assertEquals("The edit is in; I’m checking it.", messages[2].text)
+        assertEquals("Everything checks out.", messages[4].text)
+        val thinking = messages.filter { it.role == "steps" }
+        assertEquals(2, thinking.size)
+        assertEquals(
+            listOf(ConversationStepKind.Reasoning, ConversationStepKind.Tool, ConversationStepKind.Reasoning, ConversationStepKind.Tool),
+            thinking[1].steps.map { it.kind },
+        )
+        assertEquals(listOf("App.kt"), messages.last().changedFiles().map { it.path })
+    }
+
+    @Test
     fun restoredCodexSidecarOnlyProjectsCommentaryPhase() {
         val messages = decodeGatewayMessages(
             buildJsonArray {

@@ -72,7 +72,7 @@ internal fun upsertBackgroundProcessResult(
     val existingIndex = messages.indexOfFirst { message ->
         message.role == "process" && message.processResult?.processId == result.processId
     }
-    if (existingIndex < 0) return messages + next
+    if (existingIndex < 0) return appendCurrentTurnMessage(messages, next)
     return messages.toMutableList().also { it[existingIndex] = next }
 }
 
