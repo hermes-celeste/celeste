@@ -39,7 +39,6 @@ When a draft is selected, revalidate its claims against current Celeste and rele
 | [`docs/testing.md`](docs/testing.md) | Test layers, command selection, screenshots, live contracts, and device milestones |
 | [`docs/review.md`](docs/review.md) | Code-review triage, intended-workflow judgment, complexity budget, and automated-review policy |
 | [`docs/security.md`](docs/security.md) | Trust boundaries, credential handling, transport rules, backup policy, and sensitive data |
-| [`docs/plans/2026-08-14-codebase-cleanup.md`](docs/plans/2026-08-14-codebase-cleanup.md) | Ordered cleanup scope, exclusions, tasks, and verification gates |
 
 ## Writing docs
 
