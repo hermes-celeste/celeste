@@ -478,8 +478,7 @@ private fun ConversationComposer(
                     enabled = turnState == TurnState.Idle || turnState == TurnState.Reconnecting,
                     modifier = Modifier
                         .weight(1f)
-                        .focusRequester(focusRequester)
-                        .padding(horizontal = 12.dp, vertical = 10.dp),
+                        .focusRequester(focusRequester),
                     minLines = 1,
                     maxLines = 4,
                     keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
@@ -491,7 +490,10 @@ private fun ConversationComposer(
                     textStyle = MaterialTheme.typography.bodyMedium.copy(color = CelesteTextPrimary),
                     cursorBrush = SolidColor(CelesteAccent),
                     decorationBox = { innerTextField ->
-                        Box(contentAlignment = Alignment.CenterStart) {
+                        Box(
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+                            contentAlignment = Alignment.CenterStart,
+                        ) {
                             if (draft.isEmpty()) {
                                 Text(
                                     text = when (turnState) {
