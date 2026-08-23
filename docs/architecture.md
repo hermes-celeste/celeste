@@ -25,7 +25,7 @@ Keep this map updated when ownership moves. Do not add a new layer only to match
 
 ### Compose
 
-Compose renders `CelesteUiState` and emits user intent to `CelesteController`. Top-level routing keeps conversations separate from **Settings → Gateway**; first-run setup and failed-restore recovery reuse the same Gateway editor rather than introducing a second connection flow. Opening conversation navigation or leaving conversation content clears composer focus and dismisses the IME, while one-shot focus requests remain owned by the Android lifetime adapter. Compose must not own credentials, sockets, RPC framing, retry policy, or authoritative session history.
+Compose renders `CelesteUiState` and emits user intent to `CelesteController`. Top-level routing keeps conversations separate from **Settings → Gateway**; first-run setup and failed-restore recovery reuse the same Gateway editor rather than introducing a second connection flow. Compose must not own credentials, sockets, RPC framing, retry policy, or authoritative session history.
 
 ### Application controller
 
