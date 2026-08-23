@@ -22,6 +22,7 @@ import dev.hazydreams.hermesceleste.network.SessionCatalogPage
 import dev.hazydreams.hermesceleste.network.StoredSession
 import dev.hazydreams.hermesceleste.network.TaskProgress
 import dev.hazydreams.hermesceleste.network.bindClarificationRequest
+import dev.hazydreams.hermesceleste.network.boolean
 import dev.hazydreams.hermesceleste.network.createSession
 import dev.hazydreams.hermesceleste.network.interruptSession
 import dev.hazydreams.hermesceleste.network.markClarificationSubmitting
@@ -92,6 +93,8 @@ internal data class CelesteUiState(
     val taskProgress: TaskProgress? = null,
     val streamingText: String = "",
     val draft: String = "",
+    val queuedPrompts: List<QueuedPrompt> = emptyList(),
+    val isQueuePaused: Boolean = false,
     val turnState: TurnState = TurnState.Idle,
     val isCompacting: Boolean = false,
     val resumeExhausted: Boolean = false,
@@ -172,6 +175,10 @@ internal class CelesteController(
     private var currentSessionCanResume = true
     private var currentSessionPublished = true
     private val bufferedEvents = mutableListOf<GatewayEvent>()
+    private val queuedPromptsBySession = mutableMapOf<String, MutableList<QueuedPrompt>>()
+    private val parkedQueueSessions = mutableSetOf<String>()
+    private val queueDrainsInFlight = mutableSetOf<String>()
+    private var queuedTurnAwaitingActivitySessionId: String? = null
     private var resourcesReleased = false
 
     init {
@@ -248,6 +255,7 @@ internal class CelesteController(
         val rawUrl = mutableState.value.dashboardUrl
         if (rawUrl.isBlank()) return
         val attempt = beginConnectionAttempt()
+        clearAllQueuedPrompts()
         closeGateway()
         credential = null
         currentDescriptor = null
@@ -269,6 +277,8 @@ internal class CelesteController(
             taskProgress = null,
             streamingText = "",
             draft = "",
+            queuedPrompts = emptyList(),
+            isQueuePaused = false,
             isCompacting = false,
             loadingMessage = "Finding Hermes…",
             errorMessage = null,
@@ -388,6 +398,7 @@ internal class CelesteController(
 
     fun useAnotherConnection() {
         beginConnectionAttempt()
+        clearAllQueuedPrompts()
         closeGateway()
         credential = null
         currentDescriptor = null
@@ -399,6 +410,7 @@ internal class CelesteController(
         val snapshot = mutableState.value
         val activeCredential = credential
         val attempt = beginConnectionAttempt()
+        clearAllQueuedPrompts()
         closeGateway()
         credential = null
         currentDescriptor = null
@@ -419,6 +431,8 @@ internal class CelesteController(
             taskProgress = null,
             streamingText = "",
             draft = "",
+            queuedPrompts = emptyList(),
+            isQueuePaused = false,
             isCompacting = false,
             password = "",
             sessionToken = "",
@@ -449,6 +463,7 @@ internal class CelesteController(
         val snapshot = mutableState.value
         val activeCredential = credential
         val attempt = beginConnectionAttempt()
+        clearAllQueuedPrompts()
         closeGateway()
         credential = null
         currentDescriptor = null
@@ -476,6 +491,7 @@ internal class CelesteController(
 
     private fun restoreSavedConnection() {
         val attempt = beginConnectionAttempt()
+        clearAllQueuedPrompts()
         closeGateway()
         credential = null
         mutableState.value = CelesteUiState(
@@ -688,6 +704,7 @@ internal class CelesteController(
     fun openSession(summary: StoredSession) {
         val catalogAccess = sessionCatalogAccess() ?: return
         val visibleSummary = sessionCatalog.prepareSessionOpen(summary, catalogAccess)
+        val queuedPrompts = queuedPromptsFor(visibleSummary.id)
         closeGateway()
         currentSessionCanResume = true
         currentSessionPublished = true
@@ -697,6 +714,8 @@ internal class CelesteController(
             taskProgress = null,
             streamingText = "",
             draft = "",
+            queuedPrompts = queuedPrompts,
+            isQueuePaused = visibleSummary.id in parkedQueueSessions && queuedPrompts.isNotEmpty(),
             turnState = TurnState.Synchronizing,
             isCompacting = false,
             resumeExhausted = false,
@@ -763,6 +782,8 @@ internal class CelesteController(
             taskProgress = null,
             streamingText = "",
             draft = "",
+            queuedPrompts = emptyList(),
+            isQueuePaused = false,
             password = password,
             sessionToken = sessionToken,
             turnState = TurnState.Idle,
@@ -785,6 +806,8 @@ internal class CelesteController(
             taskProgress = null,
             streamingText = "",
             draft = if (clearDraft) "" else snapshot.draft,
+            queuedPrompts = emptyList(),
+            isQueuePaused = false,
             turnState = TurnState.Idle,
             isCompacting = false,
             resumeExhausted = false,
@@ -869,6 +892,8 @@ internal class CelesteController(
             isLoadingMoreSessions = false,
             sessionPageError = null,
             activeSummary = summary,
+            queuedPrompts = emptyList(),
+            isQueuePaused = false,
             turnState = TurnState.Idle,
             resumeExhausted = false,
             loadingMessage = null,
@@ -887,8 +912,19 @@ internal class CelesteController(
     fun sendMessage() {
         val snapshot = mutableState.value
         val text = snapshot.draft.trim()
-        if (text.isBlank() || snapshot.turnState != TurnState.Idle) return
-        val submittedDraft = snapshot.draft
+        if (text.isBlank()) return
+        when {
+            snapshot.turnState == TurnState.Running || snapshot.turnState == TurnState.Reconnecting -> {
+                enqueueDraft(snapshot, text)
+                return
+            }
+            snapshot.turnState != TurnState.Idle -> return
+            snapshot.queuedPrompts.isNotEmpty() -> {
+                enqueueDraft(snapshot, text)
+                return
+            }
+        }
+
         val activeGateway = gateway
         val runtimeId = currentRuntimeSessionId
         val storedSessionId = currentStoredSessionId
@@ -899,6 +935,75 @@ internal class CelesteController(
             }
             return
         }
+
+        submitMessage(
+            snapshot = snapshot,
+            text = text,
+            submittedDraft = snapshot.draft,
+            queuedPrompt = null,
+        )
+    }
+
+    fun removeQueuedPrompt(promptId: String) {
+        val sessionId = currentStoredSessionId ?: mutableState.value.activeSummary?.id ?: return
+        removeQueuedPromptFromSession(sessionId, promptId)
+    }
+
+    fun resumeQueuedPrompts() {
+        val sessionId = currentStoredSessionId ?: mutableState.value.activeSummary?.id ?: return
+        if (queuedPromptsFor(sessionId).isEmpty()) return
+        parkedQueueSessions.remove(sessionId)
+        refreshActiveQueueProjection(sessionId)
+        drainQueuedPromptIfPossible()
+    }
+
+    private fun enqueueDraft(snapshot: CelesteUiState, text: String) {
+        val sessionId = currentStoredSessionId ?: snapshot.activeSummary?.id ?: return
+        val queuedPrompt = QueuedPrompt(
+            id = nextLocalMessageId("queued"),
+            text = text,
+        )
+        queuedPromptsBySession.getOrPut(sessionId) { mutableListOf() } += queuedPrompt
+        parkedQueueSessions.remove(sessionId)
+        mutableState.value = snapshot.copy(
+            draft = "",
+            queuedPrompts = queuedPromptsFor(sessionId),
+            isQueuePaused = false,
+            errorMessage = null,
+        )
+        drainQueuedPromptIfPossible()
+    }
+
+    private fun drainQueuedPromptIfPossible() {
+        val snapshot = mutableState.value
+        val sessionId = currentStoredSessionId ?: return
+        val queuedPrompt = queuedPromptsBySession[sessionId]?.firstOrNull() ?: return
+        if (
+            snapshot.turnState != TurnState.Idle ||
+            sessionId in parkedQueueSessions ||
+            sessionId in queueDrainsInFlight ||
+            queuedTurnAwaitingActivitySessionId == sessionId
+        ) {
+            return
+        }
+        submitMessage(
+            snapshot = snapshot,
+            text = queuedPrompt.text,
+            submittedDraft = null,
+            queuedPrompt = queuedPrompt,
+        )
+    }
+
+    private fun submitMessage(
+        snapshot: CelesteUiState,
+        text: String,
+        submittedDraft: String?,
+        queuedPrompt: QueuedPrompt?,
+    ) {
+        val activeGateway = gateway ?: return
+        val runtimeId = currentRuntimeSessionId ?: return
+        val storedSessionId = currentStoredSessionId ?: return
+        val summary = snapshot.activeSummary ?: return
 
         val localId = nextLocalMessageId("local")
         val submittedSession = SubmittedSession(
@@ -925,32 +1030,78 @@ internal class CelesteController(
             isCompacting = false,
             errorMessage = null,
         )
+        if (queuedPrompt != null) {
+            queueDrainsInFlight += storedSessionId
+            queuedTurnAwaitingActivitySessionId = storedSessionId
+        }
         // prompt.submit creates the durable row before work begins. From this point on,
         // uncertain delivery must reconcile by stored ID and must never create/resend.
         currentSessionCanResume = true
         controllerScope.launch {
-            val result = runCatching { activeGateway.submitPrompt(runtimeId, text) }
-            if (result.isSuccess) {
-                if (isActiveSession(submittedSession)) {
-                    mutableState.value = mutableState.value.copy(
-                        messages = mutableState.value.messages.map { message ->
-                            if (message.id == localId) message.copy(pending = false) else message
-                        },
+            try {
+                val result = runCatching {
+                    activeGateway.submitPrompt(
+                        runtimeSessionId = runtimeId,
+                        text = text,
+                        queued = queuedPrompt != null,
                     )
                 }
-                if (shouldPublish) publishSubmittedSession(submittedSession)
-            } else {
-                if (!isActiveSession(submittedSession)) return@launch
+                if (result.isSuccess) {
+                    queuedPrompt?.let { removeQueuedPromptFromSession(storedSessionId, it.id) }
+                    if (isActiveSession(submittedSession)) {
+                        mutableState.value = mutableState.value.copy(
+                            messages = mutableState.value.messages.map { message ->
+                                if (message.id == localId) message.copy(pending = false) else message
+                            },
+                        )
+                    }
+                    if (shouldPublish) publishSubmittedSession(submittedSession)
+                    return@launch
+                }
+
                 val failure = result.exceptionOrNull() ?: return@launch
-                if (failure is GatewayRpcException && activeGateway.state.value == GatewayConnectionState.Connected) {
+                val definitiveRejection = failure is GatewayRpcException &&
+                    activeGateway.state.value == GatewayConnectionState.Connected
+                if (!isActiveSession(submittedSession)) {
+                    if (queuedPrompt != null) {
+                        if (queuedTurnAwaitingActivitySessionId == storedSessionId) {
+                            queuedTurnAwaitingActivitySessionId = null
+                        }
+                        if (definitiveRejection) {
+                            if (queuedPromptsFor(storedSessionId).isNotEmpty()) {
+                                parkedQueueSessions += storedSessionId
+                            }
+                        } else {
+                            markQueuedPromptDeliveryUncertain(storedSessionId, queuedPrompt.id)
+                        }
+                    }
+                    return@launch
+                }
+                if (definitiveRejection) {
+                    if (queuedPrompt != null) {
+                        queuedTurnAwaitingActivitySessionId = null
+                        if (queuedPromptsFor(storedSessionId).isNotEmpty()) {
+                            parkedQueueSessions += storedSessionId
+                        }
+                    }
                     val current = mutableState.value
+                    val queuedPrompts = queuedPromptsFor(storedSessionId)
                     mutableState.value = current.copy(
                         messages = current.messages.filterNot { it.id == localId },
-                        draft = current.draft.ifBlank { submittedDraft },
+                        draft = if (submittedDraft == null) current.draft else {
+                            current.draft.ifBlank { submittedDraft }
+                        },
+                        queuedPrompts = queuedPrompts,
+                        isQueuePaused = queuedPrompts.isNotEmpty() &&
+                            (queuedPrompt != null || current.isQueuePaused),
                         turnState = TurnState.Idle,
                         errorMessage = failure.message ?: "Hermes could not send that message.",
                     )
                     return@launch
+                }
+                if (queuedPrompt != null) {
+                    queuedTurnAwaitingActivitySessionId = null
+                    markQueuedPromptDeliveryUncertain(storedSessionId, queuedPrompt.id)
                 }
                 recoverGatewayRequestFailure(
                     activeGateway = activeGateway,
@@ -959,6 +1110,11 @@ internal class CelesteController(
                     definitiveTurnState = TurnState.Idle,
                     definitiveMessage = "Hermes could not send that message.",
                 )
+            } finally {
+                if (queuedPrompt != null) {
+                    queueDrainsInFlight.remove(storedSessionId)
+                    drainQueuedPromptIfPossible()
+                }
             }
         }
     }
@@ -1080,8 +1236,11 @@ internal class CelesteController(
     fun interrupt() {
         val activeGateway = gateway ?: return
         val runtimeId = currentRuntimeSessionId ?: return
+        val sessionId = currentStoredSessionId ?: return
         if (mutableState.value.turnState != TurnState.Running) return
+        if (queuedPromptsFor(sessionId).isNotEmpty()) parkedQueueSessions += sessionId
         mutableState.value = mutableState.value.copy(
+            isQueuePaused = sessionId in parkedQueueSessions,
             turnState = TurnState.Synchronizing,
             errorMessage = null,
         )
@@ -1253,6 +1412,9 @@ internal class CelesteController(
             val reconciledMessages = resumed.pendingClarification
                 ?.let { bindClarificationRequest(authoritativeMessages, it) }
                 ?: authoritativeMessages
+            if (storedSessionId != resumed.storedSessionId) {
+                migrateQueuedSessionState(storedSessionId, resumed.storedSessionId)
+            }
             applyResumedSession(
                 resumed.copy(
                     messages = reconciledMessages,
@@ -1267,6 +1429,7 @@ internal class CelesteController(
             bufferedEvents.clear()
             reconciling = false
             events.forEach(::applyEvent)
+            drainQueuedPromptIfPossible()
         } catch (error: Throwable) {
             bufferedEvents.clear()
             reconciling = false
@@ -1275,9 +1438,13 @@ internal class CelesteController(
     }
 
     private fun applyResumedSession(resumed: ResumedSession) {
+        reconcileUncertainQueuedPrompts(resumed)
         currentRuntimeSessionId = resumed.runtimeSessionId
         currentStoredSessionId = resumed.storedSessionId
         currentSessionCanResume = true
+        if (queuedTurnAwaitingActivitySessionId == resumed.storedSessionId) {
+            queuedTurnAwaitingActivitySessionId = null
+        }
         val streamingSuffix = unpersistedInflightText(
             inflight = resumed.inflightAssistantText,
             messages = resumed.messages,
@@ -1289,6 +1456,9 @@ internal class CelesteController(
             messages = resumed.messages,
             taskProgress = restoredTaskProgress,
             streamingText = streamingSuffix,
+            queuedPrompts = queuedPromptsFor(resumed.storedSessionId),
+            isQueuePaused = resumed.storedSessionId in parkedQueueSessions &&
+                queuedPromptsFor(resumed.storedSessionId).isNotEmpty(),
             turnState = if (running) {
                 TurnState.Running
             } else {
@@ -1366,6 +1536,12 @@ internal class CelesteController(
         val runtimeId = currentRuntimeSessionId ?: return
         if (event.sessionId.isNotBlank() && event.sessionId != runtimeId) return
         val current = mutableState.value
+        val storedSessionId = currentStoredSessionId
+        val awaitingQueuedActivity = storedSessionId != null &&
+            queuedTurnAwaitingActivitySessionId == storedSessionId
+        val startsQueuedTurn = awaitingQueuedActivity && event.startsQueuedTurnActivity()
+        if (startsQueuedTurn) queuedTurnAwaitingActivitySessionId = null
+        if (awaitingQueuedActivity && !startsQueuedTurn && event.settlesTurn()) return
         val reduction = reduceConversationEvent(
             projection = ConversationProjection(
                 messages = current.messages,
@@ -1389,6 +1565,7 @@ internal class CelesteController(
             errorMessage = reduction.projection.errorMessage,
         )
         updateTaskProgressClear(current.taskProgress, nextTaskProgress)
+        drainQueuedPromptIfPossible()
     }
 
     private fun updateTaskProgressClear(previous: TaskProgress?, next: TaskProgress?) {
@@ -1434,6 +1611,7 @@ internal class CelesteController(
             bufferedEvents.clear()
             reconciling = false
             events.forEach(::applyEvent)
+            drainQueuedPromptIfPossible()
         } catch (error: Throwable) {
             bufferedEvents.clear()
             reconciling = false
@@ -1513,6 +1691,77 @@ internal class CelesteController(
         }
     }
 
+    private fun queuedPromptsFor(sessionId: String): List<QueuedPrompt> =
+        queuedPromptsBySession[sessionId]?.toList().orEmpty()
+
+    private fun migrateQueuedSessionState(fromSessionId: String, toSessionId: String) {
+        if (fromSessionId == toSessionId) return
+        val sourceQueue = queuedPromptsBySession.remove(fromSessionId).orEmpty()
+        if (sourceQueue.isNotEmpty()) {
+            val targetQueue = queuedPromptsBySession[toSessionId].orEmpty()
+            queuedPromptsBySession[toSessionId] = (sourceQueue + targetQueue)
+                .distinctBy(QueuedPrompt::id)
+                .toMutableList()
+        }
+        if (parkedQueueSessions.remove(fromSessionId)) parkedQueueSessions += toSessionId
+        if (queuedTurnAwaitingActivitySessionId == fromSessionId) {
+            queuedTurnAwaitingActivitySessionId = toSessionId
+        }
+    }
+
+    private fun markQueuedPromptDeliveryUncertain(sessionId: String, promptId: String) {
+        val queue = queuedPromptsBySession[sessionId] ?: return
+        queue.replaceAll { prompt ->
+            if (prompt.id == promptId) prompt.copy(deliveryUncertain = true) else prompt
+        }
+        parkedQueueSessions += sessionId
+        refreshActiveQueueProjection(sessionId)
+    }
+
+    private fun reconcileUncertainQueuedPrompts(resumed: ResumedSession) {
+        val queue = queuedPromptsBySession[resumed.storedSessionId] ?: return
+        val representedUserText = sequenceOf(
+            resumed.inflightUserText,
+            resumed.queuedUserText,
+            resumed.messages.lastOrNull { it.role == "user" }?.text.orEmpty(),
+        ).map(::normalizedPromptText).filter(String::isNotEmpty).toSet()
+        if (representedUserText.isEmpty()) return
+        queue.removeAll { prompt ->
+            prompt.deliveryUncertain && normalizedPromptText(prompt.text) in representedUserText
+        }
+        if (queue.isEmpty()) {
+            queuedPromptsBySession.remove(resumed.storedSessionId)
+            parkedQueueSessions.remove(resumed.storedSessionId)
+        }
+    }
+
+    private fun removeQueuedPromptFromSession(sessionId: String, promptId: String) {
+        val queue = queuedPromptsBySession[sessionId] ?: return
+        queue.removeAll { it.id == promptId }
+        if (queue.isEmpty()) {
+            queuedPromptsBySession.remove(sessionId)
+            parkedQueueSessions.remove(sessionId)
+        }
+        refreshActiveQueueProjection(sessionId)
+    }
+
+    private fun refreshActiveQueueProjection(sessionId: String) {
+        val activeSessionId = currentStoredSessionId ?: mutableState.value.activeSummary?.id
+        if (activeSessionId != sessionId) return
+        val queuedPrompts = queuedPromptsFor(sessionId)
+        mutableState.value = mutableState.value.copy(
+            queuedPrompts = queuedPrompts,
+            isQueuePaused = sessionId in parkedQueueSessions && queuedPrompts.isNotEmpty(),
+        )
+    }
+
+    private fun clearAllQueuedPrompts() {
+        queuedPromptsBySession.clear()
+        parkedQueueSessions.clear()
+        queueDrainsInFlight.clear()
+        queuedTurnAwaitingActivitySessionId = null
+    }
+
     private fun nextLocalMessageId(prefix: String): String {
         localMessageCounter += 1
         return "$prefix-$localMessageCounter"
@@ -1576,3 +1825,31 @@ internal class CelesteController(
         }
     }
 }
+
+private fun GatewayEvent.startsQueuedTurnActivity(): Boolean = when (type) {
+    "message.start",
+    "message.delta",
+    "thinking.delta",
+    "reasoning.delta",
+    "reasoning.available",
+    "tool.start",
+    "clarify.request",
+    -> true
+    "session.busy" -> payload.boolean("busy") == true
+    "session.info" -> payload.boolean("running") == true
+    else -> false
+}
+
+private fun GatewayEvent.settlesTurn(): Boolean = when (type) {
+    "message.complete",
+    "error",
+    "message.error",
+    "message.interrupted",
+    "session.interrupted",
+    -> true
+    "session.busy" -> payload.boolean("busy") == false
+    "session.info" -> payload.boolean("running") == false
+    else -> false
+}
+
+private fun normalizedPromptText(text: String): String = text.trim().replace(Regex("\\s+"), " ")

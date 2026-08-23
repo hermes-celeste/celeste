@@ -92,12 +92,18 @@ suspend fun GatewayConnection.resumeStoredSession(
         taskProgress = decoded.taskProgress,
         running = running,
         status = status,
+        inflightUserText = (inflight as? JsonObject)?.string("user").orEmpty(),
+        queuedUserText = (queued as? JsonObject)?.string("user").orEmpty(),
         inflightAssistantText = inflightAssistantText(inflight),
         hasLiveProjection = inflight.isTruthy() || queued.isTruthy() || pendingClarification != null,
     )
 }
 
-suspend fun GatewayConnection.submitPrompt(runtimeSessionId: String, text: String): JsonObject {
+suspend fun GatewayConnection.submitPrompt(
+    runtimeSessionId: String,
+    text: String,
+    queued: Boolean = false,
+): JsonObject {
     require(runtimeSessionId.isNotBlank()) { "No Hermes conversation is open." }
     require(text.isNotBlank()) { "Write a message first." }
     return request(
@@ -105,6 +111,7 @@ suspend fun GatewayConnection.submitPrompt(runtimeSessionId: String, text: Strin
         params = buildJsonObject {
             put("session_id", runtimeSessionId)
             put("text", text)
+            if (queued) put("queued", true)
         },
         timeoutMillis = 180_000,
     ).asObject("Hermes returned no prompt status.")

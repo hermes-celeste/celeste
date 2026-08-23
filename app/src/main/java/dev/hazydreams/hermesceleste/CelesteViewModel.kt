@@ -83,6 +83,10 @@ internal class CelesteViewModel(
 
     fun sendMessage() = controller.sendMessage()
 
+    fun removeQueuedPrompt(promptId: String) = controller.removeQueuedPrompt(promptId)
+
+    fun resumeQueuedPrompts() = controller.resumeQueuedPrompts()
+
     fun interrupt() = controller.interrupt()
 
     fun onBackground() = controller.onBackground()

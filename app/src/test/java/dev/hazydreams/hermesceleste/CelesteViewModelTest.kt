@@ -46,6 +46,7 @@ import kotlinx.coroutines.test.setMain
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.boolean
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
@@ -94,6 +95,268 @@ class CelesteViewModelTest {
         assertEquals("Hello continued", state.messages.single { it.role == "assistant" }.text)
         assertFalse(state.messages.single { it.role == "user" }.pending)
         assertEquals(1, gateway.methods.count { it == "prompt.submit" })
+        viewModel.controller.close()
+    }
+
+    @Test
+    fun queuesBusyDraftsAndDrainsThemInFifoOrder() = runTest {
+        val gateway = FakeGateway()
+        val viewModel = openConversation(gateway)
+        advanceUntilIdle()
+
+        viewModel.updateDraft("First")
+        viewModel.sendMessage()
+        viewModel.updateDraft("Second")
+        viewModel.sendMessage()
+        viewModel.updateDraft("Third")
+        viewModel.sendMessage()
+        advanceUntilIdle()
+
+        assertEquals(listOf("Second", "Third"), viewModel.state.value.queuedPrompts.map { it.text })
+        assertEquals("", viewModel.state.value.draft)
+        assertEquals(1, gateway.methods.count { it == "prompt.submit" })
+
+        gateway.emit("message.complete", """{"content":"First done","status":"complete"}""")
+        advanceUntilIdle()
+
+        assertEquals(listOf("Third"), viewModel.state.value.queuedPrompts.map { it.text })
+        assertEquals(
+            listOf("First", "Second"),
+            gateway.requests.filter { it.first == "prompt.submit" }
+                .map { it.second["text"]?.jsonPrimitive?.content },
+        )
+        assertEquals(
+            listOf(null, true),
+            gateway.requests.filter { it.first == "prompt.submit" }
+                .map { it.second["queued"]?.jsonPrimitive?.boolean },
+        )
+
+        gateway.emit("message.complete", """{"content":"First done","status":"complete"}""")
+        gateway.emit("session.busy", """{"busy":false}""")
+        advanceUntilIdle()
+
+        assertEquals(TurnState.Running, viewModel.state.value.turnState)
+        assertEquals(2, gateway.methods.count { it == "prompt.submit" })
+        assertEquals(
+            listOf("user", "assistant", "user"),
+            viewModel.state.value.messages.map { it.role },
+        )
+        assertEquals("Second", viewModel.state.value.messages.last().text)
+
+        gateway.emit("message.start")
+        gateway.emit("message.complete", """{"content":"Second done","status":"complete"}""")
+        advanceUntilIdle()
+
+        assertTrue(viewModel.state.value.queuedPrompts.isEmpty())
+        assertEquals(
+            listOf("First", "Second", "Third"),
+            gateway.requests.filter { it.first == "prompt.submit" }
+                .map { it.second["text"]?.jsonPrimitive?.content },
+        )
+
+        gateway.emit("message.start")
+        gateway.emit("message.complete", """{"content":"Third done","status":"complete"}""")
+        advanceUntilIdle()
+        assertEquals(TurnState.Idle, viewModel.state.value.turnState)
+        viewModel.controller.close()
+    }
+
+    @Test
+    fun stoppingParksQueuedDraftsUntilTheUserResumesThem() = runTest {
+        val gateway = FakeGateway()
+        val viewModel = openConversation(gateway)
+        advanceUntilIdle()
+
+        viewModel.updateDraft("First")
+        viewModel.sendMessage()
+        viewModel.updateDraft("Wait for me")
+        viewModel.sendMessage()
+        viewModel.interrupt()
+        advanceUntilIdle()
+
+        assertEquals(TurnState.Idle, viewModel.state.value.turnState)
+        assertTrue(viewModel.state.value.isQueuePaused)
+        assertEquals(listOf("Wait for me"), viewModel.state.value.queuedPrompts.map { it.text })
+        assertEquals(1, gateway.methods.count { it == "prompt.submit" })
+
+        viewModel.controller.resumeQueuedPrompts()
+        advanceUntilIdle()
+
+        assertFalse(viewModel.state.value.isQueuePaused)
+        assertTrue(viewModel.state.value.queuedPrompts.isEmpty())
+        assertEquals(2, gateway.methods.count { it == "prompt.submit" })
+        viewModel.controller.close()
+    }
+
+    @Test
+    fun definitiveQueuedPromptFailureKeepsTheEntryPausedForRetry() = runTest {
+        val gateway = FakeGateway()
+        val viewModel = openConversation(gateway)
+        advanceUntilIdle()
+
+        viewModel.updateDraft("First")
+        viewModel.sendMessage()
+        viewModel.updateDraft("Retry this")
+        viewModel.sendMessage()
+        gateway.promptFailure = GatewayRpcException(409, "Hermes is still busy.")
+        gateway.emit("message.complete", """{"content":"First done","status":"complete"}""")
+        advanceUntilIdle()
+
+        assertEquals(TurnState.Idle, viewModel.state.value.turnState)
+        assertTrue(viewModel.state.value.isQueuePaused)
+        assertEquals(listOf("Retry this"), viewModel.state.value.queuedPrompts.map { it.text })
+        assertEquals("Hermes is still busy.", viewModel.state.value.errorMessage)
+
+        gateway.promptFailure = null
+        viewModel.controller.resumeQueuedPrompts()
+        advanceUntilIdle()
+
+        assertTrue(viewModel.state.value.queuedPrompts.isEmpty())
+        assertEquals(3, gateway.methods.count { it == "prompt.submit" })
+        viewModel.controller.close()
+    }
+
+    @Test
+    fun queuedDraftsRemainAttachedToTheirConversationAcrossNavigation() = runTest {
+        val firstGateway = FakeGateway()
+        val secondGateway = FakeGateway("second-").apply {
+            resumePayload = resumePayload(
+                messages = emptyList(),
+                running = false,
+                runtimeSessionId = "runtime-second",
+                storedSessionId = "stored-second",
+            )
+        }
+        val resumedFirstGateway = FakeGateway().apply {
+            resumePayload = resumePayload(
+                messages = emptyList(),
+                running = false,
+                runtimeSessionId = "runtime-first-tip",
+                storedSessionId = "stored-first-tip",
+            )
+        }
+        val gateways = listOf<GatewayConnection>(firstGateway, secondGateway, resumedFirstGateway)
+        var gatewayIndex = 0
+        val dashboard = FakeDashboard(firstGateway).apply {
+            gatewayFactory = { gateways[gatewayIndex++] }
+        }
+        val secondSession = dashboard.session.copy(
+            id = "stored-second",
+            title = "Second conversation",
+        )
+        val viewModel = CelesteViewModel(
+            dashboard = dashboard,
+            reconnectDelayMillis = { _, _ -> 0L },
+        )
+        viewModel.updateDashboardUrl("http://hermes.test:9119")
+        viewModel.findDashboard()
+        viewModel.loadSessions()
+        viewModel.openSession(dashboard.session)
+        advanceUntilIdle()
+
+        viewModel.updateDraft("First")
+        viewModel.sendMessage()
+        viewModel.updateDraft("Keep this with the first conversation")
+        viewModel.sendMessage()
+        viewModel.interrupt()
+        advanceUntilIdle()
+
+        viewModel.openSession(secondSession)
+        advanceUntilIdle()
+        assertTrue(viewModel.state.value.queuedPrompts.isEmpty())
+
+        viewModel.openSession(dashboard.session)
+        advanceUntilIdle()
+
+        assertTrue(viewModel.state.value.isQueuePaused)
+        assertEquals(
+            listOf("Keep this with the first conversation"),
+            viewModel.state.value.queuedPrompts.map { it.text },
+        )
+        assertEquals(0, resumedFirstGateway.methods.count { it == "prompt.submit" })
+        viewModel.controller.close()
+    }
+
+    @Test
+    fun uncertainQueuedDeliveryStaysPausedAfterSwitchingConversations() = runTest {
+        val firstGateway = FakeGateway()
+        val secondGateway = FakeGateway("second-").apply {
+            resumePayload = resumePayload(
+                messages = emptyList(),
+                running = false,
+                runtimeSessionId = "runtime-second",
+                storedSessionId = "stored-second",
+            )
+        }
+        val resumedFirstGateway = FakeGateway()
+        val gateways = listOf<GatewayConnection>(firstGateway, secondGateway, resumedFirstGateway)
+        var gatewayIndex = 0
+        val dashboard = FakeDashboard(firstGateway).apply {
+            gatewayFactory = { gateways[gatewayIndex++] }
+        }
+        val secondSession = dashboard.session.copy(
+            id = "stored-second",
+            title = "Second conversation",
+        )
+        val viewModel = CelesteViewModel(
+            dashboard = dashboard,
+            reconnectDelayMillis = { _, _ -> 0L },
+        )
+        viewModel.updateDashboardUrl("http://hermes.test:9119")
+        viewModel.findDashboard()
+        viewModel.loadSessions()
+        viewModel.openSession(dashboard.session)
+        advanceUntilIdle()
+
+        viewModel.updateDraft("First")
+        viewModel.sendMessage()
+        advanceUntilIdle()
+        viewModel.updateDraft("Possibly accepted")
+        viewModel.sendMessage()
+        firstGateway.promptGate = CompletableDeferred()
+        firstGateway.promptFailure = IOException("socket closed during submit")
+        firstGateway.emit("message.complete", """{"content":"First done","status":"complete"}""")
+        runCurrent()
+
+        viewModel.openSession(secondSession)
+        advanceUntilIdle()
+        firstGateway.promptGate?.complete(Unit)
+        advanceUntilIdle()
+
+        viewModel.openSession(dashboard.session)
+        advanceUntilIdle()
+
+        assertTrue(viewModel.state.value.isQueuePaused)
+        assertEquals(
+            listOf("Possibly accepted"),
+            viewModel.state.value.queuedPrompts.map { it.text },
+        )
+        assertTrue(viewModel.state.value.queuedPrompts.single().deliveryUncertain)
+        assertEquals(0, resumedFirstGateway.methods.count { it == "prompt.submit" })
+        viewModel.controller.close()
+    }
+
+    @Test
+    fun authoritativeResumeClearsAnUncertainPromptHermesAccepted() = runTest {
+        val gateway = FakeGateway()
+        val viewModel = openConversation(gateway)
+        advanceUntilIdle()
+
+        viewModel.updateDraft("First")
+        viewModel.sendMessage()
+        viewModel.updateDraft("Possibly accepted")
+        viewModel.sendMessage()
+        gateway.resumePayload = resumePayload(
+            messages = listOf(ConversationMessage(role = "user", text = "Possibly accepted")),
+            running = true,
+        )
+        gateway.promptFailure = IOException("socket closed during submit")
+        gateway.emit("message.complete", """{"content":"First done","status":"complete"}""")
+        advanceUntilIdle()
+
+        assertTrue(viewModel.state.value.queuedPrompts.isEmpty())
+        assertEquals(TurnState.Running, viewModel.state.value.turnState)
+        assertEquals(2, gateway.methods.count { it == "prompt.submit" })
         viewModel.controller.close()
     }
 
@@ -1409,12 +1672,14 @@ class CelesteViewModelTest {
         private fun resumePayload(
             messages: List<ConversationMessage>,
             running: Boolean,
+            runtimeSessionId: String = "runtime-7",
+            storedSessionId: String = "stored-42",
         ): JsonObject {
             val encodedMessages = messages.joinToString(",") { message ->
                 """{"id":${Json.encodeToString(message.id ?: "")},"role":${Json.encodeToString(message.role)},"text":${Json.encodeToString(message.text)}}"""
             }
             return Json.parseToJsonElement(
-                """{"session_id":"runtime-7","resumed":"stored-42","running":$running,"status":"${if (running) "streaming" else "idle"}","inflight":null,"messages":[$encodedMessages]}""",
+                """{"session_id":"$runtimeSessionId","resumed":"$storedSessionId","running":$running,"status":"${if (running) "streaming" else "idle"}","inflight":null,"messages":[$encodedMessages]}""",
             ) as JsonObject
         }
     }

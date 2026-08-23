@@ -67,8 +67,10 @@ import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import dev.hazydreams.hermesceleste.QueuedPrompt
 import dev.hazydreams.hermesceleste.TurnState
 import dev.hazydreams.hermesceleste.network.ConversationMessage
 import dev.hazydreams.hermesceleste.network.TaskProgress
@@ -93,6 +95,8 @@ internal fun ConversationScreen(
     taskProgress: TaskProgress?,
     streamingText: String,
     draft: String,
+    queuedPrompts: List<QueuedPrompt> = emptyList(),
+    isQueuePaused: Boolean = false,
     turnState: TurnState,
     isCompacting: Boolean,
     resumeExhausted: Boolean,
@@ -100,6 +104,8 @@ internal fun ConversationScreen(
     errorMessage: String?,
     onDraftChange: (String) -> Unit,
     onSend: () -> Unit,
+    onRemoveQueuedPrompt: (String) -> Unit = {},
+    onResumeQueuedPrompts: () -> Unit = {},
     onInterrupt: () -> Unit,
     onRetryResume: () -> Unit,
     onOpenDrawer: () -> Unit,
@@ -117,8 +123,12 @@ internal fun ConversationScreen(
     }
     var openedInspectionMessageId by remember(conversationKey) { mutableStateOf<String?>(null) }
     var tasksSheetOpen by remember(conversationKey) { mutableStateOf(false) }
+    var queueSheetOpen by remember(conversationKey) { mutableStateOf(false) }
     LaunchedEffect(taskProgress) {
         if (taskProgress == null) tasksSheetOpen = false
+    }
+    LaunchedEffect(queuedPrompts) {
+        if (queuedPrompts.isEmpty()) queueSheetOpen = false
     }
     val openedInspectionMessage = openedInspectionMessageId?.let { id ->
         messages.firstOrNull { message ->
@@ -261,6 +271,8 @@ internal fun ConversationScreen(
                 draft = draft,
                 turnState = turnState,
                 taskProgress = taskProgress,
+                queuedPrompts = queuedPrompts,
+                isQueuePaused = isQueuePaused,
                 onDraftChange = onDraftChange,
                 onSend = {
                     followLatest = true
@@ -271,6 +283,10 @@ internal fun ConversationScreen(
                 onOpenTasks = {
                     focusManager.clearFocus()
                     tasksSheetOpen = true
+                },
+                onOpenQueue = {
+                    focusManager.clearFocus()
+                    queueSheetOpen = true
                 },
                 focusRequest = composerFocusRequest,
                 onFocusRequestHandled = onComposerFocusRequestHandled,
@@ -288,6 +304,15 @@ internal fun ConversationScreen(
         TaskProgressInspectionSheet(
             progress = taskProgress,
             onDismiss = { tasksSheetOpen = false },
+        )
+    }
+    if (queueSheetOpen && queuedPrompts.isNotEmpty()) {
+        QueuedPromptsInspectionSheet(
+            prompts = queuedPrompts,
+            paused = isQueuePaused,
+            onResume = onResumeQueuedPrompts,
+            onRemove = onRemoveQueuedPrompt,
+            onDismiss = { queueSheetOpen = false },
         )
     }
 }
@@ -465,10 +490,13 @@ private fun ConversationComposer(
     draft: String,
     turnState: TurnState,
     taskProgress: TaskProgress?,
+    queuedPrompts: List<QueuedPrompt>,
+    isQueuePaused: Boolean,
     onDraftChange: (String) -> Unit,
     onSend: () -> Unit,
     onInterrupt: () -> Unit,
     onOpenTasks: () -> Unit,
+    onOpenQueue: () -> Unit,
     focusRequest: Long?,
     onFocusRequestHandled: (Long) -> Unit,
 ) {
@@ -482,6 +510,11 @@ private fun ConversationComposer(
         keyboardController?.show()
         onFocusRequestHandled(requestId)
     }
+    val shouldQueueDraft = draft.isNotBlank() && (
+        turnState == TurnState.Running ||
+            turnState == TurnState.Reconnecting ||
+            queuedPrompts.isNotEmpty()
+    )
 
     Column(
         modifier = Modifier
@@ -490,14 +523,28 @@ private fun ConversationComposer(
             .imePadding()
             .padding(horizontal = 16.dp, vertical = 8.dp),
     ) {
-        taskProgress?.let { progress ->
-            TaskProgressPill(
-                progress = progress,
-                onOpen = onOpenTasks,
+        if (taskProgress != null || queuedPrompts.isNotEmpty()) {
+            Row(
                 modifier = Modifier
                     .align(Alignment.Start)
                     .padding(bottom = 8.dp),
-            )
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                taskProgress?.let { progress ->
+                    TaskProgressPill(
+                        progress = progress,
+                        onOpen = onOpenTasks,
+                    )
+                }
+                if (queuedPrompts.isNotEmpty()) {
+                    QueuedPromptsPill(
+                        prompts = queuedPrompts,
+                        paused = isQueuePaused,
+                        onOpen = onOpenQueue,
+                    )
+                }
+            }
         }
         CelestePanel(
             modifier = Modifier.fillMaxWidth(),
@@ -513,7 +560,7 @@ private fun ConversationComposer(
                 BasicTextField(
                     value = draft,
                     onValueChange = onDraftChange,
-                    enabled = turnState == TurnState.Idle || turnState == TurnState.Reconnecting,
+                    enabled = turnState != TurnState.Synchronizing,
                     modifier = Modifier
                         .weight(1f)
                         .focusRequester(focusRequester),
@@ -522,7 +569,7 @@ private fun ConversationComposer(
                     keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
                     keyboardActions = KeyboardActions(
                         onSend = {
-                            if (draft.isNotBlank() && turnState == TurnState.Idle) onSend()
+                            if (draft.isNotBlank() && turnState != TurnState.Synchronizing) onSend()
                         },
                     ),
                     textStyle = MaterialTheme.typography.bodyMedium.copy(color = CelesteTextPrimary),
@@ -551,21 +598,40 @@ private fun ConversationComposer(
                     },
                 )
                 Spacer(Modifier.width(4.dp))
-                when (turnState) {
-                    TurnState.Running -> Button(
-                        onClick = onInterrupt,
-                        modifier = Modifier
-                            .width(54.dp)
-                            .height(CONVERSATION_CONTROL_SIZE),
-                        shape = RoundedCornerShape(20.dp),
-                        colors = ButtonDefaults.buttonColors(
+                when {
+                    turnState == TurnState.Running && shouldQueueDraft -> {
+                        ComposerTextAction(
+                            label = "Stop",
+                            onClick = onInterrupt,
                             containerColor = CelesteSurfacePrimary,
                             contentColor = CelesteTextPrimary,
-                        ),
-                        contentPadding = PaddingValues(0.dp),
-                    ) {
-                        Text("Stop", fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
+                            width = 48.dp,
+                        )
+                        Spacer(Modifier.width(4.dp))
+                        ComposerTextAction(
+                            label = "Queue",
+                            onClick = onSend,
+                            containerColor = CelesteAccent,
+                            contentColor = CelesteAccentContent,
+                            width = 56.dp,
+                        )
                     }
+
+                    turnState == TurnState.Running -> ComposerTextAction(
+                        label = "Stop",
+                        onClick = onInterrupt,
+                        containerColor = CelesteSurfacePrimary,
+                        contentColor = CelesteTextPrimary,
+                        width = 54.dp,
+                    )
+
+                    shouldQueueDraft -> ComposerTextAction(
+                        label = "Queue",
+                        onClick = onSend,
+                        containerColor = CelesteAccent,
+                        contentColor = CelesteAccentContent,
+                        width = 58.dp,
+                    )
 
                     else -> Button(
                         onClick = onSend,
@@ -590,6 +656,30 @@ private fun ConversationComposer(
                 Spacer(Modifier.width(2.dp))
             }
         }
+    }
+}
+
+@Composable
+private fun ComposerTextAction(
+    label: String,
+    onClick: () -> Unit,
+    containerColor: Color,
+    contentColor: Color,
+    width: Dp,
+) {
+    Button(
+        onClick = onClick,
+        modifier = Modifier
+            .width(width)
+            .height(CONVERSATION_CONTROL_SIZE),
+        shape = RoundedCornerShape(20.dp),
+        colors = ButtonDefaults.buttonColors(
+            containerColor = containerColor,
+            contentColor = contentColor,
+        ),
+        contentPadding = PaddingValues(0.dp),
+    ) {
+        Text(label, fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
     }
 }
 

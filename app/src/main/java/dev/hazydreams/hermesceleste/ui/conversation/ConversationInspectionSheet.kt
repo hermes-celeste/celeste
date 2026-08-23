@@ -57,7 +57,7 @@ internal fun TaskProgressInspectionSheet(
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun InspectionModalSheet(
+internal fun InspectionModalSheet(
     onDismiss: () -> Unit,
     content: @Composable () -> Unit,
 ) {
