@@ -23,6 +23,7 @@ data class ConversationMessage(
     val pending: Boolean = false,
     val interim: Boolean = false,
     val steps: List<ConversationStep> = emptyList(),
+    val processResult: BackgroundProcessResult? = null,
 )
 
 internal fun appendReasoningToCurrentTurn(

@@ -31,8 +31,9 @@ The repository does not have shared Kotlin Multiplatform source sets yet. Portab
 - `DashboardClientTest` owns HTTP/authentication and short WebSocket operations.
 - `ConnectionStoreTest` owns bootstrap decisions, secret redaction, Sign out versus Forget semantics, and ciphertext endpoint binding.
 - `BackupExclusionTest` owns named descriptor exclusions across legacy backup, cloud backup, and device transfer rules.
-- `HermesGatewayTest` owns readiness, request correlation, events, endpoint refresh, and disconnect behavior.
-- `ConversationEventReducerTest` owns pure transcript, reasoning, tool, streaming, turn-state, and compaction projection.
+- `HermesGatewayTest` owns readiness, request correlation, events, endpoint refresh, disconnect behavior, and restored process-result decoding.
+- `BackgroundProcessResultTest` owns the current Hermes completion-marker parser, identity, status, and output bounds.
+- `ConversationEventReducerTest` owns pure transcript, reasoning, tool, process-result, streaming, turn-state, and compaction projection.
 - `SessionCatalogCoordinatorTest` owns paging, search, metadata reconciliation, optimistic pin/rename actions, and stale catalog-request rejection.
 - `CelesteViewModelTest` is the current host-unit location for `CelesteController` session creation/resume, session-scoped asynchronous publication, event admission/integration, interruption, reconnect, host lifetime, and no-resend invariants. New portable behavior should exercise the controller directly even while older cases still enter through the thin Android adapter. `CelesteViewModelAutoLoginTest` owns cold restore, connected-readiness gating, typed recovery, remembered login, and cleanup transitions.
 - `LiveHermesDashboardTest` is the opt-in real-server contract.
@@ -49,7 +50,7 @@ scripts/celeste-env ./gradlew --no-daemon testDebugUnitTest
 
 ## Host-rendered Compose screenshots
 
-The screenshot scenarios live in `app/src/screenshotTest`; accepted PNGs live in `app/src/screenshotTestDebug/reference`. The current matrix covers Gateway setup, password sign-in, Settings and connected Gateway management, saved-connection restoration and recovery, the empty conversation landing and navigation drawer, drawer search, conversation row actions, rename at normal and narrow large-text widths, pin failure, composing, rich Markdown at normal and narrow phone widths, jump-to-latest navigation, streaming, completion, reconnection, and active conversation compaction.
+The screenshot scenarios live in `app/src/screenshotTest`; accepted PNGs live in `app/src/screenshotTestDebug/reference`. The current matrix covers Gateway setup, password sign-in, Settings and connected Gateway management, saved-connection restoration and recovery, the empty conversation landing and navigation drawer, drawer search, conversation row actions, rename at normal and narrow large-text widths, pin failure, composing, rich Markdown at normal and narrow phone widths, jump-to-latest navigation, streaming, completion, reconnection, active conversation compaction, Thinking activity, and compact background-process results with their inspection sheet.
 
 Validate one affected preview during iteration:
 

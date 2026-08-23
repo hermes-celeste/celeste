@@ -132,6 +132,21 @@ internal fun decodeGatewayMessages(elements: List<JsonElement>): List<Conversati
             ?: row.string("context")
             ?: ""
 
+        if (role == "user") {
+            parseBackgroundProcessResult(text)?.let { result ->
+                val existingMessageId = messages.firstOrNull { message ->
+                    message.role == "process" && message.processResult?.processId == result.processId
+                }?.id
+                messages = upsertBackgroundProcessResult(
+                    messages = messages,
+                    result = result,
+                    messageId = existingMessageId
+                        ?: uniqueMessageId("process:${result.processId}", "resume-$index"),
+                )
+                return@forEachIndexed
+            }
+        }
+
         if (role == "assistant") {
             (row["tool_calls"] as? JsonArray).orEmpty().forEach { callElement ->
                 val call = callElement as? JsonObject ?: return@forEach

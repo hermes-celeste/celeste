@@ -116,9 +116,11 @@ internal fun ConversationScreen(
     var followLatest by remember(conversationKey, initiallyFollowLatest) {
         mutableStateOf(initiallyFollowLatest)
     }
-    var openedStepsMessageId by remember(conversationKey) { mutableStateOf<String?>(null) }
-    val openedStepsMessage = openedStepsMessageId?.let { id ->
-        messages.firstOrNull { message -> message.id == id && message.role == "steps" }
+    var openedInspectionMessageId by remember(conversationKey) { mutableStateOf<String?>(null) }
+    val openedInspectionMessage = openedInspectionMessageId?.let { id ->
+        messages.firstOrNull { message ->
+            message.id == id && (message.role == "steps" || message.role == "process")
+        }
     }
     val focusManager = LocalFocusManager.current
     val transcriptKeys = remember(messages) { transcriptItemKeys(messages) }
@@ -201,7 +203,7 @@ internal fun ConversationScreen(
                     ) { _, message ->
                         MessageBubble(
                             message = message,
-                            onOpenSteps = { openedStepsMessageId = message.id },
+                            onOpenInspection = { openedInspectionMessageId = message.id },
                         )
                     }
                     if (streamingText.isNotBlank()) {
@@ -271,10 +273,10 @@ internal fun ConversationScreen(
         }
     }
 
-    openedStepsMessage?.let { message ->
-        ConversationStepsSheet(
+    openedInspectionMessage?.let { message ->
+        ConversationInspectionSheet(
             message = message,
-            onDismiss = { openedStepsMessageId = null },
+            onDismiss = { openedInspectionMessageId = null },
         )
     }
 }

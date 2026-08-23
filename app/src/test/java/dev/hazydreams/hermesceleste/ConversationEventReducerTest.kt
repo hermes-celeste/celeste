@@ -5,6 +5,8 @@ import dev.hazydreams.hermesceleste.network.ConversationStepKind
 import dev.hazydreams.hermesceleste.network.GatewayEvent
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -152,6 +154,38 @@ class ConversationEventReducerTest {
             .reduce(event("status.update", """{"kind":"compacting"}"""))
             .reduce(event("message.complete", """{"content":"Ready","status":"complete"}"""))
         assertFalse(result.projection.isCompacting)
+    }
+
+    @Test
+    fun processCompletionProjectsOneCompactResultBeforeTheAssistantResponse() {
+        val completion = """[IMPORTANT: Background process proc_42 completed normally (exit code 0).
+Command: ./gradlew test
+Output:
+BUILD SUCCESSFUL
+]""".trimIndent()
+        val processEvent = GatewayEvent(
+            type = "status.update",
+            sessionId = "runtime-7",
+            payload = buildJsonObject {
+                put("kind", "process")
+                put("text", completion)
+            },
+        )
+
+        val result = reduceEvents(
+            processEvent,
+            processEvent,
+            event("message.start"),
+            event("message.complete", """{"content":"The checks passed.","status":"complete"}"""),
+        )
+
+        assertEquals(listOf("user", "process", "assistant"), result.projection.messages.map { it.role })
+        val process = result.projection.messages.single { it.role == "process" }
+        assertEquals("process:proc_42", process.id)
+        assertEquals("proc_42", process.processResult?.processId)
+        assertEquals("./gradlew test", process.processResult?.command)
+        assertEquals("BUILD SUCCESSFUL", process.processResult?.output)
+        assertEquals(0, process.processResult?.exitCode)
     }
 
     @Test

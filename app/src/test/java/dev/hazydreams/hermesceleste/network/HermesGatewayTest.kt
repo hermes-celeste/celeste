@@ -11,9 +11,12 @@ import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.buildJsonArray
+import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.put
 import mockwebserver3.MockResponse
 import mockwebserver3.MockWebServer
 import okhttp3.OkHttpClient
@@ -132,6 +135,48 @@ class HermesGatewayTest {
         assertEquals(listOf("row-41", "steps:resume-1"), messages.map { it.id })
         assertEquals(messages.size, messages.map { it.id }.toSet().size)
         assertEquals(listOf("resume-1:tool", "resume-2:tool"), messages.single { it.role == "steps" }.steps.map { it.id })
+    }
+
+    @Test
+    fun resumedProcessCompletionUsesTheSameCompactProjectionAsLiveEvents() {
+        val completion = """[IMPORTANT: Background process proc_42 exited (exit code 1).
+Command: ./gradlew test
+Output:
+One test failed
+]""".trimIndent()
+        val messages = decodeGatewayMessages(
+            buildJsonArray {
+                add(
+                    buildJsonObject {
+                        put("row_id", 41)
+                        put("role", "user")
+                        put("text", completion)
+                    },
+                )
+                add(
+                    buildJsonObject {
+                        put("row_id", 42)
+                        put("role", "user")
+                        put("text", completion)
+                    },
+                )
+                add(
+                    buildJsonObject {
+                        put("row_id", 43)
+                        put("role", "assistant")
+                        put("text", "I found the failure.")
+                    },
+                )
+            },
+        )
+
+        assertEquals(listOf("process", "assistant"), messages.map { it.role })
+        val process = messages.first()
+        assertEquals("process:proc_42", process.id)
+        assertEquals(BackgroundProcessState.Failed, process.processResult?.state)
+        assertEquals("./gradlew test", process.processResult?.command)
+        assertEquals("One test failed", process.processResult?.output)
+        assertEquals(1, process.processResult?.exitCode)
     }
 
     @Test
