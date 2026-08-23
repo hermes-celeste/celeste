@@ -53,7 +53,7 @@ The test skips when no URL is supplied. Never print, persist, or fixture the tok
 
 ## APK and device cadence
 
-Do not assemble or install APKs in agent workflows. Pull requests verify packaging; successful `main` runs publish the consistently signed `Hermes-Celeste-latest.apk` test artifact. The project owner retrieves and update-installs it so application data is preserved.
+Do not assemble or install APKs in agent workflows. Pull requests verify packaging; successful `main` runs publish the consistently signed `Hermes-Celeste-latest.apk` to the rolling test pre-release and retain one Actions artifact as a fallback. The project owner retrieves and update-installs it so application data is preserved.
 
 Host tests cannot establish Android runtime behavior. Record device, build, and observed flow for IME, lifecycle, system navigation, accessibility, networking, permissions, and performance claims.
 
@@ -61,4 +61,4 @@ Host tests cannot establish Android runtime behavior. Record device, build, and 
 
 The Android workflow runs unit tests, lint, screenshot validation, coverage, and debug packaging. Codecov is informational.
 
-The published test APK uses a dedicated test-only signing identity and replaces older artifacts only after a successful upload. It is not a release or store build.
+The published test APK uses a dedicated test-only signing identity. The rolling pre-release is a test distribution surface, not a production or store release.
