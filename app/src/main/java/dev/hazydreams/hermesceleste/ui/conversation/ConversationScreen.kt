@@ -1,6 +1,5 @@
 package dev.hazydreams.hermesceleste.ui.conversation
 
-import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.animateScrollBy
 import androidx.compose.foundation.interaction.collectIsDraggedAsState
@@ -30,6 +29,7 @@ import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.Button
@@ -37,9 +37,6 @@ import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -77,7 +74,6 @@ import dev.hazydreams.hermesceleste.network.ConversationMessage
 import dev.hazydreams.hermesceleste.ui.CelesteAccent
 import dev.hazydreams.hermesceleste.ui.CelesteAccentContent
 import dev.hazydreams.hermesceleste.ui.CelesteError
-import dev.hazydreams.hermesceleste.ui.CelesteHairline
 import dev.hazydreams.hermesceleste.ui.CelestePanel
 import dev.hazydreams.hermesceleste.ui.CelesteScreen
 import dev.hazydreams.hermesceleste.ui.CelesteSurfacePrimary
@@ -236,17 +232,12 @@ internal fun ConversationScreen(
                         }
                     }
                 }
-            }
-
-            if (jumpToLatestVisibleOverride ?: jumpToLatestVisible.value) {
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(60.dp),
-                    contentAlignment = Alignment.Center,
-                ) {
+                if (jumpToLatestVisibleOverride ?: jumpToLatestVisible.value) {
                     JumpToLatestButton(
                         visible = true,
+                        modifier = Modifier
+                            .align(Alignment.BottomCenter)
+                            .padding(bottom = 8.dp),
                         onClick = {
                             followLatest = true
                             latestTranscriptIndex(visibleMessageCount)?.let { latestIndex ->
@@ -372,9 +363,10 @@ private fun JumpToLatestButton(
 ) {
     if (visible) {
         CelestePanel(
-            modifier = modifier.size(48.dp),
+            modifier = modifier.size(CONVERSATION_CONTROL_SIZE),
             shape = CircleShape,
             containerColor = CelesteSurfaceRaised,
+            borderColor = Color.Transparent,
         ) {
             IconButton(
                 onClick = onClick,
@@ -383,7 +375,7 @@ private fun JumpToLatestButton(
                 Icon(
                     imageVector = JumpToLatestIcon,
                     contentDescription = "Jump to latest message",
-                    modifier = Modifier.size(22.dp),
+                    modifier = Modifier.size(CONVERSATION_ICON_SIZE),
                     tint = CelesteTextMuted,
                 )
             }
@@ -405,9 +397,10 @@ private fun ConversationHeader(
         verticalAlignment = Alignment.CenterVertically,
     ) {
         CelestePanel(
-            modifier = Modifier.size(48.dp),
+            modifier = Modifier.size(CONVERSATION_CONTROL_SIZE),
             shape = CircleShape,
             containerColor = CelesteSurfacePrimary,
+            borderColor = Color.Transparent,
         ) {
             IconButton(
                 onClick = onOpenDrawer,
@@ -416,7 +409,7 @@ private fun ConversationHeader(
                 Icon(
                     imageVector = NavigationDrawerIcon,
                     contentDescription = "Open conversations",
-                    modifier = Modifier.size(22.dp),
+                    modifier = Modifier.size(CONVERSATION_ICON_SIZE),
                     tint = CelesteTextPrimary,
                 )
             }
@@ -466,69 +459,69 @@ private fun ConversationComposer(
             .fillMaxWidth()
             .navigationBarsPadding()
             .imePadding()
-            .padding(horizontal = 16.dp, vertical = 12.dp),
+            .padding(horizontal = 16.dp, vertical = 8.dp),
     ) {
         CelestePanel(
             modifier = Modifier.fillMaxWidth(),
-            shape = RoundedCornerShape(30.dp),
+            shape = RoundedCornerShape(22.dp),
             containerColor = CelesteSurfaceRaised,
-            borderColor = CelesteHairline,
-            contentPadding = PaddingValues(4.dp),
+            borderColor = Color.Transparent,
+            contentPadding = PaddingValues(2.dp),
         ) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                OutlinedTextField(
+                BasicTextField(
                     value = draft,
                     onValueChange = onDraftChange,
                     enabled = turnState == TurnState.Idle || turnState == TurnState.Reconnecting,
                     modifier = Modifier
                         .weight(1f)
-                        .focusRequester(focusRequester),
-                    placeholder = {
-                        Text(
-                            text = when (turnState) {
-                                TurnState.Idle -> "Message Hermes…"
-                                TurnState.Running -> "Message Hermes…"
-                                TurnState.Synchronizing -> "Synchronizing…"
-                                TurnState.Reconnecting -> "Message Hermes…"
-                            },
-                            color = CelesteTextMuted,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                        )
-                    },
+                        .focusRequester(focusRequester)
+                        .padding(horizontal = 12.dp, vertical = 10.dp),
                     minLines = 1,
                     maxLines = 4,
-                    shape = RoundedCornerShape(24.dp),
                     keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
                     keyboardActions = KeyboardActions(
                         onSend = {
                             if (draft.isNotBlank() && turnState == TurnState.Idle) onSend()
                         },
                     ),
-                    textStyle = MaterialTheme.typography.bodyMedium,
-                    colors = OutlinedTextFieldDefaults.colors(
-                        focusedBorderColor = Color.Transparent,
-                        unfocusedBorderColor = Color.Transparent,
-                        disabledBorderColor = Color.Transparent,
-                        focusedContainerColor = Color.Transparent,
-                        unfocusedContainerColor = Color.Transparent,
-                        disabledContainerColor = Color.Transparent,
-                        cursorColor = CelesteAccent,
-                    ),
+                    textStyle = MaterialTheme.typography.bodyMedium.copy(color = CelesteTextPrimary),
+                    cursorBrush = SolidColor(CelesteAccent),
+                    decorationBox = { innerTextField ->
+                        Box(contentAlignment = Alignment.CenterStart) {
+                            if (draft.isEmpty()) {
+                                Text(
+                                    text = when (turnState) {
+                                        TurnState.Idle -> "Message Hermes…"
+                                        TurnState.Running -> "Message Hermes…"
+                                        TurnState.Synchronizing -> "Synchronizing…"
+                                        TurnState.Reconnecting -> "Message Hermes…"
+                                    },
+                                    color = CelesteTextMuted,
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                            }
+                            innerTextField()
+                        }
+                    },
                 )
                 Spacer(Modifier.width(4.dp))
                 when (turnState) {
-                    TurnState.Running -> OutlinedButton(
+                    TurnState.Running -> Button(
                         onClick = onInterrupt,
                         modifier = Modifier
-                            .width(58.dp)
-                            .height(46.dp),
-                        shape = RoundedCornerShape(23.dp),
-                        border = BorderStroke(1.dp, CelesteHairline),
-                        colors = ButtonDefaults.outlinedButtonColors(contentColor = CelesteTextPrimary),
+                            .width(54.dp)
+                            .height(CONVERSATION_CONTROL_SIZE),
+                        shape = RoundedCornerShape(20.dp),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = CelesteSurfacePrimary,
+                            contentColor = CelesteTextPrimary,
+                        ),
                         contentPadding = PaddingValues(0.dp),
                     ) {
                         Text("Stop", fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
@@ -537,12 +530,12 @@ private fun ConversationComposer(
                     else -> Button(
                         onClick = onSend,
                         enabled = draft.isNotBlank() && turnState == TurnState.Idle,
-                        modifier = Modifier.size(46.dp),
+                        modifier = Modifier.size(CONVERSATION_CONTROL_SIZE),
                         shape = CircleShape,
                         colors = ButtonDefaults.buttonColors(
                             containerColor = CelesteAccent,
                             contentColor = CelesteAccentContent,
-                            disabledContainerColor = CelesteHairline,
+                            disabledContainerColor = CelesteSurfacePrimary,
                             disabledContentColor = CelesteTextMuted,
                         ),
                         contentPadding = PaddingValues(0.dp),
@@ -550,7 +543,7 @@ private fun ConversationComposer(
                         Icon(
                             imageVector = SendMessageIcon,
                             contentDescription = "Send message",
-                            modifier = Modifier.size(20.dp),
+                            modifier = Modifier.size(CONVERSATION_ICON_SIZE),
                         )
                     }
                 }
@@ -559,6 +552,9 @@ private fun ConversationComposer(
         }
     }
 }
+
+private val CONVERSATION_CONTROL_SIZE = 40.dp
+private val CONVERSATION_ICON_SIZE = 18.dp
 
 private fun turnStateAccessibilityLabel(turnState: TurnState): String = when (turnState) {
     TurnState.Idle -> "Connected"
