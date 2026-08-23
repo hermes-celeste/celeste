@@ -7,6 +7,7 @@ Run agent sessions from the repository root. Hermes loads `AGENTS.md` from the w
 ## Repository map
 
 - `app/src/main/java/dev/hazydreams/hermesceleste/CelesteController.kt` — platform-neutral application/session orchestration and UI state, pending the shared source-set split
+- `app/src/main/java/dev/hazydreams/hermesceleste/ConversationEventReducer.kt` — pure Hermes event projection for transcript activity, streaming text, turn state, and compaction
 - `app/src/main/java/dev/hazydreams/hermesceleste/MainActivity.kt` and `CelesteViewModel.kt` — Android application, lifecycle, and dependency adapters
 - `app/src/main/java/dev/hazydreams/hermesceleste/ui` — custom Compose UI plus the remaining explicit Android UI hooks
 - `app/src/main/java/dev/hazydreams/hermesceleste/network` — dashboard HTTP, authentication, JSON-RPC, and gateway transport

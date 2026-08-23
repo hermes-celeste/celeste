@@ -6,7 +6,8 @@ Celeste is currently a single-module Android application. That module is the pre
 
 - `MainActivity.kt` owns Android Activity setup, ViewModel wiring, and lifecycle forwarding.
 - `CelesteViewModel.kt` is a thin Android lifetime and dependency-composition adapter.
-- `CelesteController.kt` owns application/session state, turn reduction, lifecycle recovery commands, and user actions with no direct Android, AndroidX, or JVM imports. The network contracts and models it consumes still live in the Android/JVM source tree and remain a later source-set split.
+- `CelesteController.kt` owns application/session state, lifecycle recovery commands, user actions, and active-runtime event admission with no direct Android, AndroidX, or JVM imports. The network contracts and models it consumes still live in the Android/JVM source tree and remain a later source-set split.
+- `ConversationEventReducer.kt` purely projects admitted Hermes events into transcript activity, streaming text, turn state, compaction state, and user-facing turn errors.
 - `ui/CelesteRoutes.kt` owns top-level destination selection.
 - `ui/CelesteSurfaces.kt` owns the shared dark screen, neutral panels, and reusable state affordances.
 - `ui/gateway/`, `ui/sessions/`, and `ui/conversation/` own their existing screen areas; transcript row identity and rendering stay with conversation UI.
@@ -27,7 +28,7 @@ Compose renders `CelesteUiState` and emits user intent to `CelesteController`. T
 
 ### Application controller
 
-`CelesteController` coordinates cold-start restoration, the selected dashboard, in-memory credential, profile/session selection, persistent gateway, transcript projection, draft, and turn state. It is the boundary between UI intent and protocol operations. The host supplies its coroutine scope, `DashboardService`, `ConnectionStore`, client source, and mandatory dashboard URL admission function; the controller owns and cancels a child scope. After loading the session catalog, restoration publishes a local empty draft immediately. The first Send creates its Hermes runtime, submits the prompt, and publishes the resulting stored session into the catalog.
+`CelesteController` coordinates cold-start restoration, the selected dashboard, in-memory credential, profile/session selection, persistent gateway, transcript projection, draft, and turn state. It is the boundary between UI intent and protocol operations. The controller admits events only for the active runtime, then delegates deterministic conversation projection to `ConversationEventReducer`. The host supplies its coroutine scope, `DashboardService`, `ConnectionStore`, client source, and mandatory dashboard URL admission function; the controller owns and cancels a child scope. After loading the session catalog, restoration publishes a local empty draft immediately. The first Send creates its Hermes runtime, submits the prompt, and publishes the resulting stored session into the catalog.
 
 The Android `CelesteViewModel` constructs the controller with `viewModelScope`, Android's connection store, and the `android` client source. `MainActivity` forwards foreground/background events. A future platform host must provide equivalent lifetime and platform dependencies rather than reproduce controller behavior.
 
@@ -69,7 +70,7 @@ Provider cookies may rotate while Hermes refreshes a session. Celeste snapshots 
 5. List sessions and profiles over the current required HTTP routes.
 6. Publish a local empty composer as soon as the session catalog and profiles are ready. Resume durable history only when the user selects it from the drawer.
 7. On the local draft's first Send, connect the gateway, create the Hermes runtime, submit the prompt, and publish the stored session into the catalog after `prompt.submit` crosses Hermes' persistence boundary. A creation failure leaves the exact draft ready for another Send.
-8. Reduce gateway events into assistant messages, the current turn's chronological Steps projection, turn state, and the active conversation's compaction status.
+8. Admit gateway events for the active runtime and reduce them through `ConversationEventReducer` into assistant messages, the current turn's chronological Steps projection, turn state, and the active conversation's compaction status.
 9. On interruption, disconnect, or foreground recovery, keep the local draft, reconnect automatically, and ask the server for authoritative state before continuing. Connection attempts continue while the transport is unavailable. Once connected, session resume uses the initial attempt plus four bounded retries; persisted REST history stays readable, and exhaustion presents a dedicated Retry action that begins a fresh resume cycle. Recoverable transport details stay inside the connection layer; definitive authentication rejection returns the user to connection setup.
 
 The dashboard remains the source of truth throughout this flow. Celeste holds a screen projection and unsent draft, not a competing history database.
@@ -115,7 +116,7 @@ Do not substitute one for the other because they happen to match in a test fixtu
 - Interim/final assistant merging and completion deduplication use text- and prefix-based projection rules.
 - A newly persisted conversation keeps its current projected summary while active and receives refreshed catalog metadata on the next catalog load.
 
-Regression coverage for these invariants belongs to `CelesteController` and `HermesGateway`; see [`testing.md`](testing.md) for the current host-test locations.
+Regression coverage for these invariants belongs to `ConversationEventReducer`, `CelesteController`, and `HermesGateway`; see [`testing.md`](testing.md) for the current host-test locations.
 
 ## Growth rule
 
