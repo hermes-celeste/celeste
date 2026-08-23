@@ -25,7 +25,15 @@ data class TaskProgress(
 ) {
     val completedCount: Int get() = items.count { it.status == TaskItemStatus.Completed }
     val totalCount: Int get() = items.size
+    val isActive: Boolean get() = items.any {
+        it.status == TaskItemStatus.Pending || it.status == TaskItemStatus.InProgress
+    }
+    val isFinished: Boolean get() = items.isNotEmpty() && !isActive
 }
+
+data class TaskProgressSnapshot(
+    val progress: TaskProgress?,
+)
 
 enum class FileEditState {
     Pending,
@@ -52,8 +60,10 @@ data class ChangedFile(
 
 internal data class DecodedGatewayConversation(
     val messages: List<ConversationMessage>,
-    val taskProgress: TaskProgress?,
-)
+    val taskProgressSnapshot: TaskProgressSnapshot?,
+) {
+    val taskProgress: TaskProgress? get() = taskProgressSnapshot?.progress
+}
 
 private data class ChangedFileAccumulator(
     val path: String,
@@ -210,7 +220,7 @@ internal fun fileEditPaths(
         }
     }
     diffSections(boundedNormalizedDiff(diff)).mapNotNullTo(this) { it.path }
-}.map(::normalizedPath).filter(String::isNotBlank).distinct()
+}.map(::cleanPath).filter(String::isNotBlank).distinct()
 
 internal fun fileEditDiff(payload: JsonObject): String {
     payload.string("inline_diff")?.takeIf(String::isNotBlank)?.let { return it }
@@ -248,12 +258,20 @@ private fun toolErrorValue(value: JsonElement?): Boolean = when (value) {
     else -> true
 }
 
-internal fun taskProgressFromPayload(payload: JsonObject): TaskProgress? {
+internal fun taskProgressSnapshotFromPayload(payload: JsonObject): TaskProgressSnapshot? {
     val todos = payload["todos"] as? JsonArray
         ?: payload["result"].jsonObjectOrNull()?.get("todos") as? JsonArray
         ?: payload["result"].jsonObjectFromString()?.get("todos") as? JsonArray
+        ?: payload["args"].jsonObjectOrNull()?.get("todos") as? JsonArray
+        ?: payload["args"].jsonObjectFromString()?.get("todos") as? JsonArray
         ?: payload.string("result_text")?.let(::jsonObjectFromText)?.get("todos") as? JsonArray
-    return decodeTaskProgress(todos)
+    return decodeTaskProgressSnapshot(todos)
+}
+
+internal fun decodeTaskProgressSnapshot(todos: JsonArray?): TaskProgressSnapshot? {
+    if (todos == null) return null
+    if (todos.isEmpty()) return TaskProgressSnapshot(progress = null)
+    return decodeTaskProgress(todos)?.let(::TaskProgressSnapshot)
 }
 
 internal fun decodeTaskProgress(todos: JsonArray?): TaskProgress? {
@@ -295,9 +313,9 @@ private fun diffForPath(diff: String, path: String, pathCount: Int): String? {
     val normalized = boundedNormalizedDiff(diff)
     if (normalized.isBlank()) return null
     if (pathCount <= 1) return normalized
-    val target = normalizedPath(path)
+    val target = cleanPath(path)
     return diffSections(normalized).firstOrNull { section ->
-        section.path?.let(::normalizedPath) == target
+        section.path == target
     }?.text ?: normalized
 }
 
@@ -324,16 +342,18 @@ private fun diffSections(diff: String): List<DiffSection> {
                 else -> null
             }
         }
-        DiffSection(path = path?.let(::normalizedPath), text = lines.joinToString("\n"))
+        DiffSection(path = path?.let(::normalizedDiffPath), text = lines.joinToString("\n"))
     }
 }
 
 private fun diffLineStats(diff: String): Pair<Int, Int> {
     var additions = 0
     var removals = 0
-    diff.lineSequence().forEach { line ->
+    val lines = diff.lineSequence().toList()
+    val headerLines = diffHeaderLineIndexes(lines)
+    lines.forEachIndexed { index, line ->
         when {
-            line.startsWith("+++") || line.startsWith("---") -> Unit
+            index in headerLines -> Unit
             line.startsWith("+") -> additions += 1
             line.startsWith("-") -> removals += 1
         }
@@ -351,10 +371,32 @@ private fun boundedNormalizedDiff(diff: String): String {
     return normalized.take(MAX_RETAINED_DIFF_CHARS).trimEnd() + "\n… Diff truncated"
 }
 
-private fun normalizedPath(path: String): String = path.trim()
-    .removePrefix("a/")
-    .removePrefix("b/")
-    .removeSurrounding("\"")
+private fun diffHeaderLineIndexes(lines: List<String>): Set<Int> = buildSet {
+    for (index in 0 until lines.lastIndex) {
+        if (!lines[index].startsWith("--- ") || !lines[index + 1].startsWith("+++ ")) continue
+        val before = lines.getOrNull(index - 1)
+        val after = lines.getOrNull(index + 2)
+        val structuralPair = index == 0 ||
+            before?.startsWith("diff --git ") == true ||
+            after?.startsWith("@@") == true ||
+            after?.startsWith("Binary files ") == true
+        if (structuralPair) {
+            add(index)
+            add(index + 1)
+        }
+    }
+}
+
+private fun cleanPath(path: String): String = path.trim().removeSurrounding("\"")
+
+private fun normalizedDiffPath(path: String): String {
+    val clean = cleanPath(path)
+    return when {
+        clean.startsWith("a/") -> clean.removePrefix("a/")
+        clean.startsWith("b/") -> clean.removePrefix("b/")
+        else -> clean
+    }
+}
 
 private fun JsonElement?.jsonObjectOrNull(): JsonObject? = this as? JsonObject
 

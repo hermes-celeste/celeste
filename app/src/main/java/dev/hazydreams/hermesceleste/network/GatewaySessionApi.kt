@@ -125,7 +125,7 @@ internal fun decodeGatewayConversation(elements: List<JsonElement>): DecodedGate
     val usedIds = mutableSetOf<String>()
     val persistedToolCalls = mutableMapOf<String, PersistedToolCall>()
     var messages = emptyList<ConversationMessage>()
-    var taskProgress: TaskProgress? = null
+    var taskProgressSnapshot: TaskProgressSnapshot? = null
 
     fun uniqueMessageId(preferred: String?, fallback: String): String {
         val explicit = preferred?.takeIf(String::isNotBlank)
@@ -226,7 +226,9 @@ internal fun decodeGatewayConversation(elements: List<JsonElement>): DecodedGate
                 ?: ""
             val resultObject = runCatching { Json.parseToJsonElement(result) as? JsonObject }.getOrNull()
             if (name == "todo") {
-                decodeTaskProgress(resultObject?.get("todos") as? JsonArray)?.let { taskProgress = it }
+                decodeTaskProgressSnapshot(resultObject?.get("todos") as? JsonArray)?.let {
+                    taskProgressSnapshot = it
+                }
                 return@forEachIndexed
             }
             val diff = row.string("inline_diff")
@@ -274,7 +276,7 @@ internal fun decodeGatewayConversation(elements: List<JsonElement>): DecodedGate
 
     return DecodedGatewayConversation(
         messages = messages.map(ConversationMessage::settledSteps),
-        taskProgress = taskProgress,
+        taskProgressSnapshot = taskProgressSnapshot,
     )
 }
 

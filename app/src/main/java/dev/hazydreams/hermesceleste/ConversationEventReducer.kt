@@ -16,7 +16,7 @@ import dev.hazydreams.hermesceleste.network.settleCurrentTurnSteps
 import dev.hazydreams.hermesceleste.network.startFileEditInCurrentTurn
 import dev.hazydreams.hermesceleste.network.startToolInCurrentTurn
 import dev.hazydreams.hermesceleste.network.string
-import dev.hazydreams.hermesceleste.network.taskProgressFromPayload
+import dev.hazydreams.hermesceleste.network.taskProgressSnapshotFromPayload
 import dev.hazydreams.hermesceleste.network.toolArguments
 import dev.hazydreams.hermesceleste.network.toolCompletionFailed
 import dev.hazydreams.hermesceleste.network.upsertBackgroundProcessResult
@@ -133,7 +133,7 @@ internal fun reduceConversationEvent(
                 } else {
                     next.errorMessage
                 },
-            )
+            ).clearActiveTaskProgress()
         }
 
         "error", "message.error" -> {
@@ -143,7 +143,7 @@ internal fun reduceConversationEvent(
                 turnState = TurnState.Idle,
                 isCompacting = false,
                 errorMessage = event.payload.string("message") ?: "Hermes reported an error.",
-            )
+            ).clearActiveTaskProgress()
         }
 
         "message.interrupted", "session.interrupted" -> {
@@ -152,7 +152,7 @@ internal fun reduceConversationEvent(
                 messages = settleCurrentTurnSteps(next.messages),
                 turnState = TurnState.Idle,
                 isCompacting = false,
-            )
+            ).clearActiveTaskProgress()
         }
 
         "session.busy" -> {
@@ -203,7 +203,9 @@ internal fun reduceConversationEvent(
                 ?: event.payload.string("tool_call_id")
                 ?: nextLocalMessageId("tool")
             when {
-                name == "todo" -> next.copy(turnState = TurnState.Running)
+                name == "todo" -> taskProgressSnapshotFromPayload(event.payload)?.let { snapshot ->
+                    next.copy(taskProgress = snapshot.progress, turnState = TurnState.Running)
+                } ?: next.copy(turnState = TurnState.Running)
                 isFileEditTool(name) -> next.copy(
                     messages = startFileEditInCurrentTurn(
                         messages = settleCurrentReasoning(next.messages),
@@ -226,14 +228,28 @@ internal fun reduceConversationEvent(
             }
         }
 
+        "tool.progress" -> {
+            val name = event.payload.string("name")
+            val isTodo = name == "todo" || (name == null && "todos" in event.payload)
+            if (isTodo) {
+                taskProgressSnapshotFromPayload(event.payload)?.let { snapshot ->
+                    next.copy(taskProgress = snapshot.progress, turnState = TurnState.Running)
+                } ?: next
+            } else {
+                next
+            }
+        }
+
         "tool.complete" -> {
-            val name = event.payload.string("name") ?: "tool"
+            val explicitName = event.payload.string("name")
+            val name = explicitName ?: "tool"
             val explicitToolId = event.payload.string("tool_id")
                 ?: event.payload.string("tool_call_id")
             val diff = fileEditDiff(event.payload)
             when {
-                name == "todo" -> taskProgressFromPayload(event.payload)?.let { tasks ->
-                    next.copy(taskProgress = tasks)
+                explicitName == "todo" || (explicitName == null && "todos" in event.payload) ->
+                    taskProgressSnapshotFromPayload(event.payload)?.let { snapshot ->
+                        next.copy(taskProgress = snapshot.progress)
                 } ?: next
                 isFileEditTool(name) || diff.isNotBlank() -> {
                     val toolId = explicitToolId ?: nextLocalMessageId("tool")
@@ -278,6 +294,9 @@ internal fun reduceConversationEvent(
     }
     return ConversationEventReduction(next, counter)
 }
+
+private fun ConversationProjection.clearActiveTaskProgress(): ConversationProjection =
+    if (taskProgress?.isActive == true) copy(taskProgress = null) else this
 
 private fun ConversationProjection.finalizeAssistant(
     suppliedContent: String = "",

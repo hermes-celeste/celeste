@@ -589,25 +589,25 @@ class DashboardClientTest {
     }
 
     @Test
-    fun loadsPersistedTranscriptWithReasoningAndCompactedHistory() = runBlocking {
+    fun loadsPersistedConversationWithReasoningTasksAndCompactedHistory() = runBlocking {
         server.enqueue(
             MockResponse.Builder()
                 .code(200)
                 .body(
-                    """{"session_id":"stored-42","messages":[{"id":1,"role":"user","content":"Inspect this"},{"id":2,"role":"assistant","content":"","reasoning":"I should read the file first.","tool_calls":[{"id":"call-1","function":{"name":"read_file","arguments":"{\"path\":\"README.md\"}"}}]},{"id":3,"role":"tool","content":"contents","tool_call_id":"call-1","tool_name":"read_file"},{"id":4,"role":"assistant","content":"Done"}],"pagination":{"limit":500,"offset":0,"order":"latest","returned":4}}""",
+                    """{"session_id":"stored-42","messages":[{"id":1,"role":"user","content":"Inspect this"},{"id":2,"role":"assistant","content":"","reasoning":"I should read the file first.","tool_calls":[{"id":"call-1","function":{"name":"read_file","arguments":"{\"path\":\"README.md\"}"}}]},{"id":3,"role":"tool","content":"contents","tool_call_id":"call-1","tool_name":"read_file"},{"id":4,"role":"assistant","tool_calls":[{"id":"todo-1","function":{"name":"todo","arguments":"{}"}}]},{"id":5,"role":"tool","content":"{\"todos\":[{\"id\":\"verify\",\"content\":\"Verify\",\"status\":\"in_progress\"}]}","tool_call_id":"todo-1","tool_name":"todo"},{"id":6,"role":"assistant","content":"Done"}],"pagination":{"limit":500,"offset":0,"order":"latest","returned":6}}""",
                 )
                 .build(),
         )
 
-        val messages = DashboardClient().loadSessionMessages(
+        val history = DashboardClient().loadSessionHistory(
             baseUrl = server.url("/").toString().trimEnd('/'),
             credential = GatewayCredential.StaticToken("private-token"),
             sessionId = "stored-42",
             profile = "work",
         )
 
-        assertEquals(listOf("user", "steps", "assistant"), messages.map { it.role })
-        val steps = messages.single { it.role == "steps" }.steps
+        assertEquals(listOf("user", "steps", "assistant"), history.messages.map { it.role })
+        val steps = history.messages.single { it.role == "steps" }.steps
         assertEquals(
             listOf(ConversationStepKind.Reasoning, ConversationStepKind.Tool),
             steps.map { it.kind },
@@ -616,6 +616,7 @@ class DashboardClientTest {
         assertEquals("read_file", steps.last().toolName)
         assertEquals("{\"path\":\"README.md\"}", steps.last().context)
         assertEquals("contents", steps.last().result)
+        assertEquals(listOf("verify"), history.taskProgressSnapshot?.progress?.items?.map { it.id })
         val request = server.takeRequest()
         assertEquals("/api/sessions/stored-42/messages", request.url.encodedPath)
         assertEquals("work", request.url.queryParameter("profile"))

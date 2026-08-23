@@ -99,6 +99,11 @@ data class ResumedSession(
     val hasLiveProjection: Boolean = false,
 )
 
+data class ConversationHistory(
+    val messages: List<ConversationMessage>,
+    val taskProgressSnapshot: TaskProgressSnapshot? = null,
+)
+
 sealed interface GatewayCredential {
     /** Loopback dashboard with authentication disabled. */
     data object None : GatewayCredential
@@ -142,13 +147,13 @@ interface DashboardService {
         limit: Int = 20,
     ): List<StoredSession>
 
-    suspend fun loadSessionMessages(
+    suspend fun loadSessionHistory(
         baseUrl: String,
         credential: GatewayCredential,
         sessionId: String,
         profile: String,
         limit: Int = 500,
-    ): List<ConversationMessage>
+    ): ConversationHistory
 
     suspend fun markSessionRead(
         baseUrl: String,
@@ -424,13 +429,13 @@ class DashboardClient(
         }
     }
 
-    override suspend fun loadSessionMessages(
+    override suspend fun loadSessionHistory(
         baseUrl: String,
         credential: GatewayCredential,
         sessionId: String,
         profile: String,
         limit: Int,
-    ): List<ConversationMessage> {
+    ): ConversationHistory {
         require(sessionId.isNotBlank()) { "Choose a Hermes session to open." }
         require(profile.isNotBlank()) { "A Hermes profile is required." }
         val boundedLimit = limit.coerceIn(1, 500)
@@ -455,7 +460,11 @@ class DashboardClient(
                 ?: throw InvalidDashboardResponse("Hermes returned no conversation history.")
             val rows = root["messages"] as? JsonArray
                 ?: throw InvalidDashboardResponse("Hermes returned no conversation history.")
-            decodeGatewayMessages(rows)
+            val decoded = decodeGatewayConversation(rows)
+            ConversationHistory(
+                messages = decoded.messages,
+                taskProgressSnapshot = decoded.taskProgressSnapshot,
+            )
         }
     }
 

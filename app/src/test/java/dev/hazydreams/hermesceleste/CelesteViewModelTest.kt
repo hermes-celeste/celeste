@@ -6,6 +6,7 @@ import dev.hazydreams.hermesceleste.connection.InMemoryConnectionStore
 import dev.hazydreams.hermesceleste.network.AuthenticationMaterial
 import dev.hazydreams.hermesceleste.network.AuthenticationRejected
 import dev.hazydreams.hermesceleste.network.AuthProvider
+import dev.hazydreams.hermesceleste.network.ConversationHistory
 import dev.hazydreams.hermesceleste.network.ConversationMessage
 import dev.hazydreams.hermesceleste.network.ConversationStep
 import dev.hazydreams.hermesceleste.network.ConversationStepKind
@@ -19,6 +20,10 @@ import dev.hazydreams.hermesceleste.network.GatewayEvent
 import dev.hazydreams.hermesceleste.network.GatewayRpcException
 import dev.hazydreams.hermesceleste.network.SessionCatalogPage
 import dev.hazydreams.hermesceleste.network.StoredSession
+import dev.hazydreams.hermesceleste.network.TaskItemStatus
+import dev.hazydreams.hermesceleste.network.TaskProgress
+import dev.hazydreams.hermesceleste.network.TaskProgressItem
+import dev.hazydreams.hermesceleste.network.TaskProgressSnapshot
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
@@ -32,6 +37,7 @@ import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
+import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.runCurrent
@@ -145,8 +151,8 @@ class CelesteViewModelTest {
                 """{
                     "session_id":"runtime-7",
                     "resumed":"stored-42",
-                    "running":false,
-                    "status":"idle",
+                    "running":true,
+                    "status":"running",
                     "inflight":null,
                     "messages":[
                         {"role":"user","text":"Build this"},
@@ -177,6 +183,64 @@ class CelesteViewModelTest {
         advanceUntilIdle()
 
         assertEquals("stored-43", viewModel.state.value.activeSummary?.id)
+        assertNull(viewModel.state.value.taskProgress)
+        viewModel.controller.close()
+    }
+
+    @Test
+    fun runningConversationUsesPersistedTaskSnapshotButIdleHistoryDoesNotResurrectIt() = runTest {
+        val gateway = FakeGateway().apply {
+            resumePayload = resumePayload(
+                messages = listOf(ConversationMessage(role = "user", text = "Build this", id = "resume-user")),
+                running = true,
+            )
+        }
+        val dashboard = FakeDashboard(gateway).apply {
+            sessionMessages = listOf(ConversationMessage(role = "user", text = "Build this", id = "stored-user"))
+            sessionTaskProgressSnapshot = TaskProgressSnapshot(
+                TaskProgress(
+                    listOf(TaskProgressItem("build", "Build this", TaskItemStatus.InProgress)),
+                ),
+            )
+        }
+        val viewModel = CelesteViewModel(dashboard = dashboard, reconnectDelayMillis = { _, _ -> 0L })
+        viewModel.updateDashboardUrl("http://hermes.test:9119")
+        viewModel.findDashboard()
+        viewModel.loadSessions()
+        viewModel.openSession(dashboard.session)
+        advanceUntilIdle()
+
+        assertEquals(listOf("build"), viewModel.state.value.taskProgress?.items?.map { it.id })
+
+        gateway.resumePayload = resumePayload(
+            messages = listOf(ConversationMessage(role = "user", text = "Build this", id = "resume-user")),
+            running = false,
+        )
+        viewModel.controller.reconnectNow()
+        advanceUntilIdle()
+
+        assertNull(viewModel.state.value.taskProgress)
+        viewModel.controller.close()
+    }
+
+    @Test
+    fun finishedTaskSnapshotLingersBrieflyThenClears() = runTest {
+        val gateway = FakeGateway()
+        val viewModel = openConversation(gateway)
+        advanceUntilIdle()
+
+        gateway.emit(
+            "tool.complete",
+            """{"name":"todo","todos":[{"id":"build","content":"Build","status":"completed"}]}""",
+        )
+        runCurrent()
+
+        assertEquals(1, viewModel.state.value.taskProgress?.completedCount)
+        advanceTimeBy(3_999)
+        runCurrent()
+        assertEquals(1, viewModel.state.value.taskProgress?.completedCount)
+        advanceTimeBy(1)
+        runCurrent()
         assertNull(viewModel.state.value.taskProgress)
         viewModel.controller.close()
     }
@@ -961,6 +1025,7 @@ class CelesteViewModelTest {
         val searchRequests = mutableListOf<Triple<String, String, Int>>()
         val sessionMessageRequests = mutableListOf<Triple<String, String, Int>>()
         var sessionMessages = emptyList<ConversationMessage>()
+        var sessionTaskProgressSnapshot: TaskProgressSnapshot? = null
         val markReadRequests = mutableListOf<Pair<String, String>>()
         val pinRequests = mutableListOf<Triple<String, String, Boolean>>()
         val pinGates = mutableMapOf<Boolean, CompletableDeferred<Unit>>()
@@ -1037,15 +1102,15 @@ class CelesteViewModelTest {
             return searchResults[query].orEmpty()
         }
 
-        override suspend fun loadSessionMessages(
+        override suspend fun loadSessionHistory(
             baseUrl: String,
             credential: GatewayCredential,
             sessionId: String,
             profile: String,
             limit: Int,
-        ): List<ConversationMessage> {
+        ): ConversationHistory {
             sessionMessageRequests += Triple(sessionId, profile, limit)
-            return sessionMessages
+            return ConversationHistory(sessionMessages, sessionTaskProgressSnapshot)
         }
 
         override suspend fun markSessionRead(

@@ -11,6 +11,7 @@ import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -78,12 +79,25 @@ class ConversationEventReducerTest {
 
     @Test
     fun todoSnapshotsUpdateComposerProgressWithoutCreatingThinkingSteps() {
-        val result = reduceEvents(
+        val started = reduceEvents(
             event("message.start"),
             event(
                 "tool.start",
                 """{"tool_id":"todo-1","name":"todo","args":{"todos":[{"id":"design","content":"Design","status":"in_progress"}]}}""",
             ),
+        )
+
+        assertEquals(listOf("design"), started.projection.taskProgress?.items?.map { it.id })
+
+        val progressed = started.reduce(
+            event(
+                "tool.progress",
+                """{"tool_id":"todo-1","todos":[{"id":"design","content":"Design","status":"completed"},{"id":"build","content":"Build","status":"in_progress"}]}""",
+            ),
+        )
+        assertEquals(listOf("design", "build"), progressed.projection.taskProgress?.items?.map { it.id })
+
+        val result = progressed.reduce(
             event(
                 "tool.complete",
                 """{"tool_id":"todo-1","name":"todo","todos":[{"id":"design","content":"Design","status":"completed"},{"id":"build","content":"Build","status":"in_progress"},{"id":"verify","content":"Verify","status":"pending"}]}""",
@@ -96,6 +110,34 @@ class ConversationEventReducerTest {
         assertEquals(3, tasks.totalCount)
         assertEquals(TaskItemStatus.InProgress, tasks.items[1].status)
         assertEquals(listOf("design", "build", "verify"), tasks.items.map { it.id })
+    }
+
+    @Test
+    fun taskLifecycleClearsExplicitEmptyAndUnfinishedTurnEndButKeepsFinishedSnapshot() {
+        val active = reduceEvents(
+            event("message.start"),
+            event(
+                "tool.complete",
+                """{"name":"todo","todos":[{"id":"build","content":"Build","status":"in_progress"}]}""",
+            ),
+        )
+
+        assertNull(active.reduce(event("message.complete")).projection.taskProgress)
+
+        val finished = reduceEvents(
+            event("message.start"),
+            event(
+                "tool.complete",
+                """{"name":"todo","todos":[{"id":"build","content":"Build","status":"completed"}]}""",
+            ),
+        ).reduce(event("message.complete"))
+
+        assertEquals(1, finished.projection.taskProgress?.completedCount)
+        assertNull(
+            finished.reduce(
+                event("tool.complete", """{"name":"todo","todos":[]}"""),
+            ).projection.taskProgress,
+        )
     }
 
     @Test

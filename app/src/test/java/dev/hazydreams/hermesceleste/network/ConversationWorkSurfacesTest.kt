@@ -4,6 +4,8 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Test
 
 class ConversationWorkSurfacesTest {
@@ -89,6 +91,57 @@ class ConversationWorkSurfacesTest {
         assertEquals(TaskItemStatus.Completed, progress.items[0].status)
         assertEquals(1, progress.completedCount)
         assertEquals(2, progress.totalCount)
+    }
+
+    @Test
+    fun emptyTodoSnapshotIsAnExplicitClearWhileMissingTodosAreIgnored() {
+        val clear = taskProgressSnapshotFromPayload(
+            Json.parseToJsonElement("""{"todos":[]}""").jsonObject,
+        )
+
+        assertNotNull(clear)
+        assertNull(clear?.progress)
+        assertNull(taskProgressSnapshotFromPayload(Json.parseToJsonElement("{}").jsonObject))
+    }
+
+    @Test
+    fun changedSourceLinesThatResembleDiffHeadersStillCountTowardStats() {
+        val message = ConversationMessage(
+            role = "changes",
+            text = "",
+            fileEdits = listOf(
+                FileEditOperation(
+                    toolId = "patch-1",
+                    paths = listOf("App.kt"),
+                    diff = """--- a/App.kt
+                        |+++ b/App.kt
+                        |@@ -1 +1 @@
+                        |--- flag
+                        |+++ counter
+                    """.trimMargin(),
+                    state = FileEditState.Completed,
+                ),
+            ),
+        )
+
+        val changed = message.changedFiles().single()
+
+        assertEquals(1, changed.additions)
+        assertEquals(1, changed.removals)
+    }
+
+    @Test
+    fun toolPathsKeepLegitimatePrefixesWhileDiffHeadersLoseOneSyntheticPrefix() {
+        val args = Json.parseToJsonElement("""{"path":"a/b/File.kt"}""").jsonObject
+        val diff = """--- a/a/b/File.kt
+            |+++ b/a/b/File.kt
+            |@@ -1 +1 @@
+            |-old
+            |+new
+        """.trimMargin()
+
+        assertEquals(listOf("a/b/File.kt"), fileEditPaths(name = "write_file", args = args))
+        assertEquals(listOf("a/b/File.kt"), fileEditPaths(name = "patch", args = null, diff = diff))
     }
 
     @Test
