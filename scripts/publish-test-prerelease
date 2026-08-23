@@ -22,9 +22,13 @@ if gh release view "$release_tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; t
   gh release upload "$release_tag" "$apk_path#Hermes Celeste test APK" \
     --repo "$GITHUB_REPOSITORY" \
     --clobber
+  gh api --method PATCH \
+    "repos/${GITHUB_REPOSITORY}/git/refs/tags/${release_tag}" \
+    -f sha="$GITHUB_SHA" \
+    -F force=true \
+    >/dev/null
   gh release edit "$release_tag" \
     --repo "$GITHUB_REPOSITORY" \
-    --target "$GITHUB_SHA" \
     --title "Latest test build" \
     --notes "$release_notes" \
     --prerelease \
