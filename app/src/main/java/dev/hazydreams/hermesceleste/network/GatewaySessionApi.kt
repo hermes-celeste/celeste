@@ -77,17 +77,23 @@ suspend fun GatewayConnection.resumeStoredSession(
     val queued = result["queued"]
 
     val decoded = decodeGatewayConversation(result["messages"]?.jsonArray.orEmpty())
+    val pendingClarification = (result["pending_clarify"] as? JsonObject)
+        ?.let(::clarificationFromRequest)
+    val resumedMessages = pendingClarification
+        ?.let { bindClarificationRequest(decoded.messages, it) }
+        ?: decoded.messages
     return ResumedSession(
         runtimeSessionId = runtimeId,
         storedSessionId = result.string("resumed")
             ?.takeIf(String::isNotBlank)
             ?: throw IOException("Hermes returned no resumed session identity."),
-        messages = decoded.messages,
+        messages = resumedMessages,
+        pendingClarification = pendingClarification,
         taskProgress = decoded.taskProgress,
         running = running,
         status = status,
         inflightAssistantText = inflightAssistantText(inflight),
-        hasLiveProjection = inflight.isTruthy() || queued.isTruthy(),
+        hasLiveProjection = inflight.isTruthy() || queued.isTruthy() || pendingClarification != null,
     )
 }
 
@@ -102,6 +108,17 @@ suspend fun GatewayConnection.submitPrompt(runtimeSessionId: String, text: Strin
         },
         timeoutMillis = 180_000,
     ).asObject("Hermes returned no prompt status.")
+}
+
+suspend fun GatewayConnection.respondToClarification(requestId: String, answer: String): JsonObject {
+    require(requestId.isNotBlank()) { "No Hermes clarification request is open." }
+    return request(
+        method = "clarify.respond",
+        params = buildJsonObject {
+            put("request_id", requestId)
+            put("answer", answer)
+        },
+    ).asObject("Hermes returned no clarification status.")
 }
 
 suspend fun GatewayConnection.interruptSession(runtimeSessionId: String): JsonObject {
@@ -225,6 +242,16 @@ internal fun decodeGatewayConversation(elements: List<JsonElement>): DecodedGate
                 ?: row.string("content")
                 ?: ""
             val resultObject = runCatching { Json.parseToJsonElement(result) as? JsonObject }.getOrNull()
+            if (name == "clarify") {
+                messages = completeClarificationInCurrentTurn(
+                    messages = messages,
+                    toolId = toolId,
+                    payload = buildJsonObject {
+                        put("result", row["result"] ?: JsonPrimitive(result))
+                    },
+                )
+                return@forEachIndexed
+            }
             if (name == "todo") {
                 decodeTaskProgressSnapshot(resultObject?.get("todos") as? JsonArray)?.let {
                     taskProgressSnapshot = it

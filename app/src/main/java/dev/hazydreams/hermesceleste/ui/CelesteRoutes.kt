@@ -148,6 +148,7 @@ internal fun CelesteRoutes(
                         onSend = controller::sendMessage,
                         onInterrupt = controller::interrupt,
                         onRetryResume = controller::reconnectNow,
+                        onClarificationRespond = controller::respondToClarification,
                         onOpenDrawer = {
                             dismissConversationInput()
                             drawerScope.launch { drawerState.open() }

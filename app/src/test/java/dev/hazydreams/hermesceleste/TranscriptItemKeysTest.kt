@@ -1,9 +1,11 @@
 package dev.hazydreams.hermesceleste
 
 import dev.hazydreams.hermesceleste.network.ConversationMessage
+import dev.hazydreams.hermesceleste.network.ClarificationExchange
 import dev.hazydreams.hermesceleste.ui.conversation.ScrollFollowObservation
 import dev.hazydreams.hermesceleste.ui.conversation.STREAMING_TRANSCRIPT_KEY
 import dev.hazydreams.hermesceleste.ui.conversation.latestTranscriptIndex
+import dev.hazydreams.hermesceleste.ui.conversation.pendingClarificationFollowKey
 import dev.hazydreams.hermesceleste.ui.conversation.remainingScrollToLatest
 import dev.hazydreams.hermesceleste.ui.conversation.shouldShowJumpToLatest
 import dev.hazydreams.hermesceleste.ui.conversation.streamingTranscriptKey
@@ -61,6 +63,24 @@ class TranscriptItemKeysTest {
         assertEquals(null, latestTranscriptIndex(0))
         assertEquals(0, latestTranscriptIndex(1))
         assertEquals(4, latestTranscriptIndex(5))
+    }
+
+    @Test
+    fun clarificationFollowKeyAppearsOnlyWhenTheRequestBecomesActionable() {
+        val loading = ConversationMessage(
+            role = "clarification",
+            text = "",
+            id = "clarify:tool-1",
+            pending = true,
+            clarification = ClarificationExchange(question = "Which target?"),
+        )
+        val actionable = loading.copy(
+            clarification = loading.clarification?.copy(requestId = "request-1"),
+        )
+
+        assertEquals(null, pendingClarificationFollowKey(listOf(loading)))
+        assertEquals("request-1", pendingClarificationFollowKey(listOf(actionable)))
+        assertEquals(null, pendingClarificationFollowKey(listOf(actionable.copy(pending = false))))
     }
 
     @Test

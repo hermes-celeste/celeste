@@ -22,6 +22,7 @@ import dev.hazydreams.hermesceleste.connection.SavedAuthMode
 import dev.hazydreams.hermesceleste.network.AuthProvider
 import dev.hazydreams.hermesceleste.network.BackgroundProcessResult
 import dev.hazydreams.hermesceleste.network.BackgroundProcessState
+import dev.hazydreams.hermesceleste.network.ClarificationExchange
 import dev.hazydreams.hermesceleste.network.ConversationMessage
 import dev.hazydreams.hermesceleste.network.ConversationStep
 import dev.hazydreams.hermesceleste.network.ConversationStepKind
@@ -203,6 +204,24 @@ private val previewTaskProgress = TaskProgress(
 
 private val previewCompletedTaskProgress = TaskProgress(
     items = previewTaskProgress.items.map { it.copy(status = TaskItemStatus.Completed) },
+)
+
+private val previewPendingClarification = ConversationMessage(
+    role = "clarification",
+    text = "",
+    id = "preview-clarification-pending",
+    pending = true,
+    clarification = ClarificationExchange(
+        requestId = "request-preview",
+        question = "Which deployment target should I use?",
+        choices = listOf("Staging (Recommended)", "Production", "Local only"),
+    ),
+)
+
+private val previewSettledClarification = previewPendingClarification.copy(
+    id = "preview-clarification-settled",
+    pending = false,
+    clarification = previewPendingClarification.clarification?.copy(answer = "Staging"),
 )
 
 private val previewMessages = listOf(
@@ -769,6 +788,67 @@ fun WorkSurfacesNarrowLargeTextPreviewScreenshot() {
                 previewChangesMessage,
             ),
             taskProgress = previewTaskProgress,
+            turnState = TurnState.Running,
+        )
+    }
+}
+
+@PreviewTest
+@Preview(name = "33 · Pending clarification", widthDp = 390, heightDp = 844, showBackground = true)
+@Composable
+fun PendingClarificationPreviewScreenshot() {
+    HermesCelesteTheme {
+        PreviewConversation(
+            messages = listOf(
+                ConversationMessage(
+                    role = "user",
+                    text = "Deploy the current build.",
+                    id = "preview-clarification-user",
+                ),
+                previewPendingClarification,
+            ),
+            turnState = TurnState.Running,
+        )
+    }
+}
+
+@PreviewTest
+@Preview(name = "34 · Settled clarification", widthDp = 390, heightDp = 844, showBackground = true)
+@Composable
+fun SettledClarificationPreviewScreenshot() {
+    HermesCelesteTheme {
+        PreviewConversation(
+            messages = listOf(
+                ConversationMessage(
+                    role = "user",
+                    text = "Deploy the current build.",
+                    id = "preview-clarification-user",
+                ),
+                previewSettledClarification,
+                ConversationMessage(
+                    role = "assistant",
+                    text = "I’ll use staging and keep the rollout isolated.",
+                    id = "preview-clarification-assistant",
+                ),
+            ),
+            turnState = TurnState.Idle,
+        )
+    }
+}
+
+@PreviewTest
+@Preview(
+    name = "35 · Pending clarification · narrow large text",
+    widthDp = 320,
+    heightDp = 700,
+    fontScale = 1.3f,
+    showBackground = true,
+)
+@Composable
+fun PendingClarificationNarrowPreviewScreenshot() {
+    HermesCelesteTheme {
+        PreviewConversation(
+            messages = listOf(previewPendingClarification),
             turnState = TurnState.Running,
         )
     }

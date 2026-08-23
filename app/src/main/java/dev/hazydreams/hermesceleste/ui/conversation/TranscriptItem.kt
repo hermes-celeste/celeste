@@ -51,10 +51,12 @@ internal fun MessageBubble(
     message: ConversationMessage,
     streaming: Boolean = false,
     onOpenInspection: () -> Unit = {},
+    onClarificationRespond: (messageId: String, requestId: String, answer: String) -> Unit = { _, _, _ -> },
 ) {
     when (message.role) {
         "user" -> UserMessage(message, streaming)
         "assistant" -> AssistantMessage(message, streaming)
+        "clarification" -> ClarificationTranscriptEntry(message, onClarificationRespond)
         "steps" -> StepsTranscriptEntry(message, onOpenInspection)
         "process" -> ProcessResultTranscriptEntry(message, onOpenInspection)
         "changes" -> ChangedFilesTranscriptEntry(message, onOpenInspection)

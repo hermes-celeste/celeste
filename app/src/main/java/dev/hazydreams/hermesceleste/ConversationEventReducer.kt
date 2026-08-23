@@ -4,7 +4,11 @@ import dev.hazydreams.hermesceleste.network.ConversationMessage
 import dev.hazydreams.hermesceleste.network.GatewayEvent
 import dev.hazydreams.hermesceleste.network.TaskProgress
 import dev.hazydreams.hermesceleste.network.appendReasoningToCurrentTurn
+import dev.hazydreams.hermesceleste.network.bindClarificationRequest
 import dev.hazydreams.hermesceleste.network.boolean
+import dev.hazydreams.hermesceleste.network.clarificationFromRequest
+import dev.hazydreams.hermesceleste.network.clearUnansweredClarifications
+import dev.hazydreams.hermesceleste.network.completeClarificationInCurrentTurn
 import dev.hazydreams.hermesceleste.network.completeFileEditInCurrentTurn
 import dev.hazydreams.hermesceleste.network.completeToolInCurrentTurn
 import dev.hazydreams.hermesceleste.network.fileEditDiff
@@ -13,6 +17,7 @@ import dev.hazydreams.hermesceleste.network.isFileEditTool
 import dev.hazydreams.hermesceleste.network.parseBackgroundProcessResult
 import dev.hazydreams.hermesceleste.network.settleCurrentReasoning
 import dev.hazydreams.hermesceleste.network.settleCurrentTurnSteps
+import dev.hazydreams.hermesceleste.network.startClarificationInCurrentTurn
 import dev.hazydreams.hermesceleste.network.startFileEditInCurrentTurn
 import dev.hazydreams.hermesceleste.network.startToolInCurrentTurn
 import dev.hazydreams.hermesceleste.network.string
@@ -46,6 +51,7 @@ private val COMPACTION_RESUME_EVENT_TYPES = setOf(
     "tool.progress",
     "tool.generating",
     "tool.complete",
+    "clarify.request",
     "moa.reference",
     "moa.aggregating",
     "moa.progress",
@@ -125,7 +131,7 @@ internal fun reduceConversationEvent(
                 ?: ""
             next = next.finalizeAssistant(content, keepRunning = false)
             next.copy(
-                messages = settleCurrentTurnSteps(next.messages),
+                messages = clearUnansweredClarifications(settleCurrentTurnSteps(next.messages)),
                 turnState = TurnState.Idle,
                 isCompacting = false,
                 errorMessage = if (status == "error") {
@@ -139,7 +145,7 @@ internal fun reduceConversationEvent(
         "error", "message.error" -> {
             next = next.finalizeAssistant(keepRunning = false)
             next.copy(
-                messages = settleCurrentTurnSteps(next.messages),
+                messages = clearUnansweredClarifications(settleCurrentTurnSteps(next.messages)),
                 turnState = TurnState.Idle,
                 isCompacting = false,
                 errorMessage = event.payload.string("message") ?: "Hermes reported an error.",
@@ -149,7 +155,7 @@ internal fun reduceConversationEvent(
         "message.interrupted", "session.interrupted" -> {
             next = next.finalizeAssistant(keepRunning = false)
             next.copy(
-                messages = settleCurrentTurnSteps(next.messages),
+                messages = clearUnansweredClarifications(settleCurrentTurnSteps(next.messages)),
                 turnState = TurnState.Idle,
                 isCompacting = false,
             ).clearActiveTaskProgress()
@@ -167,6 +173,16 @@ internal fun reduceConversationEvent(
             next.copy(
                 turnState = if (running) TurnState.Running else TurnState.Idle,
                 isCompacting = next.isCompacting && running,
+            )
+        } ?: next
+
+        "clarify.request" -> clarificationFromRequest(event.payload)?.let { request ->
+            next.copy(
+                messages = bindClarificationRequest(
+                    messages = settleCurrentTurnSteps(next.messages),
+                    request = request,
+                ),
+                turnState = TurnState.Running,
             )
         } ?: next
 
@@ -203,6 +219,14 @@ internal fun reduceConversationEvent(
                 ?: event.payload.string("tool_call_id")
                 ?: nextLocalMessageId("tool")
             when {
+                name == "clarify" -> next.copy(
+                    messages = startClarificationInCurrentTurn(
+                        messages = settleCurrentTurnSteps(next.messages),
+                        toolId = toolId,
+                        arguments = toolArguments(event.payload),
+                    ),
+                    turnState = TurnState.Running,
+                )
                 name == "todo" -> taskProgressSnapshotFromPayload(event.payload)?.let { snapshot ->
                     next.copy(taskProgress = snapshot.progress, turnState = TurnState.Running)
                 } ?: next.copy(turnState = TurnState.Running)
@@ -247,6 +271,13 @@ internal fun reduceConversationEvent(
                 ?: event.payload.string("tool_call_id")
             val diff = fileEditDiff(event.payload)
             when {
+                explicitName == "clarify" -> next.copy(
+                    messages = completeClarificationInCurrentTurn(
+                        messages = next.messages,
+                        toolId = explicitToolId,
+                        payload = event.payload,
+                    ),
+                )
                 explicitName == "todo" || (explicitName == null && "todos" in event.payload) ->
                     taskProgressSnapshotFromPayload(event.payload)?.let { snapshot ->
                         next.copy(taskProgress = snapshot.progress)

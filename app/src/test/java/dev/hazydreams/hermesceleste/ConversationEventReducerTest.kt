@@ -355,6 +355,78 @@ BUILD SUCCESSFUL
     }
 
     @Test
+    fun clarificationLivesInlineWhilePendingAndSettlesBeforeWorkContinues() {
+        val pending = reduceEvents(
+            event("message.start"),
+            event("reasoning.delta", """{"text":"I need one decision."}"""),
+            event(
+                "tool.start",
+                """{"tool_id":"clarify-1","name":"clarify","args":{"question":"Which target?","choices":["Staging","Production"],"multi_select":false}}""",
+            ),
+            event(
+                "clarify.request",
+                """{"request_id":"request-1","question":"Which target?","choices":["Staging (Recommended)","Production"]}""",
+            ),
+        )
+
+        assertEquals(listOf("user", "steps", "clarification"), pending.projection.messages.map { it.role })
+        val request = pending.projection.messages.last()
+        assertTrue(request.pending)
+        assertEquals("request-1", request.clarification?.requestId)
+        assertEquals(listOf("Staging (Recommended)", "Production"), request.clarification?.choices)
+        assertEquals(TurnState.Running, pending.projection.turnState)
+
+        val completed = pending
+            .reduce(
+                event(
+                    "tool.complete",
+                    """{"tool_id":"clarify-1","name":"clarify","result":{"question":"Which target?","choices_offered":["Staging","Production"],"user_response":"Staging"}}""",
+                ),
+            )
+            .reduce(event("reasoning.delta", """{"text":"Continuing with staging."}"""))
+
+        assertEquals(
+            listOf("user", "steps", "clarification", "steps"),
+            completed.projection.messages.map { it.role },
+        )
+        val settled = completed.projection.messages[2]
+        assertFalse(settled.pending)
+        assertEquals("Staging", settled.clarification?.answer)
+        assertEquals("Continuing with staging.", completed.projection.messages.last().steps.single().detail)
+
+        val replayed = completed.reduce(
+            event(
+                "clarify.request",
+                """{"request_id":"request-1","question":"Which target?","choices":["Staging (Recommended)","Production"]}""",
+            ),
+        )
+        assertEquals(1, replayed.projection.messages.count { it.role == "clarification" })
+        assertFalse(replayed.projection.messages.single { it.role == "clarification" }.pending)
+
+        val replayedStart = replayed.reduce(
+            event(
+                "tool.start",
+                """{"tool_id":"clarify-1","name":"clarify","args":{"question":"Which target?","choices":["Staging","Production"]}}""",
+            ),
+        )
+        assertEquals(1, replayedStart.projection.messages.count { it.role == "clarification" })
+        assertFalse(replayedStart.projection.messages.single { it.role == "clarification" }.pending)
+    }
+
+    @Test
+    fun unfinishedClarificationDoesNotLeaveADeadInteractiveCard() {
+        val completed = reduceEvents(
+            event(
+                "clarify.request",
+                """{"request_id":"request-1","question":"Which target?","choices":["Staging","Production"]}""",
+            ),
+            event("message.complete", """{"content":"Timed out.","status":"complete"}"""),
+        )
+
+        assertEquals(listOf("user", "assistant"), completed.projection.messages.map { it.role })
+    }
+
+    @Test
     fun thinkingDeltaDoesNotCreateSteps() {
         val result = reduceEvents(
             event("message.start"),

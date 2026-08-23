@@ -98,6 +98,133 @@ class CelesteViewModelTest {
     }
 
     @Test
+    fun clarificationResponseUsesCurrentRpcAndCollapsesInlineImmediately() = runTest {
+        val gateway = FakeGateway()
+        val viewModel = openConversation(gateway)
+        advanceUntilIdle()
+
+        gateway.emit(
+            "tool.start",
+            """{"tool_id":"clarify-1","name":"clarify","args":{"question":"Which target?","choices":["Staging","Production"],"multi_select":false}}""",
+        )
+        gateway.emit(
+            "clarify.request",
+            """{"request_id":"request-1","question":"Which target?","choices":["Staging (Recommended)","Production"],"multi_select":false}""",
+        )
+        advanceUntilIdle()
+
+        val pending = viewModel.state.value.messages.single { it.role == "clarification" }
+        assertTrue(pending.pending)
+        viewModel.controller.respondToClarification(
+            messageId = pending.id!!,
+            requestId = "request-1",
+            answer = "Staging (Recommended)",
+        )
+        advanceUntilIdle()
+
+        val request = gateway.requests.single { it.first == "clarify.respond" }.second
+        assertEquals("request-1", request["request_id"]?.jsonPrimitive?.content)
+        assertEquals("Staging (Recommended)", request["answer"]?.jsonPrimitive?.content)
+        val settled = viewModel.state.value.messages.single { it.role == "clarification" }
+        assertFalse(settled.pending)
+        assertEquals("Staging", settled.clarification?.answer)
+
+        gateway.emit(
+            "tool.complete",
+            """{"tool_id":"clarify-1","name":"clarify","result":{"question":"Which target?","choices_offered":["Staging","Production"],"user_response":"Staging"}}""",
+        )
+        advanceUntilIdle()
+
+        assertEquals(1, viewModel.state.value.messages.count { it.role == "clarification" })
+        assertEquals(
+            "Staging",
+            viewModel.state.value.messages.single { it.role == "clarification" }.clarification?.answer,
+        )
+        viewModel.controller.close()
+    }
+
+    @Test
+    fun pendingClarificationRestoresFromResumeWithoutDuplicateReplay() = runTest {
+        val gateway = FakeGateway().apply {
+            resumePayload = Json.parseToJsonElement(
+                """{
+                    "session_id":"runtime-7",
+                    "resumed":"stored-42",
+                    "running":true,
+                    "status":"streaming",
+                    "inflight":null,
+                    "messages":[{"id":"user-1","role":"user","text":"Deploy this"}],
+                    "pending_clarify":{
+                        "request_id":"request-1",
+                        "question":"Which target?",
+                        "choices":["Staging (Recommended)","Production"],
+                        "multi_select":false
+                    }
+                }""".trimIndent(),
+            ) as JsonObject
+        }
+        val viewModel = openConversation(gateway) {
+            sessionMessages = listOf(
+                ConversationMessage(role = "user", text = "Deploy this", id = "stored-user"),
+            )
+        }
+        advanceUntilIdle()
+
+        assertEquals(listOf("user", "clarification"), viewModel.state.value.messages.map { it.role })
+        assertEquals("stored-user", viewModel.state.value.messages.first().id)
+        assertTrue(viewModel.state.value.messages.last().pending)
+        assertEquals("request-1", viewModel.state.value.messages.last().clarification?.requestId)
+
+        gateway.emit(
+            "clarify.request",
+            """{"request_id":"request-1","question":"Which target?","choices":["Staging (Recommended)","Production"],"multi_select":false}""",
+        )
+        advanceUntilIdle()
+
+        assertEquals(1, viewModel.state.value.messages.count { it.role == "clarification" })
+
+        val restored = viewModel.state.value.messages.single { it.role == "clarification" }
+        viewModel.controller.respondToClarification(restored.id!!, "request-1", "Staging (Recommended)")
+        advanceUntilIdle()
+        gateway.emit(
+            "tool.complete",
+            """{"tool_id":"clarify-after-resume","name":"clarify","result":{"question":"Which target?","choices_offered":["Staging","Production"],"user_response":"Staging"}}""",
+        )
+        advanceUntilIdle()
+
+        assertEquals(1, viewModel.state.value.messages.count { it.role == "clarification" })
+        assertEquals(
+            "Staging",
+            viewModel.state.value.messages.single { it.role == "clarification" }.clarification?.answer,
+        )
+        viewModel.controller.close()
+    }
+
+    @Test
+    fun definitiveClarificationRejectionKeepsTheQuestionActionable() = runTest {
+        val gateway = FakeGateway().apply {
+            clarifyFailure = GatewayRpcException(409, "That question has expired.")
+        }
+        val viewModel = openConversation(gateway)
+        advanceUntilIdle()
+        gateway.emit(
+            "clarify.request",
+            """{"request_id":"request-1","question":"Which target?","choices":["Staging","Production"]}""",
+        )
+        advanceUntilIdle()
+
+        val pending = viewModel.state.value.messages.single { it.role == "clarification" }
+        viewModel.controller.respondToClarification(pending.id!!, "request-1", "Staging")
+        advanceUntilIdle()
+
+        val actionable = viewModel.state.value.messages.single { it.role == "clarification" }
+        assertTrue(actionable.pending)
+        assertFalse(actionable.clarification!!.submitting)
+        assertEquals("That question has expired.", viewModel.state.value.errorMessage)
+        viewModel.controller.close()
+    }
+
+    @Test
     fun openingConversationUsesPersistedTranscriptReasoning() = runTest {
         val gateway = FakeGateway().apply {
             resumePayload = resumePayload(
@@ -992,8 +1119,11 @@ class CelesteViewModelTest {
         assertEquals("and still arriving", suffix)
     }
 
-    private suspend fun openConversation(gateway: FakeGateway): CelesteViewModel {
-        val dashboard = FakeDashboard(gateway)
+    private suspend fun openConversation(
+        gateway: FakeGateway,
+        configureDashboard: FakeDashboard.() -> Unit = {},
+    ): CelesteViewModel {
+        val dashboard = FakeDashboard(gateway).apply(configureDashboard)
         val viewModel = CelesteViewModel(
             dashboard = dashboard,
             reconnectDelayMillis = { _, _ -> 0L },
@@ -1193,6 +1323,7 @@ class CelesteViewModelTest {
         var createFailure: Throwable? = null
         var promptFailure: Throwable? = null
         var interruptFailure: Throwable? = null
+        var clarifyFailure: Throwable? = null
         var createGate: CompletableDeferred<Unit>? = null
         var promptGate: CompletableDeferred<Unit>? = null
         var resumePayload: JsonObject = resumePayload(messages = emptyList(), running = false)
@@ -1245,6 +1376,10 @@ class CelesteViewModelTest {
                 "session.interrupt" -> {
                     interruptFailure?.let { throw it }
                     buildJsonObject { put("status", "interrupting") }
+                }
+                "clarify.respond" -> {
+                    clarifyFailure?.let { throw it }
+                    buildJsonObject { put("status", "ok") }
                 }
                 else -> buildJsonObject {}
             }

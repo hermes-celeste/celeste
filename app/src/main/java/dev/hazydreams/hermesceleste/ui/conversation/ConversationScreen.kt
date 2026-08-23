@@ -107,6 +107,7 @@ internal fun ConversationScreen(
     onComposerFocusRequestHandled: (Long) -> Unit = {},
     initiallyFollowLatest: Boolean = true,
     jumpToLatestVisibleOverride: Boolean? = null,
+    onClarificationRespond: (messageId: String, requestId: String, answer: String) -> Unit = { _, _, _ -> },
 ) {
     val listState = rememberLazyListState()
     val coroutineScope = rememberCoroutineScope()
@@ -126,6 +127,7 @@ internal fun ConversationScreen(
     }
     val focusManager = LocalFocusManager.current
     val transcriptKeys = remember(messages) { transcriptItemKeys(messages) }
+    val pendingClarificationFollowKey = remember(messages) { pendingClarificationFollowKey(messages) }
     val visibleMessageCount = messages.size +
         (if (streamingText.isNotBlank()) 1 else 0) +
         (if (isCompacting) 1 else 0) +
@@ -157,7 +159,7 @@ internal fun ConversationScreen(
         }
     }
 
-    LaunchedEffect(visibleMessageCount, streamingText.length) {
+    LaunchedEffect(visibleMessageCount, streamingText.length, pendingClarificationFollowKey) {
         latestTranscriptIndex(visibleMessageCount)?.let { latestIndex ->
             if (followLatest) listState.animateScrollToLatest(latestIndex)
         }
@@ -206,6 +208,7 @@ internal fun ConversationScreen(
                         MessageBubble(
                             message = message,
                             onOpenInspection = { openedInspectionMessageId = message.id },
+                            onClarificationRespond = onClarificationRespond,
                         )
                     }
                     if (streamingText.isNotBlank()) {
@@ -331,6 +334,13 @@ private fun ResumeExhaustedCard(
 
 internal fun latestTranscriptIndex(visibleMessageCount: Int): Int? =
     (visibleMessageCount - 1).takeIf { it >= 0 }
+
+internal fun pendingClarificationFollowKey(messages: List<ConversationMessage>): String? =
+    messages.lastOrNull { message ->
+        message.role == "clarification" &&
+            message.pending &&
+            message.clarification?.requestId?.isNotBlank() == true
+    }?.clarification?.requestId
 
 internal data class ScrollFollowObservation(
     val readerDragging: Boolean,
