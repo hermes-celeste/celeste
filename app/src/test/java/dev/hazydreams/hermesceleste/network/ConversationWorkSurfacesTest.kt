@@ -145,6 +145,43 @@ class ConversationWorkSurfacesTest {
     }
 
     @Test
+    fun renamedDiffUsesDestinationPathOnceAndDeletionFallsBackToSource() {
+        val renameArgs = Json.parseToJsonElement("""{"path":"new.kt"}""").jsonObject
+        val renameDiff = """--- a/old.kt
+            |+++ b/new.kt
+            |@@ -1 +1 @@
+            |-old
+            |+new
+        """.trimMargin()
+
+        val renamePaths = fileEditPaths(name = "patch", args = renameArgs, diff = renameDiff)
+        val renamed = ConversationMessage(
+            role = "changes",
+            text = "",
+            fileEdits = listOf(
+                FileEditOperation(
+                    toolId = "patch-rename",
+                    paths = renamePaths,
+                    diff = renameDiff,
+                    state = FileEditState.Completed,
+                ),
+            ),
+        ).changedFiles()
+
+        assertEquals(listOf("new.kt"), renamePaths)
+        assertEquals(listOf("new.kt"), renamed.map { it.path })
+        assertEquals(1, renamed.single().additions)
+        assertEquals(1, renamed.single().removals)
+
+        val deletionDiff = """--- a/old.kt
+            |+++ /dev/null
+            |@@ -1 +0,0 @@
+            |-old
+        """.trimMargin()
+        assertEquals(listOf("old.kt"), fileEditPaths(name = "patch", args = null, diff = deletionDiff))
+    }
+
+    @Test
     fun v4aPatchArgumentsExposeEveryChangedPathInOrder() {
         val args = Json.parseToJsonElement(
             """{"mode":"patch","patch":"*** Begin Patch\n*** Update File: app/A.kt\n*** Add File: app/B.kt\n*** Delete File: app/C.kt\n*** End Patch"}""",

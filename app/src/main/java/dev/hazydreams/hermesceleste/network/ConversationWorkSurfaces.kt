@@ -333,15 +333,22 @@ private fun diffSections(diff: String): List<DiffSection> {
     }
     if (current.isNotEmpty()) sections += current
     return sections.map { lines ->
-        val path = lines.firstNotNullOfOrNull { line ->
-            when {
-                line.contains(" → ") -> line.substringAfter(" → ").trim()
-                line.startsWith("+++ ") -> line.removePrefix("+++ ").trim()
-                line.startsWith("--- ") && line.removePrefix("--- ").trim() != "/dev/null" ->
-                    line.removePrefix("--- ").trim()
-                else -> null
-            }
+        val arrowPath = lines.firstNotNullOfOrNull { line ->
+            line.takeIf { it.contains(" → ") }?.substringAfter(" → ")?.trim()
         }
+        val destinationPath = lines.firstNotNullOfOrNull { line ->
+            line.takeIf { it.startsWith("+++ ") }
+                ?.removePrefix("+++ ")
+                ?.trim()
+                ?.takeUnless { it == "/dev/null" }
+        }
+        val sourcePath = lines.firstNotNullOfOrNull { line ->
+            line.takeIf { it.startsWith("--- ") }
+                ?.removePrefix("--- ")
+                ?.trim()
+                ?.takeUnless { it == "/dev/null" }
+        }
+        val path = arrowPath ?: destinationPath ?: sourcePath
         DiffSection(path = path?.let(::normalizedDiffPath), text = lines.joinToString("\n"))
     }
 }
