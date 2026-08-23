@@ -3,6 +3,8 @@ package dev.hazydreams.hermesceleste
 import dev.hazydreams.hermesceleste.network.ConversationMessage
 import dev.hazydreams.hermesceleste.network.ConversationStepKind
 import dev.hazydreams.hermesceleste.network.GatewayEvent
+import dev.hazydreams.hermesceleste.network.TaskItemStatus
+import dev.hazydreams.hermesceleste.network.changedFiles
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
@@ -13,6 +15,89 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class ConversationEventReducerTest {
+    @Test
+    fun reasoningAroundFileEditsKeepsOneThinkingRowAndOneTurnLevelChangesPill() {
+        val result = reduceEvents(
+            event("message.start"),
+            event("reasoning.delta", """{"text":"Choose the first edit."}"""),
+            event(
+                "tool.start",
+                """{"tool_id":"edit-a","name":"patch","args":{"path":"ui/ConversationScreen.kt"}}""",
+            ),
+            event(
+                "tool.complete",
+                """{"tool_id":"edit-a","name":"patch","args":{"path":"ui/ConversationScreen.kt"},"inline_diff":"  ┊ review diff\na/ui/ConversationScreen.kt → b/ui/ConversationScreen.kt\n@@ -1 +1 @@\n-old\n+new"}""",
+            ),
+            event("reasoning.delta", """{"text":"Check the second boundary."}"""),
+            event(
+                "tool.start",
+                """{"tool_id":"edit-b","name":"write_file","args":{"path":"network/WorkSurfaces.kt"}}""",
+            ),
+            event(
+                "tool.complete",
+                """{"tool_id":"edit-b","name":"write_file","args":{"path":"network/WorkSurfaces.kt"},"result":{"bytes_written":240}}""",
+            ),
+            event("message.complete", """{"content":"Both files are updated.","status":"complete"}"""),
+        )
+
+        assertEquals(listOf("user", "steps", "changes", "assistant"), result.projection.messages.map { it.role })
+        val thinking = result.projection.messages.single { it.role == "steps" }
+        assertEquals(
+            listOf("Choose the first edit.", "Check the second boundary."),
+            thinking.steps.map { it.detail },
+        )
+        val changes = result.projection.messages.single { it.role == "changes" }.changedFiles()
+        assertEquals(listOf("ui/ConversationScreen.kt", "network/WorkSurfaces.kt"), changes.map { it.path })
+        assertEquals(2, changes.size)
+        assertEquals(1, changes.sumOf { it.additions })
+        assertEquals(1, changes.sumOf { it.removals })
+    }
+
+    @Test
+    fun repeatedEditsToOnePathRemainOneChangedFileWithBothOperations() {
+        val result = reduceEvents(
+            event("message.start"),
+            event("tool.start", """{"tool_id":"edit-a","name":"patch","args":{"path":"App.kt"}}"""),
+            event(
+                "tool.complete",
+                """{"tool_id":"edit-a","name":"patch","args":{"path":"App.kt"},"inline_diff":"a/App.kt → b/App.kt\n@@\n-old\n+first"}""",
+            ),
+            event("reasoning.delta", """{"text":"Refine the same file."}"""),
+            event("tool.start", """{"tool_id":"edit-b","name":"patch","args":{"path":"App.kt"}}"""),
+            event(
+                "tool.complete",
+                """{"tool_id":"edit-b","name":"patch","args":{"path":"App.kt"},"inline_diff":"a/App.kt → b/App.kt\n@@\n-first\n+second"}""",
+            ),
+        )
+
+        val changes = result.projection.messages.single { it.role == "changes" }.changedFiles()
+        assertEquals(1, changes.size)
+        assertEquals("App.kt", changes.single().path)
+        assertEquals(2, changes.single().diffs.size)
+    }
+
+    @Test
+    fun todoSnapshotsUpdateComposerProgressWithoutCreatingThinkingSteps() {
+        val result = reduceEvents(
+            event("message.start"),
+            event(
+                "tool.start",
+                """{"tool_id":"todo-1","name":"todo","args":{"todos":[{"id":"design","content":"Design","status":"in_progress"}]}}""",
+            ),
+            event(
+                "tool.complete",
+                """{"tool_id":"todo-1","name":"todo","todos":[{"id":"design","content":"Design","status":"completed"},{"id":"build","content":"Build","status":"in_progress"},{"id":"verify","content":"Verify","status":"pending"}]}""",
+            ),
+        )
+
+        assertEquals(listOf("user"), result.projection.messages.map { it.role })
+        val tasks = result.projection.taskProgress!!
+        assertEquals(1, tasks.completedCount)
+        assertEquals(3, tasks.totalCount)
+        assertEquals(TaskItemStatus.InProgress, tasks.items[1].status)
+        assertEquals(listOf("design", "build", "verify"), tasks.items.map { it.id })
+    }
+
     @Test
     fun reasoningAndToolsShareOneChronologicalStepsRow() {
         val result = reduceEvents(
@@ -267,6 +352,7 @@ BUILD SUCCESSFUL
         streamingText = "",
         turnState = TurnState.Idle,
         isCompacting = false,
+        taskProgress = null,
         errorMessage = null,
     )
 

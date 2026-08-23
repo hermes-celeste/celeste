@@ -139,6 +139,49 @@ class CelesteViewModelTest {
     }
 
     @Test
+    fun taskProgressBelongsOnlyToTheSessionThatPublishedIt() = runTest {
+        val gateway = FakeGateway().apply {
+            resumePayload = Json.parseToJsonElement(
+                """{
+                    "session_id":"runtime-7",
+                    "resumed":"stored-42",
+                    "running":false,
+                    "status":"idle",
+                    "inflight":null,
+                    "messages":[
+                        {"role":"user","text":"Build this"},
+                        {"role":"assistant","tool_calls":[{"id":"todo-1","function":{"name":"todo","arguments":"{}"}}]},
+                        {"role":"tool","tool_call_id":"todo-1","tool_name":"todo","content":"{\"todos\":[{\"id\":\"build\",\"content\":\"Build this\",\"status\":\"in_progress\"}]}"}
+                    ]
+                }""".trimIndent(),
+            ) as JsonObject
+        }
+        val dashboard = FakeDashboard(gateway)
+        val viewModel = CelesteViewModel(
+            dashboard = dashboard,
+            reconnectDelayMillis = { _, _ -> 0L },
+        )
+        viewModel.updateDashboardUrl("http://hermes.test:9119")
+        viewModel.findDashboard()
+        viewModel.loadSessions()
+        viewModel.openSession(dashboard.session)
+        advanceUntilIdle()
+
+        assertEquals(listOf("build"), viewModel.state.value.taskProgress?.items?.map { it.id })
+
+        val secondSession = dashboard.session.copy(id = "stored-43", title = "Another conversation")
+        gateway.resumePayload = Json.parseToJsonElement(
+            """{"session_id":"runtime-8","resumed":"stored-43","running":false,"status":"idle","inflight":null,"messages":[{"role":"user","text":"Another prompt"}]}""",
+        ) as JsonObject
+        viewModel.openSession(secondSession)
+        advanceUntilIdle()
+
+        assertEquals("stored-43", viewModel.state.value.activeSummary?.id)
+        assertNull(viewModel.state.value.taskProgress)
+        viewModel.controller.close()
+    }
+
+    @Test
     fun interruptUsesOfficialRpcThenReconcilesAuthoritativeHistory() = runTest {
         val gateway = FakeGateway()
         val viewModel = openConversation(gateway)

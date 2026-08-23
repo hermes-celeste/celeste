@@ -2,14 +2,23 @@ package dev.hazydreams.hermesceleste
 
 import dev.hazydreams.hermesceleste.network.ConversationMessage
 import dev.hazydreams.hermesceleste.network.GatewayEvent
+import dev.hazydreams.hermesceleste.network.TaskProgress
 import dev.hazydreams.hermesceleste.network.appendReasoningToCurrentTurn
 import dev.hazydreams.hermesceleste.network.boolean
+import dev.hazydreams.hermesceleste.network.completeFileEditInCurrentTurn
 import dev.hazydreams.hermesceleste.network.completeToolInCurrentTurn
+import dev.hazydreams.hermesceleste.network.fileEditDiff
+import dev.hazydreams.hermesceleste.network.fileEditPaths
+import dev.hazydreams.hermesceleste.network.isFileEditTool
 import dev.hazydreams.hermesceleste.network.parseBackgroundProcessResult
 import dev.hazydreams.hermesceleste.network.settleCurrentReasoning
 import dev.hazydreams.hermesceleste.network.settleCurrentTurnSteps
+import dev.hazydreams.hermesceleste.network.startFileEditInCurrentTurn
 import dev.hazydreams.hermesceleste.network.startToolInCurrentTurn
 import dev.hazydreams.hermesceleste.network.string
+import dev.hazydreams.hermesceleste.network.taskProgressFromPayload
+import dev.hazydreams.hermesceleste.network.toolArguments
+import dev.hazydreams.hermesceleste.network.toolCompletionFailed
 import dev.hazydreams.hermesceleste.network.upsertBackgroundProcessResult
 
 internal data class ConversationProjection(
@@ -17,6 +26,7 @@ internal data class ConversationProjection(
     val streamingText: String,
     val turnState: TurnState,
     val isCompacting: Boolean,
+    val taskProgress: TaskProgress?,
     val errorMessage: String?,
 )
 
@@ -192,41 +202,76 @@ internal fun reduceConversationEvent(
             val toolId = event.payload.string("tool_id")
                 ?: event.payload.string("tool_call_id")
                 ?: nextLocalMessageId("tool")
-            next.copy(
-                messages = startToolInCurrentTurn(
-                    messages = next.messages,
-                    id = toolId,
-                    name = name,
-                    context = context,
-                    stepsMessageId = nextLocalMessageId("steps"),
-                ),
-                turnState = TurnState.Running,
-            )
+            when {
+                name == "todo" -> next.copy(turnState = TurnState.Running)
+                isFileEditTool(name) -> next.copy(
+                    messages = startFileEditInCurrentTurn(
+                        messages = settleCurrentReasoning(next.messages),
+                        toolId = toolId,
+                        paths = fileEditPaths(name, toolArguments(event.payload)),
+                        changesMessageId = nextLocalMessageId("changes"),
+                    ),
+                    turnState = TurnState.Running,
+                )
+                else -> next.copy(
+                    messages = startToolInCurrentTurn(
+                        messages = next.messages,
+                        id = toolId,
+                        name = name,
+                        context = context,
+                        stepsMessageId = nextLocalMessageId("steps"),
+                    ),
+                    turnState = TurnState.Running,
+                )
+            }
         }
 
         "tool.complete" -> {
             val name = event.payload.string("name") ?: "tool"
-            val toolId = event.payload.string("tool_id")
+            val explicitToolId = event.payload.string("tool_id")
                 ?: event.payload.string("tool_call_id")
-            val context = event.payload.string("args_text")
-                ?: event.payload.string("context")
-                ?: event.payload["args"]?.toString().orEmpty()
-            val summary = event.payload.string("summary").orEmpty()
-            val result = event.payload.string("result_text")
-                ?: event.payload.string("result")
-                ?: event.payload["result"]?.toString().orEmpty()
-            next.copy(
-                messages = completeToolInCurrentTurn(
-                    messages = next.messages,
-                    id = toolId,
-                    name = name,
-                    context = context,
-                    summary = summary,
-                    result = result,
-                    fallbackStepId = nextLocalMessageId("tool"),
-                    stepsMessageId = nextLocalMessageId("steps"),
-                ),
-            )
+            val diff = fileEditDiff(event.payload)
+            when {
+                name == "todo" -> taskProgressFromPayload(event.payload)?.let { tasks ->
+                    next.copy(taskProgress = tasks)
+                } ?: next
+                isFileEditTool(name) || diff.isNotBlank() -> {
+                    val toolId = explicitToolId ?: nextLocalMessageId("tool")
+                    val args = toolArguments(event.payload)
+                    next.copy(
+                        messages = completeFileEditInCurrentTurn(
+                            messages = settleCurrentReasoning(next.messages),
+                            toolId = toolId,
+                            paths = fileEditPaths(name, args, diff),
+                            diff = diff,
+                            summary = event.payload.string("summary").orEmpty(),
+                            failed = toolCompletionFailed(event.payload),
+                            changesMessageId = nextLocalMessageId("changes"),
+                        ),
+                    )
+                }
+                else -> {
+                    val context = event.payload.string("args_text")
+                        ?: event.payload.string("context")
+                        ?: event.payload["args"]?.toString().orEmpty()
+                    val summary = event.payload.string("summary").orEmpty()
+                    val result = event.payload.string("result_text")
+                        ?: event.payload.string("result")
+                        ?: event.payload["result"]?.toString().orEmpty()
+                    next.copy(
+                        messages = completeToolInCurrentTurn(
+                            messages = next.messages,
+                            id = explicitToolId,
+                            name = name,
+                            context = context,
+                            summary = summary,
+                            result = result,
+                            fallbackStepId = nextLocalMessageId("tool"),
+                            stepsMessageId = nextLocalMessageId("steps"),
+                        ),
+                    )
+                }
+            }
         }
 
         else -> next

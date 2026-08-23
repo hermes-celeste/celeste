@@ -57,6 +57,7 @@ internal fun MessageBubble(
         "assistant" -> AssistantMessage(message, streaming)
         "steps" -> StepsTranscriptEntry(message, onOpenInspection)
         "process" -> ProcessResultTranscriptEntry(message, onOpenInspection)
+        "changes" -> ChangedFilesTranscriptEntry(message, onOpenInspection)
         else -> LabeledMessage(message)
     }
 }

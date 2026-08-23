@@ -21,20 +21,46 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.graphics.vector.path
 import androidx.compose.ui.unit.dp
 import dev.hazydreams.hermesceleste.network.ConversationMessage
+import dev.hazydreams.hermesceleste.network.TaskProgress
 import dev.hazydreams.hermesceleste.ui.CelesteHairline
 import dev.hazydreams.hermesceleste.ui.CelesteSurfaceRaised
 import dev.hazydreams.hermesceleste.ui.CelesteTextPrimary
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 internal fun ConversationInspectionSheet(
     message: ConversationMessage,
     onDismiss: () -> Unit,
 ) {
     val supported = (message.role == "steps" && message.steps.isNotEmpty()) ||
-        (message.role == "process" && message.processResult != null)
+        (message.role == "process" && message.processResult != null) ||
+        (message.role == "changes" && message.fileEdits.isNotEmpty())
     if (!supported) return
 
+    InspectionModalSheet(onDismiss = onDismiss) {
+        when (message.role) {
+            "steps" -> StepsSheetSurface(message)
+            "process" -> ProcessResultSheetSurface(message.processResult!!)
+            "changes" -> ChangesSheetSurface(message)
+        }
+    }
+}
+
+@Composable
+internal fun TaskProgressInspectionSheet(
+    progress: TaskProgress,
+    onDismiss: () -> Unit,
+) {
+    InspectionModalSheet(onDismiss = onDismiss) {
+        TaskProgressSheetSurface(progress)
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun InspectionModalSheet(
+    onDismiss: () -> Unit,
+    content: @Composable () -> Unit,
+) {
     ModalBottomSheet(
         onDismissRequest = onDismiss,
         containerColor = CelesteSurfaceRaised,
@@ -43,10 +69,7 @@ internal fun ConversationInspectionSheet(
         shape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp),
         dragHandle = null,
     ) {
-        when (message.role) {
-            "steps" -> StepsSheetSurface(message)
-            "process" -> ProcessResultSheetSurface(message.processResult!!)
-        }
+        content()
     }
 }
 

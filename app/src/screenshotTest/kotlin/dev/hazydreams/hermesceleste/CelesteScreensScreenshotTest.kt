@@ -27,14 +27,21 @@ import dev.hazydreams.hermesceleste.network.ConversationStep
 import dev.hazydreams.hermesceleste.network.ConversationStepKind
 import dev.hazydreams.hermesceleste.network.DashboardProbeResult
 import dev.hazydreams.hermesceleste.network.DashboardProfile
+import dev.hazydreams.hermesceleste.network.FileEditOperation
+import dev.hazydreams.hermesceleste.network.FileEditState
 import dev.hazydreams.hermesceleste.network.StoredSession
+import dev.hazydreams.hermesceleste.network.TaskItemStatus
+import dev.hazydreams.hermesceleste.network.TaskProgress
+import dev.hazydreams.hermesceleste.network.TaskProgressItem
 import dev.hazydreams.hermesceleste.ui.HermesCelesteTheme
 import dev.hazydreams.hermesceleste.ui.CelestePanel
 import dev.hazydreams.hermesceleste.ui.CelesteScreen
 import dev.hazydreams.hermesceleste.ui.CelesteSurfaceRaised
 import dev.hazydreams.hermesceleste.ui.conversation.ConversationScreen
+import dev.hazydreams.hermesceleste.ui.conversation.ChangesSheetSurface
 import dev.hazydreams.hermesceleste.ui.conversation.ProcessResultSheetSurface
 import dev.hazydreams.hermesceleste.ui.conversation.StepsSheetSurface
+import dev.hazydreams.hermesceleste.ui.conversation.TaskProgressSheetSurface
 import dev.hazydreams.hermesceleste.ui.gateway.ConnectionLoadingScreen
 import dev.hazydreams.hermesceleste.ui.gateway.ConnectionUnavailableScreen
 import dev.hazydreams.hermesceleste.ui.gateway.GatewaySettingsActions
@@ -147,6 +154,55 @@ private val previewProcessMessage = ConversationMessage(
     text = "",
     id = "process:proc_42",
     processResult = previewProcessResult,
+)
+
+private val previewChangesMessage = ConversationMessage(
+    role = "changes",
+    text = "",
+    id = "preview-changes",
+    fileEdits = listOf(
+        FileEditOperation(
+            toolId = "edit-conversation",
+            paths = listOf("ui/conversation/ConversationScreen.kt"),
+            diff = """a/ui/conversation/ConversationScreen.kt → b/ui/conversation/ConversationScreen.kt
+@@ -88,6 +88,7 @@
+ internal fun ConversationScreen(
++    taskProgress: TaskProgress?,
+     streamingText: String,""",
+            summary = "Updated the conversation surface",
+            state = FileEditState.Completed,
+        ),
+        FileEditOperation(
+            toolId = "edit-work-surfaces",
+            paths = listOf("ui/conversation/ConversationWorkSurfaces.kt"),
+            diff = """a/ui/conversation/ConversationWorkSurfaces.kt → b/ui/conversation/ConversationWorkSurfaces.kt
+@@ -1,2 +1,4 @@
++internal fun TaskProgressPill() {
++    // compact session progress
++}""",
+            summary = "Added work surfaces",
+            state = FileEditState.Completed,
+        ),
+        FileEditOperation(
+            toolId = "edit-tests",
+            paths = listOf("ConversationEventReducerTest.kt"),
+            summary = "Added focused projection coverage",
+            state = FileEditState.Completed,
+        ),
+    ),
+)
+
+private val previewTaskProgress = TaskProgress(
+    items = listOf(
+        TaskProgressItem("design", "Settle the compact pill composition", TaskItemStatus.Completed),
+        TaskProgressItem("projection", "Project live and restored work state", TaskItemStatus.Completed),
+        TaskProgressItem("compose", "Build the mobile work surfaces", TaskItemStatus.InProgress),
+        TaskProgressItem("verify", "Review focused screenshots and tests", TaskItemStatus.Pending),
+    ),
+)
+
+private val previewCompletedTaskProgress = TaskProgress(
+    items = previewTaskProgress.items.map { it.copy(status = TaskItemStatus.Completed) },
 )
 
 private val previewMessages = listOf(
@@ -640,6 +696,112 @@ fun ActiveThinkingEntryPreviewScreenshot() {
 }
 
 @PreviewTest
+@Preview(name = "28 · Work surface pills", widthDp = 390, heightDp = 844, showBackground = true)
+@Composable
+fun WorkSurfacePillsPreviewScreenshot() {
+    HermesCelesteTheme {
+        PreviewConversation(
+            messages = listOf(
+                ConversationMessage(
+                    role = "user",
+                    text = "Give code changes and task progress some personality.",
+                    id = "preview-work-user",
+                ),
+                previewStepsMessage,
+                ConversationMessage(
+                    role = "assistant",
+                    text = "I kept reasoning calm while making durable work easy to inspect.",
+                    id = "preview-work-assistant",
+                ),
+                previewChangesMessage,
+            ),
+            taskProgress = previewTaskProgress,
+            turnState = TurnState.Running,
+        )
+    }
+}
+
+@PreviewTest
+@Preview(name = "29 · Changes sheet", widthDp = 390, heightDp = 844, showBackground = true)
+@Composable
+fun ChangesSheetPreviewScreenshot() {
+    PreviewWorkInspectionSheet {
+        ChangesSheetSurface(previewChangesMessage)
+    }
+}
+
+@PreviewTest
+@Preview(name = "30 · Active tasks sheet", widthDp = 390, heightDp = 844, showBackground = true)
+@Composable
+fun ActiveTasksSheetPreviewScreenshot() {
+    PreviewWorkInspectionSheet {
+        TaskProgressSheetSurface(previewTaskProgress)
+    }
+}
+
+@PreviewTest
+@Preview(name = "31 · Completed tasks sheet", widthDp = 390, heightDp = 844, showBackground = true)
+@Composable
+fun CompletedTasksSheetPreviewScreenshot() {
+    PreviewWorkInspectionSheet {
+        TaskProgressSheetSurface(previewCompletedTaskProgress)
+    }
+}
+
+@PreviewTest
+@Preview(
+    name = "32 · Work surfaces · narrow large text",
+    widthDp = 320,
+    heightDp = 700,
+    fontScale = 1.3f,
+    showBackground = true,
+)
+@Composable
+fun WorkSurfacesNarrowLargeTextPreviewScreenshot() {
+    HermesCelesteTheme {
+        PreviewConversation(
+            messages = listOf(
+                ConversationMessage(
+                    role = "assistant",
+                    text = "The same compact work surfaces remain readable at a narrow width.",
+                    id = "preview-work-narrow-assistant",
+                ),
+                previewChangesMessage,
+            ),
+            taskProgress = previewTaskProgress,
+            turnState = TurnState.Running,
+        )
+    }
+}
+
+@Composable
+private fun PreviewWorkInspectionSheet(content: @Composable () -> Unit) {
+    HermesCelesteTheme {
+        Box(modifier = Modifier.fillMaxSize()) {
+            PreviewConversation(
+                messages = listOf(previewChangesMessage),
+                taskProgress = previewTaskProgress,
+                turnState = TurnState.Running,
+            )
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Color.Black.copy(alpha = 0.62f)),
+            )
+            Surface(
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .fillMaxWidth(),
+                color = CelesteSurfaceRaised,
+                shape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp),
+            ) {
+                content()
+            }
+        }
+    }
+}
+
+@PreviewTest
 @Preview(name = "15 · Rich transcript", widthDp = 390, heightDp = 844, showBackground = true)
 @Composable
 fun RichTranscriptPreviewScreenshot() {
@@ -768,6 +930,7 @@ private val richPreviewMessages = listOf(
 private fun PreviewConversation(
     summary: StoredSession? = previewSessions[1],
     messages: List<ConversationMessage> = previewMessages,
+    taskProgress: TaskProgress? = null,
     streamingText: String = "",
     draft: String = "",
     turnState: TurnState,
@@ -781,6 +944,7 @@ private fun PreviewConversation(
         conversationKey = summary?.id ?: "local-draft",
         title = summary?.title ?: "New conversation",
         messages = messages,
+        taskProgress = taskProgress,
         streamingText = streamingText,
         draft = draft,
         turnState = turnState,

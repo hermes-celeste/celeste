@@ -63,6 +63,8 @@ Celeste recognizes message lifecycle, interim assistant prose, reasoning, tools,
 - Interim assistant messages remain ordinary transcript prose and split adjacent Steps segments.
 - `thinking.delta` is transient activity status, not a persisted reasoning step.
 - Tool start and completion correlate by stable tool-call identity.
+- File-edit calls aggregate by assistant turn and path into one Changes projection backed by structured diffs.
+- Todo completions replace the active session’s task projection from their ordered stable-ID snapshot.
 - Compaction status begins and ends from structured lifecycle events.
 - Background-process completion produces one compact result row with details available on demand.
 - Notifications with a blank session ID apply to the active conversation; nonblank mismatched runtime IDs are ignored.

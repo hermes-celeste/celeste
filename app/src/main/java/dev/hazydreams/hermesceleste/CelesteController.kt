@@ -20,6 +20,7 @@ import dev.hazydreams.hermesceleste.network.GatewayRpcException
 import dev.hazydreams.hermesceleste.network.ResumedSession
 import dev.hazydreams.hermesceleste.network.SessionCatalogPage
 import dev.hazydreams.hermesceleste.network.StoredSession
+import dev.hazydreams.hermesceleste.network.TaskProgress
 import dev.hazydreams.hermesceleste.network.createSession
 import dev.hazydreams.hermesceleste.network.interruptSession
 import dev.hazydreams.hermesceleste.network.resumeStoredSession
@@ -83,6 +84,7 @@ internal data class CelesteUiState(
     val selectedProfile: String = "default",
     val activeSummary: StoredSession? = null,
     val messages: List<ConversationMessage> = emptyList(),
+    val taskProgress: TaskProgress? = null,
     val streamingText: String = "",
     val draft: String = "",
     val turnState: TurnState = TurnState.Idle,
@@ -258,6 +260,7 @@ internal class CelesteController(
             sessionSearchError = null,
             activeSummary = null,
             messages = emptyList(),
+            taskProgress = null,
             streamingText = "",
             draft = "",
             isCompacting = false,
@@ -407,6 +410,7 @@ internal class CelesteController(
             sessionSearchError = null,
             activeSummary = null,
             messages = emptyList(),
+            taskProgress = null,
             streamingText = "",
             draft = "",
             isCompacting = false,
@@ -684,6 +688,7 @@ internal class CelesteController(
         mutableState.value = mutableState.value.copy(
             activeSummary = visibleSummary,
             messages = emptyList(),
+            taskProgress = null,
             streamingText = "",
             draft = "",
             turnState = TurnState.Synchronizing,
@@ -749,6 +754,7 @@ internal class CelesteController(
             selectedProfile = selectedProfile,
             activeSummary = null,
             messages = emptyList(),
+            taskProgress = null,
             streamingText = "",
             draft = "",
             password = password,
@@ -770,6 +776,7 @@ internal class CelesteController(
         mutableState.value = snapshot.copy(
             activeSummary = null,
             messages = emptyList(),
+            taskProgress = null,
             streamingText = "",
             draft = if (clearDraft) "" else snapshot.draft,
             turnState = TurnState.Idle,
@@ -1204,6 +1211,7 @@ internal class CelesteController(
         )
         mutableState.value = mutableState.value.copy(
             messages = resumed.messages,
+            taskProgress = resumed.taskProgress,
             streamingText = streamingSuffix,
             turnState = if (resumed.running == true || resumed.hasLiveProjection) {
                 TurnState.Running
@@ -1288,6 +1296,7 @@ internal class CelesteController(
                 streamingText = current.streamingText,
                 turnState = current.turnState,
                 isCompacting = current.isCompacting,
+                taskProgress = current.taskProgress,
                 errorMessage = current.errorMessage,
             ),
             event = event,
@@ -1296,6 +1305,7 @@ internal class CelesteController(
         localMessageCounter = reduction.localMessageCounter
         mutableState.value = current.copy(
             messages = reduction.projection.messages,
+            taskProgress = reduction.projection.taskProgress,
             streamingText = reduction.projection.streamingText,
             turnState = reduction.projection.turnState,
             isCompacting = reduction.projection.isCompacting,

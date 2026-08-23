@@ -71,6 +71,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import dev.hazydreams.hermesceleste.TurnState
 import dev.hazydreams.hermesceleste.network.ConversationMessage
+import dev.hazydreams.hermesceleste.network.TaskProgress
 import dev.hazydreams.hermesceleste.ui.CelesteAccent
 import dev.hazydreams.hermesceleste.ui.CelesteAccentContent
 import dev.hazydreams.hermesceleste.ui.CelesteError
@@ -89,6 +90,7 @@ internal fun ConversationScreen(
     conversationKey: String,
     title: String,
     messages: List<ConversationMessage>,
+    taskProgress: TaskProgress?,
     streamingText: String,
     draft: String,
     turnState: TurnState,
@@ -113,9 +115,13 @@ internal fun ConversationScreen(
         mutableStateOf(initiallyFollowLatest)
     }
     var openedInspectionMessageId by remember(conversationKey) { mutableStateOf<String?>(null) }
+    var tasksSheetOpen by remember(conversationKey) { mutableStateOf(false) }
+    LaunchedEffect(taskProgress) {
+        if (taskProgress == null) tasksSheetOpen = false
+    }
     val openedInspectionMessage = openedInspectionMessageId?.let { id ->
         messages.firstOrNull { message ->
-            message.id == id && (message.role == "steps" || message.role == "process")
+            message.id == id && (message.role == "steps" || message.role == "process" || message.role == "changes")
         }
     }
     val focusManager = LocalFocusManager.current
@@ -251,6 +257,7 @@ internal fun ConversationScreen(
             ConversationComposer(
                 draft = draft,
                 turnState = turnState,
+                taskProgress = taskProgress,
                 onDraftChange = onDraftChange,
                 onSend = {
                     followLatest = true
@@ -258,6 +265,10 @@ internal fun ConversationScreen(
                     focusManager.clearFocus()
                 },
                 onInterrupt = onInterrupt,
+                onOpenTasks = {
+                    focusManager.clearFocus()
+                    tasksSheetOpen = true
+                },
                 focusRequest = composerFocusRequest,
                 onFocusRequestHandled = onComposerFocusRequestHandled,
             )
@@ -268,6 +279,12 @@ internal fun ConversationScreen(
         ConversationInspectionSheet(
             message = message,
             onDismiss = { openedInspectionMessageId = null },
+        )
+    }
+    if (tasksSheetOpen && taskProgress != null) {
+        TaskProgressInspectionSheet(
+            progress = taskProgress,
+            onDismiss = { tasksSheetOpen = false },
         )
     }
 }
@@ -437,9 +454,11 @@ private fun ConversationHeader(
 private fun ConversationComposer(
     draft: String,
     turnState: TurnState,
+    taskProgress: TaskProgress?,
     onDraftChange: (String) -> Unit,
     onSend: () -> Unit,
     onInterrupt: () -> Unit,
+    onOpenTasks: () -> Unit,
     focusRequest: Long?,
     onFocusRequestHandled: (Long) -> Unit,
 ) {
@@ -454,13 +473,22 @@ private fun ConversationComposer(
         onFocusRequestHandled(requestId)
     }
 
-    Box(
+    Column(
         modifier = Modifier
             .fillMaxWidth()
             .navigationBarsPadding()
             .imePadding()
             .padding(horizontal = 16.dp, vertical = 8.dp),
     ) {
+        taskProgress?.let { progress ->
+            TaskProgressPill(
+                progress = progress,
+                onOpen = onOpenTasks,
+                modifier = Modifier
+                    .align(Alignment.Start)
+                    .padding(bottom = 8.dp),
+            )
+        }
         CelestePanel(
             modifier = Modifier.fillMaxWidth(),
             shape = RoundedCornerShape(22.dp),

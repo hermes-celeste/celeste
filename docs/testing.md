@@ -36,7 +36,7 @@ scripts/celeste-env ./gradlew --no-daemon updateDebugScreenshotTest
 scripts/celeste-env ./gradlew --no-daemon validateDebugScreenshotTest
 ```
 
-Inspect rendered output for clipping, hierarchy, contrast, copy, and state accuracy. LayoutLib does not verify IME behavior, lifecycle, device accessibility, networking, or physical-device rendering.
+Inspect rendered output for clipping, hierarchy, contrast, copy, and state accuracy. Work-surface coverage includes compact Changes, opened diffs, active and completed Tasks, narrow width, and large text. LayoutLib does not verify IME behavior, lifecycle, device accessibility, networking, or physical-device rendering.
 
 ## Live Hermes contract
 

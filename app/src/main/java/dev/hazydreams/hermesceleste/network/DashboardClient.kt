@@ -92,6 +92,7 @@ data class ResumedSession(
     val runtimeSessionId: String,
     val storedSessionId: String,
     val messages: List<ConversationMessage>,
+    val taskProgress: TaskProgress? = null,
     val running: Boolean? = null,
     val status: String? = null,
     val inflightAssistantText: String = "",
@@ -781,12 +782,14 @@ class DashboardClient(
             if (runtimeId.isBlank()) {
                 throw InvalidDashboardResponse("Hermes returned no runtime session identity.")
             }
+            val decoded = decodeGatewayConversation(result["messages"]?.jsonArray.orEmpty())
             ResumedSession(
                 runtimeSessionId = runtimeId,
                 storedSessionId = result["resumed"]?.jsonPrimitive?.contentOrNull
                     ?.takeIf(String::isNotBlank)
                     ?: throw InvalidDashboardResponse("Hermes returned no resumed session identity."),
-                messages = decodeGatewayMessages(result["messages"]?.jsonArray.orEmpty()),
+                messages = decoded.messages,
+                taskProgress = decoded.taskProgress,
             )
         }
     }
