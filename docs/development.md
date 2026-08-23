@@ -2,73 +2,44 @@
 
 ## Toolchain
 
-Use `scripts/celeste-env` for every Gradle and Android SDK command. It selects the project toolchain under `~/.local/share/hermes-celeste-toolchain`:
+Use `scripts/celeste-env` with the checked-in Gradle wrapper for Android commands:
 
 ```bash
 scripts/celeste-env ./gradlew --no-daemon tasks
 ```
 
-Use the checked-in Gradle wrapper, not a system Gradle installation. Keep `distributionSha256Sum` pinned in `gradle/wrapper/gradle-wrapper.properties`.
+The build host uses Temurin 21; Android source and bytecode target Java 17. Build versions and dependency coordinates belong in Gradle files.
 
-Gradle and the Compose screenshot host require JDK 21 or newer. The project toolchain and GitHub Actions use Temurin 21, while Android source and emitted bytecode remain targeted to Java 17. A newer build host does not authorize Java 21 application APIs or a higher Android runtime requirement.
+`gradle.properties` constrains memory and parallelism for the development host. Measure before increasing either. Run screenshot rendering and packaging in separate processes when both are required.
 
-The project currently uses a single Android `:app` module, Kotlin, Jetpack Compose, kotlinx.serialization, coroutines, and OkHttp. Build versions and dependency coordinates belong in Gradle files, not this document. No iOS target is configured yet.
+## Portability
 
-## Portability boundary
+Android is the shipping target. Protocol behavior, application state, and custom Compose UI remain portable unless an operating-system API is essential. Platform adapters own lifecycle, secure storage, system navigation, keyboard and insets, notifications, and other native services.
 
-Android is the current build, packaging, and runtime target. New protocol behavior, application state, and custom Compose UI must remain portable unless an operating-system API is essential. `CelesteController` is the present application boundary: it accepts a host scope, service/store contracts, client identity, and URL admission function, while AndroidX `ViewModel`, Activity lifecycle, Keystore, and other Android integrations remain outside it.
-
-The intended Gradle direction is a Kotlin Multiplatform shared module/source set plus a thin Android application module and, later, an iOS host. Validate that split against lint, Kover, screenshot tests, and GitHub APK packaging before moving source. Do not add Apple targets, signing, or store infrastructure without explicit approval.
-
-When adding a feature, put product rules and custom presentation on the portable side. Add a platform adapter only for lifecycle, secure storage, system navigation, keyboard/insets, pickers, notifications, haptics, or another concrete operating-system service. Do not add platform branches to shared state merely because only Android ships today.
-
-## Host memory constraints
-
-`gradle.properties` deliberately limits heap, workers, and parallelism for the development host. Do not increase the heap or parallel workers without measuring host memory and rerunning a clean build.
-
-Do not combine screenshot rendering and APK packaging in one work phase. LayoutLib and Android packaging can exceed the host memory budget together. Run them in separate Gradle processes and only when the change needs both boundaries verified.
+Do not add Apple targets, signing, or store infrastructure without explicit approval.
 
 ## Common commands
 
 ```bash
-# Unit and protocol checks
 scripts/celeste-env ./gradlew --no-daemon testDebugUnitTest
-
-# Android static analysis
 scripts/celeste-env ./gradlew --no-daemon lintDebug
-
-# Accepted UI references
 scripts/celeste-env ./gradlew --no-daemon validateDebugScreenshotTest
+git diff --check
 ```
 
-Use [`testing.md`](testing.md) to select the checks required for a change. GitHub Actions owns APK assembly and test-build signing; do not create distributable APKs locally.
-
-GitHub Actions uses the checked-in Gradle wrapper directly on a standard Ubuntu runner. Workflow actions must be limited to necessary official actions and pinned to immutable commit SHAs. Dependabot checks Gradle and GitHub Actions weekly, groups minor and patch updates per ecosystem, and leaves major updates isolated for review. The CI and current-test-APK behavior is defined in [`testing.md`](testing.md).
+Use [`testing.md`](testing.md) to select focused checks. GitHub Actions owns APK assembly and test-build signing.
 
 ## Change workflow
 
-1. Read `AGENTS.md` and the documents that own the task.
-2. Inspect the existing implementation and tests before changing architecture.
-3. For Hermes-facing behavior, follow the authority workflow in [`hermes-protocol.md`](hermes-protocol.md).
-4. Make the smallest coherent change across code, tests, and the owning doc.
-5. Run targeted checks during iteration.
-6. Run the full checks required by the changed boundaries.
-7. Before requesting, performing, or responding to code review, read [`review.md`](review.md). Decide whether a finding harms an intended workflow enough to justify its complexity before editing; do not enter a comment-by-comment patch loop.
-8. Finish with `git diff --check` and inspect the complete diff.
-9. Report any runtime surface that was not exercised.
+1. Read `AGENTS.md` and the docs that own the task.
+2. Inspect current implementation, tests, and Hermes authority before editing.
+3. Make the smallest coherent change across code, tests, and durable documentation.
+4. Run focused checks during iteration and the gates required by the changed boundary.
+5. Read [`review.md`](review.md) before review triage.
+6. Inspect the complete diff, run `git diff --check`, and report untested runtime surfaces.
 
-## Android identity
+## Repository and Android identity
 
-The product and Gradle project are conceptually Celeste. The Android launcher and app-list label is `Hermes Celeste` for searchability. The current application ID and Kotlin namespace are `dev.hazydreams.hermesceleste`; changing an application ID after distribution creates a different Android app, so treat that as a release-level decision.
+The public repository and product name are Celeste. The Android launcher label is `Hermes Celeste`; the application ID and Kotlin namespace are `dev.hazydreams.hermesceleste`.
 
-## Repository policy
-
-The source repository is public at `hermes-celeste/celeste`. Use feature branches and pull requests for normal development once the initial public snapshot is established.
-
-Public source does not authorize a release. Do not publish releases, sign distributable builds, create Play Store infrastructure, or upload artifacts without explicit project-owner approval.
-
-The organization handle does not change the product name. Use `Celeste` in repository-facing branding; `Hermes Celeste` remains the Android launcher and app-list name.
-
-## Generated and private files
-
-Do not commit Gradle/IDE output, local SDK configuration, keystores, or signing properties. `.gitignore` owns the current patterns. Credential and private-data handling is defined in [`security.md`](security.md).
+Public source does not authorize releases, distributable signing, Play Store infrastructure, or artifact publication. Keep Gradle and IDE output, SDK configuration, keystores, signing properties, credentials, and private data out of the repository.

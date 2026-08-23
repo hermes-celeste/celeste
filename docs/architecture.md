@@ -2,123 +2,81 @@
 
 ## Shape
 
-Celeste is currently a single-module Android application. That module is the present packaging boundary, not the intended long-term ownership boundary:
+Celeste is a single-module Android application with explicit ownership boundaries:
 
-- `MainActivity.kt` owns Android Activity setup, ViewModel wiring, and lifecycle forwarding.
-- `CelesteViewModel.kt` is a thin Android lifetime and dependency-composition adapter.
-- `CelesteController.kt` owns application/session state, lifecycle recovery commands, user actions, and active-runtime event admission with no direct Android, AndroidX, or JVM imports. The network contracts and models it consumes still live in the Android/JVM source tree and remain a later source-set split.
-- `ConversationEventReducer.kt` purely projects admitted Hermes events into transcript activity, streaming text, turn state, compaction state, and user-facing turn errors.
-- `SessionCatalogCoordinator.kt` owns session paging, search, optimistic row actions, metadata acknowledgements, and stale catalog-request rejection.
-- `ui/CelesteRoutes.kt` owns top-level destination selection.
-- `ui/CelesteSurfaces.kt` owns the shared dark screen, neutral panels, and reusable state affordances.
-- `ui/gateway/`, `ui/sessions/`, and `ui/conversation/` own their existing screen areas; transcript row identity and rendering stay with conversation UI.
-- `network/DashboardClient.kt` owns dashboard HTTP operations, authentication setup, profile/session discovery, and gateway construction.
-- `network/HermesGateway.kt` is a thin persistent JSON-RPC transport.
-- `network/GatewaySessionApi.kt` owns typed session RPC requests and response decoding.
-- `network/DashboardUrlPolicy.kt` owns dashboard URL normalization and cleartext admission.
-- `connection/` owns portable saved-connection modeling and cold-start decisions plus the current Android Keystore storage adapter.
-- `ui/CelesteTheme.kt` owns current Compose color tokens and Material theme wiring.
+- `MainActivity.kt` and `CelesteViewModel.kt` adapt Android lifetime and dependencies.
+- `CelesteController.kt` coordinates connection, session, and conversation state.
+- `ConversationEventReducer.kt` projects Hermes events into transcript and turn state.
+- `SessionCatalogCoordinator.kt` owns session paging, search, metadata, and row actions.
+- `ui/` owns Compose routing and presentation.
+- `network/DashboardClient.kt` owns dashboard HTTP and authenticated gateway creation.
+- `network/GatewaySessionApi.kt` owns typed session RPCs and transcript decoding.
+- `network/HermesGateway.kt` owns persistent JSON-RPC transport.
+- `connection/` owns saved-connection models and the Android Keystore adapter.
 
-Keep this map updated when ownership moves. Do not add a new layer only to match a generic architecture diagram.
+The module is a packaging boundary, not permission to mix these responsibilities.
 
 ## Layer boundaries
 
 ### Compose
 
-Compose renders `CelesteUiState` and emits user intent to `CelesteController`. Top-level routing keeps conversations separate from **Settings → Gateway**; first-run setup and failed-restore recovery reuse the same Gateway editor rather than introducing a second connection flow. Compose must not own credentials, sockets, RPC framing, retry policy, or authoritative session history.
+Compose renders `CelesteUiState` and emits intent. It owns navigation and ephemeral interaction state, not credentials, sockets, protocol framing, retry policy, or authoritative history.
 
-### Application controller
+### Application state
 
-`CelesteController` coordinates cold-start restoration, the selected dashboard, in-memory credential, profile/session selection, persistent gateway, transcript projection, draft, and turn state. It is the boundary between UI intent and protocol operations. The controller admits events only for the active runtime, then delegates deterministic conversation projection to `ConversationEventReducer`. It delegates catalog paging, search, metadata acknowledgement, and row actions to `SessionCatalogCoordinator`, supplying the current authenticated dashboard access while retaining connection and active-session ownership. The host supplies its coroutine scope, `DashboardService`, `ConnectionStore`, client source, and mandatory dashboard URL admission function; the controller owns and cancels a child scope. After loading the session catalog, restoration publishes a local empty draft immediately. The first Send creates its Hermes runtime, submits the prompt, and publishes the resulting stored session into the catalog.
+`CelesteController` owns the selected dashboard and profile, in-memory credential, active session identities, persistent gateway, transcript projection, draft, turn state, and lifecycle recovery. It delegates deterministic event projection and catalog behavior to their focused owners.
 
-The Android `CelesteViewModel` constructs the controller with `viewModelScope`, Android's connection store, and the `android` client source. `MainActivity` forwards foreground/background events. A future platform host must provide equivalent lifetime and platform dependencies rather than reproduce controller behavior.
+The controller runs on the serial dispatcher supplied by its host. Its child work inherits that context, and closing the host lifetime closes the gateway and clears in-memory authentication.
 
-The four turn states are intentionally user-facing projections:
+### Dashboard and transport
 
-- `Synchronizing` — Celeste is establishing or reconciling authoritative state.
-- `Idle` — the local draft or active runtime can accept a prompt.
-- `Running` — Hermes owns an active turn.
-- `Reconnecting` — the draft remains local and the stable composer stays visible while Celeste automatically restores the server relationship. Compose uses a warning-colored presence indicator for this recoverable state.
+`DashboardClient` performs bounded HTTP operations and creates `GatewayConnection` instances. Its private cookie jar keeps authenticated HTTP and one-use WebSocket ticket minting in one boundary.
 
-Reasoning and tool events are reduced into chronological `steps` transcript rows for the current user turn. Adjacent reasoning deltas coalesce within the active segment, while tool starts and completions reconcile by stable Hermes tool ID. Interim assistant prose closes the current activity segment and appears in the transcript; later reasoning or tools begin a fresh **Thinking** row. Structured background-process completions are parsed once into `process` transcript rows, with live status events and persisted synthetic user rows converging on the same stable process identity. Compose presents Thinking and process details through one shared inspection-sheet shell. Structured compaction status is held per active conversation and appears as one polite live transcript status until Hermes reports completion or normal turn output resumes.
-
-Do not derive protocol truth from animation or view-local state.
-
-### Dashboard client
-
-`DashboardClient` handles short HTTP operations and creates a persistent `GatewayConnection`. Its private cookie jar keeps authenticated HTTP and WebSocket ticket minting in one process-owned boundary. The client can export and restore only Hermes session cookies through a redacted value type; it rejects material that does not match the normalized endpoint host and cookie path.
-
-Session listing uses the authenticated dashboard REST route so Celeste receives authoritative pinned, unread, last-active, model, profile, and source metadata. `SessionCatalogCoordinator` requests the 15 most recently active sessions first, then advances through 15-row offset pages as the user scrolls. Hermes may append pinned conversations that the page window omitted; the coordinator preserves those rows and deduplicates later pinned backfill by stored session ID. Page failure leaves the existing catalog intact and exposes a bounded retry. Drawer search matches loaded rows immediately, then debounces a server search across full default-profile history and merges up to 20 deduplicated results without replacing or paging the catalog beneath it. Clearing the query therefore restores the exact progressively loaded drawer. Opening an unread conversation clears its indicator optimistically and acknowledges the authoritative read watermark without blocking navigation. A long press on a conversation exposes only Pin/Unpin and Rename. Pinning moves the row optimistically between drawer sections and rolls that field back if Hermes rejects the update; rename keeps the previous title visible until Hermes returns its authoritative accepted title and keeps validation failures in the dialog. Both operations target the row's owning profile and discard superseded local intents. Connection invalidation cancels catalog work and advances its generation so stale requests cannot publish into a replacement dashboard. Time-based hiding requires an on-demand path to older history and must not make existing conversations unreachable. A missing required route is an incompatible dashboard, not a signal to switch transports. `DashboardClient.resumeSession` uses a disposable, minimally decoded resume path for the live contract test; the production conversation flow uses `GatewayConnection.resumeStoredSession` over the lifecycle-owned persistent gateway. Keep the discovery, test-only resume, and lifecycle-owned paths distinct when changing readiness or decoding behavior.
+`HermesGateway` correlates JSON-RPC requests, emits events, and reports connection state. Session ownership, reconciliation, and retry policy remain above the transport.
 
 ### Saved connection
 
-`ConnectionStore` is the portable contract separating non-secret endpoint/account metadata from reusable authentication material. Current production uses `AndroidConnectionStore`: metadata is stored in a private preference file, while static tokens or provider session cookies are encrypted with an unlocked-device AES-GCM key in Android Keystore and written under `noBackupFilesDir`. AES-GCM additional authenticated data binds ciphertext to the application ID, descriptor version, normalized endpoint including path prefix, and authentication mode. There is no plaintext fallback.
+`ConnectionStore` separates safe endpoint/account metadata from encrypted reusable authentication. Gateway settings apply connection changes explicitly; Sign out removes reusable authentication, while Forget connection also removes the saved descriptor.
 
-The Gateway settings surface edits the endpoint directly and applies a change only through an explicit reconnect action. `Sign out` deletes encrypted authentication material and disables automatic restoration while retaining safe endpoint/account prefill. `Forget connection` also deletes the descriptor and Keystore key. Definitive authentication rejection deletes reusable authentication while retaining safe prefill; transient network and server failures preserve the saved connection for explicit Retry.
-
-Provider cookies may rotate while Hermes refreshes a session. Celeste snapshots the latest private cookie-jar state after cold restore and on app background. A mutex serializes persistence with Sign out and Forget connection, and connection-generation checks prevent stale async work from resurrecting cleared authentication.
-
-### Gateway transport
-
-`HermesGateway` correlates JSON-RPC requests, emits gateway events, and reports connection state. It deliberately does not decide session ownership, turn state, reconciliation, or reconnect policy. Keep those decisions above the transport.
+The dashboard remains authoritative for profiles, sessions, messages, and capabilities. Celeste keeps a screen projection and unsent draft, not a second history store.
 
 ## Runtime flow
 
-1. Load the one saved descriptor, if present, and re-run URL admission before any restore attempt.
-2. Restore origin-bound encrypted authentication material when automatic login remains enabled, otherwise prefill manual connection fields.
-3. Normalize and probe the dashboard base URL.
-4. Establish an in-memory credential: no credential for open loopback, a static machine token, or an authenticated cookie session.
-5. List sessions and profiles over the current required HTTP routes.
-6. Publish a local empty composer as soon as the session catalog and profiles are ready. Resume durable history only when the user selects it from the drawer.
-7. On the local draft's first Send, connect the gateway, create the Hermes runtime, submit the prompt, and publish the stored session into the catalog after `prompt.submit` crosses Hermes' persistence boundary. A creation failure leaves the exact draft ready for another Send.
-8. Admit gateway events for the active runtime and reduce them through `ConversationEventReducer` into assistant messages, the current turn's chronological Steps projection, turn state, and the active conversation's compaction status.
-9. On interruption, disconnect, or foreground recovery, keep the local draft, reconnect automatically, and ask the server for authoritative state before continuing. Connection attempts continue while the transport is unavailable. Once connected, session resume uses the initial attempt plus four bounded retries; persisted REST history stays readable, and exhaustion presents a dedicated Retry action that begins a fresh resume cycle. Recoverable transport details stay inside the connection layer; definitive authentication rejection returns the user to connection setup.
-
-The dashboard remains the source of truth throughout this flow. Celeste holds a screen projection and unsent draft, not a competing history database.
+1. Load and validate a saved connection descriptor.
+2. Restore encrypted authentication when automatic login is enabled.
+3. Probe the normalized dashboard and establish an in-memory credential.
+4. Load profiles and the session catalog without selecting a conversation.
+5. Create a runtime for a local draft on first Send, or resume a selected stored session.
+6. Reduce persisted history and live gateway events into one transcript projection.
+7. Reconcile authoritative state after interruption, reconnect, or foreground recovery.
 
 ## Shared and platform ownership
 
-New behavior belongs in portable Kotlin and Compose by default. Protocol models and decoding, session/turn reduction, settings models, transcript presentation, design tokens, and custom screens should not import operating-system APIs.
+Protocol models, reducers, application state, and custom Compose UI stay free of Android, AndroidX, and JVM APIs. Platform code owns application entry points, lifecycle bridges, secure storage, system navigation, keyboard and insets, notifications, and other operating-system integrations.
 
-Platform code owns application entry points, lifecycle bridges, secure storage, system back/navigation, keyboard and insets, pickers, notifications, haptics, and other operating-system integrations. Use constructor-injected contracts at real seams instead of platform checks spread through shared code. A concrete transport may remain target-specific when its dependency is not portable; protocol rules must remain above it.
-
-`MainActivity` requests Android's resized soft-input layout, while the conversation composer applies navigation-bar and IME insets at the component boundary. `CelesteViewModel` owns a one-shot composer-focus request across Activity recreation; Compose consumes it after the local new-conversation draft reaches `Idle` and the text field is ready.
-
-`CelesteController` is confined to the serial UI dispatcher supplied by its host. Hosts call its actions and `close()` on that dispatcher; its child coroutines inherit the same context so mutable application state is reduced in order. Cancelling the host scope is also a lifetime boundary: it must close the active gateway and clear in-memory authentication even if the host does not call `close()` separately.
-
-`CelesteRoutes` is currently part of the Android navigation adapter because it installs AndroidX `BackHandler`. The screen composables beneath that route assembly remain portable; a future iOS host will provide the equivalent system-back/navigation bridge rather than importing the Android hook into shared source sets.
-
-The current source tree has not yet been moved into Kotlin Multiplatform source sets. When that build boundary is introduced, preserve this ownership rather than changing behavior merely to maximize a shared-code percentage.
+A future platform host supplies equivalent lifetime and platform adapters rather than reimplementing product behavior.
 
 ## Session identity
 
-Hermes distinguishes a stored session identity from a runtime session identity. Celeste must preserve both:
+Hermes has two relevant identities:
 
-- the **stored ID** locates durable history and is used to resume/reconcile;
-- the **runtime ID** addresses the currently attached gateway session and is used for prompt and interrupt RPCs.
+- the **stored session ID** locates durable history and reconciliation;
+- the **runtime session ID** addresses prompt and interrupt RPCs on the attached gateway session.
 
-Do not substitute one for the other because they happen to match in a test fixture.
+Translate between them at protocol boundaries and never substitute one for the other.
 
 ## Reconciliation invariants
 
-- Wait for `gateway.ready` before reporting a gateway as connected or sending RPCs.
-- Buffer events while a session snapshot is being resumed, apply the snapshot first, then replay buffered events. This prevents a stale snapshot from overwriting newer stream events.
-- Once `prompt.submit` begins, uncertain delivery is reconciled by stored session ID. Never automatically resend the prompt.
-- Bind first-Send runtime creation and first-prompt publication to their originating gateway and stored ID. A stale completion may update its own catalog row but must never replace the active conversation.
-- On foreground, health-check the persistent socket. Replace and reconcile a stale connection rather than trusting an apparently open transport.
-- Ignore events carrying a different non-empty runtime session ID.
-- Give every rendered transcript row a unique UI identity. Prefer a scalar, nonblank Hermes `row_id`; synthesize a deterministic per-resume identity when projections such as tool rows omit one. Namespace Compose keys separately from protocol IDs and occurrence-qualify duplicates so malformed or reused server IDs cannot collide with local, tool, fallback, or streaming rows.
-- Recovered in-flight assistant text may include a prefix already present in persisted history. Render only the unpersisted suffix.
-- Attach the event collector before connecting. `HermesGateway.events` has no replay and a bounded extra buffer, so late collectors can miss conversational events.
-
-## Projection behavior
-
-- `GET /api/sessions/{session_id}/messages` supplies the persisted display transcript, including compacted history, reasoning, and tool detail. `session.resume` binds the live runtime and supplies current turn state. Celeste presents both through the same Steps projection.
-- Interim/final assistant merging and completion deduplication use text- and prefix-based projection rules.
-- A newly persisted conversation keeps its current projected summary while active and receives refreshed catalog metadata on the next catalog load.
-
-Regression coverage for these invariants belongs to `ConversationEventReducer`, `SessionCatalogCoordinator`, `CelesteController`, and `HermesGateway`; see [`testing.md`](testing.md) for the current host-test locations.
+- Wait for `gateway.ready` before treating a persistent gateway as connected.
+- Attach the event collector before connecting because gateway events have no replay.
+- Buffer live events during resume, apply the snapshot first, then replay buffered events.
+- Never automatically resend a prompt after uncertain delivery.
+- Recreate only an untouched blank runtime that disconnected before its first prompt.
+- Replace and reconcile a stale foreground socket.
+- Ignore events carrying a different nonblank runtime session ID.
+- Prefer Hermes row identity and synthesize deterministic, collision-free UI identity when needed.
+- Render only the unpersisted suffix of recovered in-flight assistant text.
 
 ## Growth rule
 
-Split files and modules when an ownership boundary becomes real. A capability-specific protocol adapter is a likely future seam if the current dashboard client boundary becomes obstructive. Preserve the layer direction: shared Compose → `CelesteController` → dashboard/protocol → transport, with lifetime, client identity, and connection persistence injected by the platform host.
+Split code when ownership is already distinct or an existing boundary obstructs change. Preserve the dependency direction: Compose → application state → dashboard/protocol → transport, with lifetime, client identity, and secure persistence injected by the platform host.
