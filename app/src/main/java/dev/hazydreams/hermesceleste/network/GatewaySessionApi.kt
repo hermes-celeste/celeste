@@ -88,6 +88,7 @@ suspend fun GatewayConnection.resumeStoredSession(
             ?.takeIf(String::isNotBlank)
             ?: throw IOException("Hermes returned no resumed session identity."),
         messages = resumedMessages,
+        pendingClarification = pendingClarification,
         taskProgress = decoded.taskProgress,
         running = running,
         status = status,

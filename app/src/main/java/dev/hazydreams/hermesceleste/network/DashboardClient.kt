@@ -92,6 +92,7 @@ data class ResumedSession(
     val runtimeSessionId: String,
     val storedSessionId: String,
     val messages: List<ConversationMessage>,
+    val pendingClarification: ClarificationExchange? = null,
     val taskProgress: TaskProgress? = null,
     val running: Boolean? = null,
     val status: String? = null,

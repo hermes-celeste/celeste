@@ -163,10 +163,15 @@ class CelesteViewModelTest {
                 }""".trimIndent(),
             ) as JsonObject
         }
-        val viewModel = openConversation(gateway)
+        val viewModel = openConversation(gateway) {
+            sessionMessages = listOf(
+                ConversationMessage(role = "user", text = "Deploy this", id = "stored-user"),
+            )
+        }
         advanceUntilIdle()
 
         assertEquals(listOf("user", "clarification"), viewModel.state.value.messages.map { it.role })
+        assertEquals("stored-user", viewModel.state.value.messages.first().id)
         assertTrue(viewModel.state.value.messages.last().pending)
         assertEquals("request-1", viewModel.state.value.messages.last().clarification?.requestId)
 
@@ -1114,8 +1119,11 @@ class CelesteViewModelTest {
         assertEquals("and still arriving", suffix)
     }
 
-    private suspend fun openConversation(gateway: FakeGateway): CelesteViewModel {
-        val dashboard = FakeDashboard(gateway)
+    private suspend fun openConversation(
+        gateway: FakeGateway,
+        configureDashboard: FakeDashboard.() -> Unit = {},
+    ): CelesteViewModel {
+        val dashboard = FakeDashboard(gateway).apply(configureDashboard)
         val viewModel = CelesteViewModel(
             dashboard = dashboard,
             reconnectDelayMillis = { _, _ -> 0L },

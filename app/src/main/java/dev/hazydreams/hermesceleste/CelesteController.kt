@@ -21,6 +21,7 @@ import dev.hazydreams.hermesceleste.network.ResumedSession
 import dev.hazydreams.hermesceleste.network.SessionCatalogPage
 import dev.hazydreams.hermesceleste.network.StoredSession
 import dev.hazydreams.hermesceleste.network.TaskProgress
+import dev.hazydreams.hermesceleste.network.bindClarificationRequest
 import dev.hazydreams.hermesceleste.network.createSession
 import dev.hazydreams.hermesceleste.network.interruptSession
 import dev.hazydreams.hermesceleste.network.markClarificationSubmitting
@@ -1248,9 +1249,13 @@ internal class CelesteController(
             val resumed = resumedResult.getOrThrow()
             val running = resumed.running == true || resumed.hasLiveProjection
             val persistedTaskSnapshot = persistedHistory?.taskProgressSnapshot
+            val authoritativeMessages = persistedHistory?.messages?.ifEmpty { resumed.messages } ?: resumed.messages
+            val reconciledMessages = resumed.pendingClarification
+                ?.let { bindClarificationRequest(authoritativeMessages, it) }
+                ?: authoritativeMessages
             applyResumedSession(
                 resumed.copy(
-                    messages = persistedHistory?.messages?.ifEmpty { resumed.messages } ?: resumed.messages,
+                    messages = reconciledMessages,
                     taskProgress = when {
                         !running -> null
                         persistedTaskSnapshot != null -> persistedTaskSnapshot.progress

@@ -127,6 +127,7 @@ internal fun ConversationScreen(
     }
     val focusManager = LocalFocusManager.current
     val transcriptKeys = remember(messages) { transcriptItemKeys(messages) }
+    val pendingClarificationFollowKey = remember(messages) { pendingClarificationFollowKey(messages) }
     val visibleMessageCount = messages.size +
         (if (streamingText.isNotBlank()) 1 else 0) +
         (if (isCompacting) 1 else 0) +
@@ -158,7 +159,7 @@ internal fun ConversationScreen(
         }
     }
 
-    LaunchedEffect(visibleMessageCount, streamingText.length) {
+    LaunchedEffect(visibleMessageCount, streamingText.length, pendingClarificationFollowKey) {
         latestTranscriptIndex(visibleMessageCount)?.let { latestIndex ->
             if (followLatest) listState.animateScrollToLatest(latestIndex)
         }
@@ -333,6 +334,13 @@ private fun ResumeExhaustedCard(
 
 internal fun latestTranscriptIndex(visibleMessageCount: Int): Int? =
     (visibleMessageCount - 1).takeIf { it >= 0 }
+
+internal fun pendingClarificationFollowKey(messages: List<ConversationMessage>): String? =
+    messages.lastOrNull { message ->
+        message.role == "clarification" &&
+            message.pending &&
+            message.clarification?.requestId?.isNotBlank() == true
+    }?.clarification?.requestId
 
 internal data class ScrollFollowObservation(
     val readerDragging: Boolean,
