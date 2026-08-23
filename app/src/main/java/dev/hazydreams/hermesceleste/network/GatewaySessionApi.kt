@@ -76,12 +76,14 @@ suspend fun GatewayConnection.resumeStoredSession(
     val inflight = result["inflight"]
     val queued = result["queued"]
 
+    val decoded = decodeGatewayConversation(result["messages"]?.jsonArray.orEmpty())
     return ResumedSession(
         runtimeSessionId = runtimeId,
         storedSessionId = result.string("resumed")
             ?.takeIf(String::isNotBlank)
             ?: throw IOException("Hermes returned no resumed session identity."),
-        messages = decodeGatewayMessages(result["messages"]?.jsonArray.orEmpty()),
+        messages = decoded.messages,
+        taskProgress = decoded.taskProgress,
         running = running,
         status = status,
         inflightAssistantText = inflightAssistantText(inflight),
@@ -110,10 +112,20 @@ suspend fun GatewayConnection.interruptSession(runtimeSessionId: String): JsonOb
     ).asObject("Hermes returned no interrupt status.")
 }
 
-internal fun decodeGatewayMessages(elements: List<JsonElement>): List<ConversationMessage> {
+private data class PersistedToolCall(
+    val name: String,
+    val arguments: JsonObject?,
+    val context: String,
+)
+
+internal fun decodeGatewayMessages(elements: List<JsonElement>): List<ConversationMessage> =
+    decodeGatewayConversation(elements).messages
+
+internal fun decodeGatewayConversation(elements: List<JsonElement>): DecodedGatewayConversation {
     val usedIds = mutableSetOf<String>()
-    val persistedToolCalls = mutableMapOf<String, Pair<String, String>>()
+    val persistedToolCalls = mutableMapOf<String, PersistedToolCall>()
     var messages = emptyList<ConversationMessage>()
+    var taskProgressSnapshot: TaskProgressSnapshot? = null
 
     fun uniqueMessageId(preferred: String?, fallback: String): String {
         val explicit = preferred?.takeIf(String::isNotBlank)
@@ -155,7 +167,14 @@ internal fun decodeGatewayMessages(elements: List<JsonElement>): List<Conversati
                 val toolId = call.string("id")?.takeIf(String::isNotBlank) ?: return@forEach
                 val name = function.string("name")?.takeIf(String::isNotBlank) ?: "tool"
                 val context = function.string("arguments")?.takeIf(String::isNotBlank) ?: name
-                persistedToolCalls[toolId] = name to context
+                val arguments = runCatching {
+                    Json.parseToJsonElement(context) as? JsonObject
+                }.getOrNull()
+                persistedToolCalls[toolId] = PersistedToolCall(
+                    name = name,
+                    arguments = arguments,
+                    context = context,
+                )
             }
             val commentary = row.codexCommentaryMessages()
             val reasoning = sequenceOf("reasoning", "reasoning_content", "reasoning_details")
@@ -197,13 +216,43 @@ internal fun decodeGatewayMessages(elements: List<JsonElement>): List<Conversati
                 ?: row.string("tool_call_id")
                 ?: "${sourceIdentity ?: "resume-$index"}:tool"
             val persistedCall = persistedToolCalls[toolId]
-            val name = row.string("name") ?: row.string("tool_name") ?: persistedCall?.first ?: "tool"
+            val name = row.string("name") ?: row.string("tool_name") ?: persistedCall?.name ?: "tool"
             val context = row.string("context")
-                ?: persistedCall?.second
+                ?: persistedCall?.context
                 ?: row["args"]?.toString().orEmpty()
+            val arguments = (row["args"] as? JsonObject) ?: persistedCall?.arguments
             val result = row.string("result")
                 ?: row.string("content")
                 ?: ""
+            val resultObject = runCatching { Json.parseToJsonElement(result) as? JsonObject }.getOrNull()
+            if (name == "todo") {
+                decodeTaskProgressSnapshot(resultObject?.get("todos") as? JsonArray)?.let {
+                    taskProgressSnapshot = it
+                }
+                return@forEachIndexed
+            }
+            val diff = row.string("inline_diff")
+                ?: resultObject?.string("diff")
+                ?: ""
+            if (isFileEditTool(name) || diff.isNotBlank()) {
+                messages = settleCurrentReasoning(messages)
+                messages = startFileEditInCurrentTurn(
+                    messages = messages,
+                    toolId = toolId,
+                    paths = fileEditPaths(name, arguments, diff),
+                    changesMessageId = "changes:${sourceIdentity ?: "resume-$index"}",
+                )
+                messages = completeFileEditInCurrentTurn(
+                    messages = messages,
+                    toolId = toolId,
+                    paths = fileEditPaths(name, arguments, diff),
+                    diff = diff,
+                    summary = row.string("summary").orEmpty(),
+                    failed = toolResultFailed(resultObject),
+                    changesMessageId = "changes:${sourceIdentity ?: "resume-$index"}",
+                )
+                return@forEachIndexed
+            }
             messages = completeToolInCurrentTurn(
                 messages = messages,
                 id = toolId,
@@ -225,7 +274,10 @@ internal fun decodeGatewayMessages(elements: List<JsonElement>): List<Conversati
         )
     }
 
-    return messages.map(ConversationMessage::settledSteps)
+    return DecodedGatewayConversation(
+        messages = messages.map(ConversationMessage::settledSteps),
+        taskProgressSnapshot = taskProgressSnapshot,
+    )
 }
 
 private const val MIN_COMMENTARY_STRIP_LENGTH = 12

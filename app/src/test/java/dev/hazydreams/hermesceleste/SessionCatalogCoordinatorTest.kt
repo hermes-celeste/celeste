@@ -3,7 +3,7 @@ package dev.hazydreams.hermesceleste
 import java.io.IOException
 
 import dev.hazydreams.hermesceleste.network.AuthenticationMaterial
-import dev.hazydreams.hermesceleste.network.ConversationMessage
+import dev.hazydreams.hermesceleste.network.ConversationHistory
 import dev.hazydreams.hermesceleste.network.DashboardProfile
 import dev.hazydreams.hermesceleste.network.DashboardProbeResult
 import dev.hazydreams.hermesceleste.network.DashboardService
@@ -419,13 +419,13 @@ class SessionCatalogCoordinatorTest {
             return searchResults[query].orEmpty()
         }
 
-        override suspend fun loadSessionMessages(
+        override suspend fun loadSessionHistory(
             baseUrl: String,
             credential: GatewayCredential,
             sessionId: String,
             profile: String,
             limit: Int,
-        ): List<ConversationMessage> = emptyList()
+        ): ConversationHistory = ConversationHistory(emptyList())
 
         override suspend fun markSessionRead(
             baseUrl: String,

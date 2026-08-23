@@ -20,6 +20,7 @@ import dev.hazydreams.hermesceleste.network.GatewayRpcException
 import dev.hazydreams.hermesceleste.network.ResumedSession
 import dev.hazydreams.hermesceleste.network.SessionCatalogPage
 import dev.hazydreams.hermesceleste.network.StoredSession
+import dev.hazydreams.hermesceleste.network.TaskProgress
 import dev.hazydreams.hermesceleste.network.createSession
 import dev.hazydreams.hermesceleste.network.interruptSession
 import dev.hazydreams.hermesceleste.network.resumeStoredSession
@@ -83,6 +84,7 @@ internal data class CelesteUiState(
     val selectedProfile: String = "default",
     val activeSummary: StoredSession? = null,
     val messages: List<ConversationMessage> = emptyList(),
+    val taskProgress: TaskProgress? = null,
     val streamingText: String = "",
     val draft: String = "",
     val turnState: TurnState = TurnState.Idle,
@@ -154,6 +156,7 @@ internal class CelesteController(
     private var gatewayEventsJob: Job? = null
     private var gatewayStateJob: Job? = null
     private var reconnectJob: Job? = null
+    private var taskProgressClearJob: Job? = null
     private var foregroundCheckJob: Job? = null
     private var connectionJob: Job? = null
     private var connectionAttempt = 0L
@@ -258,6 +261,7 @@ internal class CelesteController(
             sessionSearchError = null,
             activeSummary = null,
             messages = emptyList(),
+            taskProgress = null,
             streamingText = "",
             draft = "",
             isCompacting = false,
@@ -407,6 +411,7 @@ internal class CelesteController(
             sessionSearchError = null,
             activeSummary = null,
             messages = emptyList(),
+            taskProgress = null,
             streamingText = "",
             draft = "",
             isCompacting = false,
@@ -684,6 +689,7 @@ internal class CelesteController(
         mutableState.value = mutableState.value.copy(
             activeSummary = visibleSummary,
             messages = emptyList(),
+            taskProgress = null,
             streamingText = "",
             draft = "",
             turnState = TurnState.Synchronizing,
@@ -749,6 +755,7 @@ internal class CelesteController(
             selectedProfile = selectedProfile,
             activeSummary = null,
             messages = emptyList(),
+            taskProgress = null,
             streamingText = "",
             draft = "",
             password = password,
@@ -770,6 +777,7 @@ internal class CelesteController(
         mutableState.value = snapshot.copy(
             activeSummary = null,
             messages = emptyList(),
+            taskProgress = null,
             streamingText = "",
             draft = if (clearDraft) "" else snapshot.draft,
             turnState = TurnState.Idle,
@@ -1146,11 +1154,11 @@ internal class CelesteController(
             val connection = snapshot.probe
             val activeCredential = credential
             val profile = snapshot.activeSummary?.profile ?: snapshot.selectedProfile
-            val (resumedResult, persistedMessages) = coroutineScope {
+            val (resumedResult, persistedHistory) = coroutineScope {
                 val persisted = if (connection != null && activeCredential != null && profile.isNotBlank()) {
                     async {
                         try {
-                            dashboard.loadSessionMessages(
+                            dashboard.loadSessionHistory(
                                 baseUrl = connection.baseUrl,
                                 credential = activeCredential,
                                 sessionId = storedSessionId,
@@ -1159,7 +1167,7 @@ internal class CelesteController(
                         } catch (error: CancellationException) {
                             throw error
                         } catch (_: Throwable) {
-                            emptyList()
+                            null
                         }
                     }
                 } else {
@@ -1168,19 +1176,26 @@ internal class CelesteController(
                 val runtime = runCatching {
                     activeGateway.resumeStoredSession(storedSessionId, clientSource)
                 }
-                runtime to persisted?.await().orEmpty()
+                runtime to persisted?.await()
             }
             if (gateway !== activeGateway) return
-            if (resumedResult.isFailure && persistedMessages.isNotEmpty()) {
+            if (resumedResult.isFailure && persistedHistory?.messages?.isNotEmpty() == true) {
                 mutableState.value = mutableState.value.copy(
-                    messages = persistedMessages,
+                    messages = persistedHistory.messages,
                     streamingText = "",
                 )
             }
             val resumed = resumedResult.getOrThrow()
+            val running = resumed.running == true || resumed.hasLiveProjection
+            val persistedTaskSnapshot = persistedHistory?.taskProgressSnapshot
             applyResumedSession(
                 resumed.copy(
-                    messages = persistedMessages.ifEmpty { resumed.messages },
+                    messages = persistedHistory?.messages?.ifEmpty { resumed.messages } ?: resumed.messages,
+                    taskProgress = when {
+                        !running -> null
+                        persistedTaskSnapshot != null -> persistedTaskSnapshot.progress
+                        else -> resumed.taskProgress
+                    },
                 ),
             )
             val events = bufferedEvents.toList()
@@ -1202,19 +1217,23 @@ internal class CelesteController(
             inflight = resumed.inflightAssistantText,
             messages = resumed.messages,
         )
+        val previousTaskProgress = mutableState.value.taskProgress
+        val running = resumed.running == true || resumed.hasLiveProjection
+        val restoredTaskProgress = resumed.taskProgress.takeIf { running }
         mutableState.value = mutableState.value.copy(
             messages = resumed.messages,
+            taskProgress = restoredTaskProgress,
             streamingText = streamingSuffix,
-            turnState = if (resumed.running == true || resumed.hasLiveProjection) {
+            turnState = if (running) {
                 TurnState.Running
             } else {
                 TurnState.Idle
             },
-            isCompacting = mutableState.value.isCompacting &&
-                (resumed.running == true || resumed.hasLiveProjection),
+            isCompacting = mutableState.value.isCompacting && running,
             resumeExhausted = false,
             errorMessage = null,
         )
+        updateTaskProgressClear(previousTaskProgress, restoredTaskProgress)
         publishCurrentSession()
     }
 
@@ -1288,19 +1307,38 @@ internal class CelesteController(
                 streamingText = current.streamingText,
                 turnState = current.turnState,
                 isCompacting = current.isCompacting,
+                taskProgress = current.taskProgress,
                 errorMessage = current.errorMessage,
             ),
             event = event,
             localMessageCounter = localMessageCounter,
         )
         localMessageCounter = reduction.localMessageCounter
+        val nextTaskProgress = reduction.projection.taskProgress
         mutableState.value = current.copy(
             messages = reduction.projection.messages,
+            taskProgress = nextTaskProgress,
             streamingText = reduction.projection.streamingText,
             turnState = reduction.projection.turnState,
             isCompacting = reduction.projection.isCompacting,
             errorMessage = reduction.projection.errorMessage,
         )
+        updateTaskProgressClear(current.taskProgress, nextTaskProgress)
+    }
+
+    private fun updateTaskProgressClear(previous: TaskProgress?, next: TaskProgress?) {
+        if (previous == next) return
+        taskProgressClearJob?.cancel()
+        taskProgressClearJob = null
+        if (next?.isFinished != true) return
+        val runtimeId = currentRuntimeSessionId ?: return
+        taskProgressClearJob = controllerScope.launch {
+            delay(TASK_PROGRESS_FINISHED_LINGER_MILLIS)
+            if (currentRuntimeSessionId == runtimeId && mutableState.value.taskProgress == next) {
+                mutableState.value = mutableState.value.copy(taskProgress = null)
+            }
+            taskProgressClearJob = null
+        }
     }
 
     private suspend fun recreateBlankSession(
@@ -1420,6 +1458,8 @@ internal class CelesteController(
         gateway = null
         reconnectJob?.cancel()
         reconnectJob = null
+        taskProgressClearJob?.cancel()
+        taskProgressClearJob = null
         foregroundCheckJob?.cancel()
         foregroundCheckJob = null
         gatewayEventsJob?.cancel()
@@ -1452,6 +1492,7 @@ internal class CelesteController(
 
     companion object {
         private const val MAX_RESUME_RETRIES = 4
+        private const val TASK_PROGRESS_FINISHED_LINGER_MILLIS = 4_000L
 
         internal fun unpersistedInflightText(
             inflight: String,

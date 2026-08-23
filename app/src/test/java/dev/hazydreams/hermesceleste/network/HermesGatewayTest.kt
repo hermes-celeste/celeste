@@ -139,6 +139,48 @@ class HermesGatewayTest {
     }
 
     @Test
+    fun resumedHistoryRebuildsChangedFilesAndLatestTaskProgress() {
+        val decoded = decodeGatewayConversation(
+            Json.parseToJsonElement(
+                """[
+                    {"row_id":1,"role":"user","text":"Build the work surfaces"},
+                    {"row_id":2,"role":"assistant","tool_calls":[{"id":"edit-a","function":{"name":"patch","arguments":"{\"path\":\"ui/ConversationScreen.kt\"}"}}]},
+                    {"row_id":3,"role":"tool","tool_call_id":"edit-a","tool_name":"patch","content":"{\"diff\":\"--- a/ui/ConversationScreen.kt\\n+++ b/ui/ConversationScreen.kt\\n@@\\n-old\\n+new\"}"},
+                    {"row_id":4,"role":"assistant","reasoning":"Check the task placement."},
+                    {"row_id":5,"role":"assistant","tool_calls":[{"id":"edit-b","function":{"name":"write_file","arguments":"{\"path\":\"ui/WorkSurfaces.kt\"}"}}]},
+                    {"row_id":6,"role":"tool","tool_call_id":"edit-b","tool_name":"write_file","content":"{\"bytes_written\":240}"},
+                    {"row_id":7,"role":"assistant","tool_calls":[{"id":"todo-a","function":{"name":"todo","arguments":"{\"todos\":[{\"id\":\"design\",\"content\":\"Design\",\"status\":\"in_progress\"}]}"}}]},
+                    {"row_id":8,"role":"tool","tool_call_id":"todo-a","tool_name":"todo","content":"{\"todos\":[{\"id\":\"design\",\"content\":\"Design\",\"status\":\"completed\"},{\"id\":\"build\",\"content\":\"Build\",\"status\":\"in_progress\"}]}"}
+                ]""".trimIndent(),
+            ).jsonArray,
+        )
+
+        assertEquals(listOf("user", "steps", "changes"), decoded.messages.map { it.role })
+        val files = decoded.messages.single { it.role == "changes" }.changedFiles()
+        assertEquals(listOf("ui/ConversationScreen.kt", "ui/WorkSurfaces.kt"), files.map { it.path })
+        assertEquals(1, files.first().additions)
+        assertEquals(1, files.first().removals)
+        assertEquals(listOf("design", "build"), decoded.taskProgress?.items?.map { it.id })
+        assertEquals(TaskItemStatus.Completed, decoded.taskProgress?.items?.first()?.status)
+    }
+
+    @Test
+    fun resumedFileEditWithExplicitFalseErrorRemainsCompleted() {
+        val decoded = decodeGatewayConversation(
+            Json.parseToJsonElement(
+                """[
+                    {"role":"user","text":"Update the file"},
+                    {"role":"assistant","tool_calls":[{"id":"edit-a","function":{"name":"write_file","arguments":"{\"path\":\"App.kt\"}"}}]},
+                    {"role":"tool","tool_call_id":"edit-a","tool_name":"write_file","content":"{\"error\":false,\"bytes_written\":24}"}
+                ]""".trimIndent(),
+            ).jsonArray,
+        )
+
+        val file = decoded.messages.single { it.role == "changes" }.changedFiles().single()
+        assertEquals(FileEditState.Completed, file.state)
+    }
+
+    @Test
     fun resumedProcessCompletionUsesTheSameCompactProjectionAsLiveEvents() {
         val completion = """[IMPORTANT: Background process proc_42 exited (exit code 1).
 Command: ./gradlew test

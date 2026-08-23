@@ -92,10 +92,16 @@ data class ResumedSession(
     val runtimeSessionId: String,
     val storedSessionId: String,
     val messages: List<ConversationMessage>,
+    val taskProgress: TaskProgress? = null,
     val running: Boolean? = null,
     val status: String? = null,
     val inflightAssistantText: String = "",
     val hasLiveProjection: Boolean = false,
+)
+
+data class ConversationHistory(
+    val messages: List<ConversationMessage>,
+    val taskProgressSnapshot: TaskProgressSnapshot? = null,
 )
 
 sealed interface GatewayCredential {
@@ -141,13 +147,13 @@ interface DashboardService {
         limit: Int = 20,
     ): List<StoredSession>
 
-    suspend fun loadSessionMessages(
+    suspend fun loadSessionHistory(
         baseUrl: String,
         credential: GatewayCredential,
         sessionId: String,
         profile: String,
         limit: Int = 500,
-    ): List<ConversationMessage>
+    ): ConversationHistory
 
     suspend fun markSessionRead(
         baseUrl: String,
@@ -423,13 +429,13 @@ class DashboardClient(
         }
     }
 
-    override suspend fun loadSessionMessages(
+    override suspend fun loadSessionHistory(
         baseUrl: String,
         credential: GatewayCredential,
         sessionId: String,
         profile: String,
         limit: Int,
-    ): List<ConversationMessage> {
+    ): ConversationHistory {
         require(sessionId.isNotBlank()) { "Choose a Hermes session to open." }
         require(profile.isNotBlank()) { "A Hermes profile is required." }
         val boundedLimit = limit.coerceIn(1, 500)
@@ -454,7 +460,11 @@ class DashboardClient(
                 ?: throw InvalidDashboardResponse("Hermes returned no conversation history.")
             val rows = root["messages"] as? JsonArray
                 ?: throw InvalidDashboardResponse("Hermes returned no conversation history.")
-            decodeGatewayMessages(rows)
+            val decoded = decodeGatewayConversation(rows)
+            ConversationHistory(
+                messages = decoded.messages,
+                taskProgressSnapshot = decoded.taskProgressSnapshot,
+            )
         }
     }
 
@@ -781,12 +791,14 @@ class DashboardClient(
             if (runtimeId.isBlank()) {
                 throw InvalidDashboardResponse("Hermes returned no runtime session identity.")
             }
+            val decoded = decodeGatewayConversation(result["messages"]?.jsonArray.orEmpty())
             ResumedSession(
                 runtimeSessionId = runtimeId,
                 storedSessionId = result["resumed"]?.jsonPrimitive?.contentOrNull
                     ?.takeIf(String::isNotBlank)
                     ?: throw InvalidDashboardResponse("Hermes returned no resumed session identity."),
-                messages = decodeGatewayMessages(result["messages"]?.jsonArray.orEmpty()),
+                messages = decoded.messages,
+                taskProgress = decoded.taskProgress,
             )
         }
     }

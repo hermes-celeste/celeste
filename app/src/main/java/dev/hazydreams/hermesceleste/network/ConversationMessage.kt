@@ -24,6 +24,7 @@ data class ConversationMessage(
     val interim: Boolean = false,
     val steps: List<ConversationStep> = emptyList(),
     val processResult: BackgroundProcessResult? = null,
+    val fileEdits: List<FileEditOperation> = emptyList(),
 )
 
 internal fun appendReasoningToCurrentTurn(
@@ -178,20 +179,23 @@ private fun updateCurrentTurnSteps(
 
     val steps = transform(emptyList())
     if (steps.isEmpty()) return messages
-    return messages + ConversationMessage(
+    val message = ConversationMessage(
         role = "steps",
         text = "",
         id = stepsMessageId,
         pending = true,
         steps = steps,
     )
+    val changesIndex = currentTurnChangesIndexForSteps(messages)
+    if (changesIndex < 0) return messages + message
+    return messages.toMutableList().also { next -> next.add(changesIndex, message) }
 }
 
 private fun activeStepsIndex(messages: List<ConversationMessage>): Int {
     val turnStart = messages.indexOfLast { it.role == "user" }
     for (index in messages.lastIndex downTo (turnStart + 1)) {
         when (messages[index].role) {
-            "process" -> continue
+            "process", "changes" -> continue
             "steps" -> return index.takeIf { messages[index].pending } ?: -1
             else -> return -1
         }
@@ -203,6 +207,14 @@ private fun currentTurnStepsIndex(messages: List<ConversationMessage>): Int {
     val turnStart = messages.indexOfLast { it.role == "user" }
     for (index in messages.lastIndex downTo (turnStart + 1)) {
         if (messages[index].role == "steps") return index
+    }
+    return -1
+}
+
+private fun currentTurnChangesIndexForSteps(messages: List<ConversationMessage>): Int {
+    val turnStart = messages.indexOfLast { it.role == "user" }
+    for (index in (turnStart + 1)..messages.lastIndex) {
+        if (messages[index].role == "changes") return index
     }
     return -1
 }

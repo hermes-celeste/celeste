@@ -2,14 +2,23 @@ package dev.hazydreams.hermesceleste
 
 import dev.hazydreams.hermesceleste.network.ConversationMessage
 import dev.hazydreams.hermesceleste.network.GatewayEvent
+import dev.hazydreams.hermesceleste.network.TaskProgress
 import dev.hazydreams.hermesceleste.network.appendReasoningToCurrentTurn
 import dev.hazydreams.hermesceleste.network.boolean
+import dev.hazydreams.hermesceleste.network.completeFileEditInCurrentTurn
 import dev.hazydreams.hermesceleste.network.completeToolInCurrentTurn
+import dev.hazydreams.hermesceleste.network.fileEditDiff
+import dev.hazydreams.hermesceleste.network.fileEditPaths
+import dev.hazydreams.hermesceleste.network.isFileEditTool
 import dev.hazydreams.hermesceleste.network.parseBackgroundProcessResult
 import dev.hazydreams.hermesceleste.network.settleCurrentReasoning
 import dev.hazydreams.hermesceleste.network.settleCurrentTurnSteps
+import dev.hazydreams.hermesceleste.network.startFileEditInCurrentTurn
 import dev.hazydreams.hermesceleste.network.startToolInCurrentTurn
 import dev.hazydreams.hermesceleste.network.string
+import dev.hazydreams.hermesceleste.network.taskProgressSnapshotFromPayload
+import dev.hazydreams.hermesceleste.network.toolArguments
+import dev.hazydreams.hermesceleste.network.toolCompletionFailed
 import dev.hazydreams.hermesceleste.network.upsertBackgroundProcessResult
 
 internal data class ConversationProjection(
@@ -17,6 +26,7 @@ internal data class ConversationProjection(
     val streamingText: String,
     val turnState: TurnState,
     val isCompacting: Boolean,
+    val taskProgress: TaskProgress?,
     val errorMessage: String?,
 )
 
@@ -123,7 +133,7 @@ internal fun reduceConversationEvent(
                 } else {
                     next.errorMessage
                 },
-            )
+            ).clearActiveTaskProgress()
         }
 
         "error", "message.error" -> {
@@ -133,7 +143,7 @@ internal fun reduceConversationEvent(
                 turnState = TurnState.Idle,
                 isCompacting = false,
                 errorMessage = event.payload.string("message") ?: "Hermes reported an error.",
-            )
+            ).clearActiveTaskProgress()
         }
 
         "message.interrupted", "session.interrupted" -> {
@@ -142,7 +152,7 @@ internal fun reduceConversationEvent(
                 messages = settleCurrentTurnSteps(next.messages),
                 turnState = TurnState.Idle,
                 isCompacting = false,
-            )
+            ).clearActiveTaskProgress()
         }
 
         "session.busy" -> {
@@ -192,47 +202,101 @@ internal fun reduceConversationEvent(
             val toolId = event.payload.string("tool_id")
                 ?: event.payload.string("tool_call_id")
                 ?: nextLocalMessageId("tool")
-            next.copy(
-                messages = startToolInCurrentTurn(
-                    messages = next.messages,
-                    id = toolId,
-                    name = name,
-                    context = context,
-                    stepsMessageId = nextLocalMessageId("steps"),
-                ),
-                turnState = TurnState.Running,
-            )
+            when {
+                name == "todo" -> taskProgressSnapshotFromPayload(event.payload)?.let { snapshot ->
+                    next.copy(taskProgress = snapshot.progress, turnState = TurnState.Running)
+                } ?: next.copy(turnState = TurnState.Running)
+                isFileEditTool(name) -> next.copy(
+                    messages = startFileEditInCurrentTurn(
+                        messages = settleCurrentReasoning(next.messages),
+                        toolId = toolId,
+                        paths = fileEditPaths(name, toolArguments(event.payload)),
+                        changesMessageId = nextLocalMessageId("changes"),
+                    ),
+                    turnState = TurnState.Running,
+                )
+                else -> next.copy(
+                    messages = startToolInCurrentTurn(
+                        messages = next.messages,
+                        id = toolId,
+                        name = name,
+                        context = context,
+                        stepsMessageId = nextLocalMessageId("steps"),
+                    ),
+                    turnState = TurnState.Running,
+                )
+            }
+        }
+
+        "tool.progress" -> {
+            val name = event.payload.string("name")
+            val isTodo = name == "todo" || (name == null && "todos" in event.payload)
+            if (isTodo) {
+                taskProgressSnapshotFromPayload(event.payload)?.let { snapshot ->
+                    next.copy(taskProgress = snapshot.progress, turnState = TurnState.Running)
+                } ?: next
+            } else {
+                next
+            }
         }
 
         "tool.complete" -> {
-            val name = event.payload.string("name") ?: "tool"
-            val toolId = event.payload.string("tool_id")
+            val explicitName = event.payload.string("name")
+            val name = explicitName ?: "tool"
+            val explicitToolId = event.payload.string("tool_id")
                 ?: event.payload.string("tool_call_id")
-            val context = event.payload.string("args_text")
-                ?: event.payload.string("context")
-                ?: event.payload["args"]?.toString().orEmpty()
-            val summary = event.payload.string("summary").orEmpty()
-            val result = event.payload.string("result_text")
-                ?: event.payload.string("result")
-                ?: event.payload["result"]?.toString().orEmpty()
-            next.copy(
-                messages = completeToolInCurrentTurn(
-                    messages = next.messages,
-                    id = toolId,
-                    name = name,
-                    context = context,
-                    summary = summary,
-                    result = result,
-                    fallbackStepId = nextLocalMessageId("tool"),
-                    stepsMessageId = nextLocalMessageId("steps"),
-                ),
-            )
+            val diff = fileEditDiff(event.payload)
+            when {
+                explicitName == "todo" || (explicitName == null && "todos" in event.payload) ->
+                    taskProgressSnapshotFromPayload(event.payload)?.let { snapshot ->
+                        next.copy(taskProgress = snapshot.progress)
+                } ?: next
+                isFileEditTool(name) || diff.isNotBlank() -> {
+                    val toolId = explicitToolId ?: nextLocalMessageId("tool")
+                    val args = toolArguments(event.payload)
+                    next.copy(
+                        messages = completeFileEditInCurrentTurn(
+                            messages = settleCurrentReasoning(next.messages),
+                            toolId = toolId,
+                            paths = fileEditPaths(name, args, diff),
+                            diff = diff,
+                            summary = event.payload.string("summary").orEmpty(),
+                            failed = toolCompletionFailed(event.payload),
+                            changesMessageId = nextLocalMessageId("changes"),
+                        ),
+                    )
+                }
+                else -> {
+                    val context = event.payload.string("args_text")
+                        ?: event.payload.string("context")
+                        ?: event.payload["args"]?.toString().orEmpty()
+                    val summary = event.payload.string("summary").orEmpty()
+                    val result = event.payload.string("result_text")
+                        ?: event.payload.string("result")
+                        ?: event.payload["result"]?.toString().orEmpty()
+                    next.copy(
+                        messages = completeToolInCurrentTurn(
+                            messages = next.messages,
+                            id = explicitToolId,
+                            name = name,
+                            context = context,
+                            summary = summary,
+                            result = result,
+                            fallbackStepId = nextLocalMessageId("tool"),
+                            stepsMessageId = nextLocalMessageId("steps"),
+                        ),
+                    )
+                }
+            }
         }
 
         else -> next
     }
     return ConversationEventReduction(next, counter)
 }
+
+private fun ConversationProjection.clearActiveTaskProgress(): ConversationProjection =
+    if (taskProgress?.isActive == true) copy(taskProgress = null) else this
 
 private fun ConversationProjection.finalizeAssistant(
     suppliedContent: String = "",
