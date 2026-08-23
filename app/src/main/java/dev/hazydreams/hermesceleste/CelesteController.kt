@@ -31,6 +31,7 @@ import dev.hazydreams.hermesceleste.network.respondToClarification
 import dev.hazydreams.hermesceleste.network.resumeStoredSession
 import dev.hazydreams.hermesceleste.network.settleClarificationLocally
 import dev.hazydreams.hermesceleste.network.submitPrompt
+import dev.hazydreams.hermesceleste.network.string
 import kotlin.math.min
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -1882,7 +1883,7 @@ private fun GatewayEvent.settlesTurn(): Boolean = when (type) {
 }
 
 private fun GatewayEvent.isStaleQueuedSettleCandidate(): Boolean = when (type) {
-    "message.complete" -> true
+    "message.complete" -> payload.string("status") != "error"
     "session.busy" -> payload.boolean("busy") == false
     "session.info" -> payload.boolean("running") == false
     else -> false

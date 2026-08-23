@@ -416,6 +416,37 @@ class CelesteViewModelTest {
     }
 
     @Test
+    fun queuedTurnCanCompleteWithErrorBeforePublishingActivityAndTheQueueKeepsDraining() = runTest {
+        val gateway = FakeGateway()
+        val viewModel = openConversation(gateway)
+        advanceUntilIdle()
+
+        viewModel.updateDraft("First")
+        viewModel.sendMessage()
+        viewModel.updateDraft("Second")
+        viewModel.sendMessage()
+        viewModel.updateDraft("Third")
+        viewModel.sendMessage()
+        gateway.emit("message.complete", """{"content":"First done","status":"complete"}""")
+        advanceUntilIdle()
+
+        gateway.emit(
+            "message.complete",
+            """{"text":"Second failed immediately","status":"error","error":"Second failed immediately"}""",
+        )
+        advanceUntilIdle()
+
+        assertTrue(viewModel.state.value.queuedPrompts.isEmpty())
+        assertEquals(TurnState.Running, viewModel.state.value.turnState)
+        assertEquals(
+            listOf("First", "Second", "Third"),
+            gateway.requests.filter { it.first == "prompt.submit" }
+                .map { it.second["text"]?.jsonPrimitive?.content },
+        )
+        viewModel.controller.close()
+    }
+
+    @Test
     fun clarificationResponseUsesCurrentRpcAndCollapsesInlineImmediately() = runTest {
         val gateway = FakeGateway()
         val viewModel = openConversation(gateway)
