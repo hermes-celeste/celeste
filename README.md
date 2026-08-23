@@ -2,6 +2,8 @@
 
 **Your Hermes, carried forward.**
 
+[![Latest test APK](https://img.shields.io/github/actions/workflow/status/hermes-celeste/celeste/android.yml?branch=main&event=push&label=latest%20APK&logo=android)](https://github.com/hermes-celeste/celeste/releases/download/latest-test/Hermes-Celeste-latest.apk)
+
 Celeste is an Android-first native client for a self-hosted [Hermes Agent](https://github.com/NousResearch/hermes-agent) dashboard. It connects directly to the same Hermes server as Desktop, so your profiles, conversations, and agent work stay together.
 
 Android is the only application target today. Celeste is being structured as one Compose Multiplatform product so a future iOS target can share protocol behavior, application state, and custom UI instead of becoming a separately maintained client.
@@ -27,4 +29,4 @@ Celeste is in early development. The native Android chat flow, rich Markdown for
 scripts/celeste-env ./gradlew --no-daemon testDebugUnitTest lintDebug
 ```
 
-GitHub Actions verifies APK assembly on pull requests and publishes the current test APK from successful `main` builds. Local development uses unit tests, lint, and screenshot validation rather than distributable APK assembly.
+GitHub Actions verifies APK assembly on pull requests and publishes the rolling **Latest test build** pre-release from successful `main` builds. Local development uses unit tests, lint, and screenshot validation rather than distributable APK assembly.

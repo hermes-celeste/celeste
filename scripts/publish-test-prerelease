@@ -1,0 +1,44 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+: "${GITHUB_REPOSITORY:?GITHUB_REPOSITORY is required}"
+: "${GITHUB_SHA:?GITHUB_SHA is required}"
+
+release_tag="${RELEASE_TAG:-latest-test}"
+apk_path="${APK_PATH:-Hermes-Celeste-latest.apk}"
+
+if [[ ! -f "$apk_path" ]]; then
+  printf 'Test APK not found: %s\n' "$apk_path" >&2
+  exit 1
+fi
+
+short_sha="${GITHUB_SHA:0:7}"
+release_notes="$(printf '%s\n\n%s\n\n%s' \
+  'Latest successful `main` test build.' \
+  "Built from [\`${short_sha}\`](https://github.com/${GITHUB_REPOSITORY}/commit/${GITHUB_SHA})." \
+  "This debug APK uses Celeste's test-only signing identity for update installation. It is not a production or store release.")"
+
+if gh release view "$release_tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+  gh release upload "$release_tag" "$apk_path#Hermes Celeste test APK" \
+    --repo "$GITHUB_REPOSITORY" \
+    --clobber
+  gh api --method PATCH \
+    "repos/${GITHUB_REPOSITORY}/git/refs/tags/${release_tag}" \
+    -f sha="$GITHUB_SHA" \
+    -F force=true \
+    >/dev/null
+  gh release edit "$release_tag" \
+    --repo "$GITHUB_REPOSITORY" \
+    --title "Latest test build" \
+    --notes "$release_notes" \
+    --prerelease \
+    --latest=false
+else
+  gh release create "$release_tag" "$apk_path#Hermes Celeste test APK" \
+    --repo "$GITHUB_REPOSITORY" \
+    --target "$GITHUB_SHA" \
+    --title "Latest test build" \
+    --notes "$release_notes" \
+    --prerelease \
+    --latest=false
+fi

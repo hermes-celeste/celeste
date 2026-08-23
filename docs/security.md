@@ -40,7 +40,7 @@ Visual password masking is not screenshot or recording protection. Review media 
 
 ## Test-build signing
 
-GitHub Actions signs the downloadable debug APK with a dedicated test-only identity so successive test builds can update-install. The keystore and password remain in Actions secrets, exist only temporarily on the runner, and never sign a release or store build.
+GitHub Actions signs the downloadable debug APK with a dedicated test-only identity so successive test builds can update-install. The keystore and password remain in Actions secrets, exist only temporarily on the runner, and never sign a production or store build.
 
 ## Authentication changes
 

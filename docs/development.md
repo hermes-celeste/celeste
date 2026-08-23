@@ -42,4 +42,4 @@ Use [`testing.md`](testing.md) to select focused checks. GitHub Actions owns APK
 
 The public repository and product name are Celeste. The Android launcher label is `Hermes Celeste`; the application ID and Kotlin namespace are `dev.hazydreams.hermesceleste`.
 
-Public source does not authorize releases, distributable signing, Play Store infrastructure, or artifact publication. Keep Gradle and IDE output, SDK configuration, keystores, signing properties, credentials, and private data out of the repository.
+Successful `main` builds may update the public rolling test pre-release. Stable releases, production/store signing, and Play Store infrastructure require separate approval. Keep Gradle and IDE output, SDK configuration, keystores, signing properties, credentials, and private data out of the repository.
