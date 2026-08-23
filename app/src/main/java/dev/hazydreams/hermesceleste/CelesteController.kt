@@ -9,11 +9,6 @@ import dev.hazydreams.hermesceleste.connection.connectionBootstrapDecision
 import dev.hazydreams.hermesceleste.network.AuthenticationRejected
 import dev.hazydreams.hermesceleste.network.AuthenticationMaterial
 import dev.hazydreams.hermesceleste.network.ConversationMessage
-import dev.hazydreams.hermesceleste.network.appendReasoningToCurrentTurn
-import dev.hazydreams.hermesceleste.network.completeToolInCurrentTurn
-import dev.hazydreams.hermesceleste.network.settleCurrentReasoning
-import dev.hazydreams.hermesceleste.network.settleCurrentTurnSteps
-import dev.hazydreams.hermesceleste.network.startToolInCurrentTurn
 import dev.hazydreams.hermesceleste.network.DashboardProfile
 import dev.hazydreams.hermesceleste.network.DashboardProbeResult
 import dev.hazydreams.hermesceleste.network.DashboardService
@@ -25,11 +20,9 @@ import dev.hazydreams.hermesceleste.network.GatewayRpcException
 import dev.hazydreams.hermesceleste.network.ResumedSession
 import dev.hazydreams.hermesceleste.network.SessionCatalogPage
 import dev.hazydreams.hermesceleste.network.StoredSession
-import dev.hazydreams.hermesceleste.network.boolean
 import dev.hazydreams.hermesceleste.network.createSession
 import dev.hazydreams.hermesceleste.network.interruptSession
 import dev.hazydreams.hermesceleste.network.resumeStoredSession
-import dev.hazydreams.hermesceleste.network.string
 import dev.hazydreams.hermesceleste.network.submitPrompt
 import kotlin.math.min
 import kotlinx.coroutines.CancellationException
@@ -98,23 +91,6 @@ internal data class CelesteUiState(
     val resumeExhausted: Boolean = false,
     val loadingMessage: String? = null,
     val errorMessage: String? = null,
-)
-
-private val COMPACTION_RESUME_EVENT_TYPES = setOf(
-    "message.start",
-    "message.delta",
-    "message.interim",
-    "thinking.delta",
-    "reasoning.delta",
-    "reasoning.available",
-    "tool.start",
-    "tool.progress",
-    "tool.generating",
-    "tool.complete",
-    "moa.reference",
-    "moa.aggregating",
-    "moa.progress",
-    "moa.phase",
 )
 
 private data class LoadedDashboard(
@@ -1622,211 +1598,25 @@ internal class CelesteController(
     private fun applyEvent(event: GatewayEvent) {
         val runtimeId = currentRuntimeSessionId ?: return
         if (event.sessionId.isNotBlank() && event.sessionId != runtimeId) return
-        if (event.type in COMPACTION_RESUME_EVENT_TYPES && mutableState.value.isCompacting) {
-            mutableState.value = mutableState.value.copy(isCompacting = false)
-        }
-        when (event.type) {
-            "status.update" -> when (event.payload.string("kind")) {
-                "compacting" -> mutableState.value = mutableState.value.copy(isCompacting = true)
-                "compacted" -> mutableState.value = mutableState.value.copy(isCompacting = false)
-            }
-
-            "message.start" -> {
-                if (mutableState.value.streamingText.isNotBlank()) finalizeAssistant()
-                mutableState.value = mutableState.value.copy(
-                    streamingText = "",
-                    turnState = TurnState.Running,
-                    errorMessage = null,
-                )
-            }
-
-            "message.delta" -> {
-                val delta = event.payload.string("text").orEmpty()
-                if (delta.isNotEmpty()) {
-                    mutableState.value = mutableState.value.copy(
-                        messages = settleCurrentReasoning(mutableState.value.messages),
-                        streamingText = mutableState.value.streamingText + delta,
-                        turnState = TurnState.Running,
-                    )
-                }
-            }
-
-            "message.interim" -> {
-                val text = event.payload.string("text").orEmpty()
-                val alreadyStreamed = event.payload.boolean("already_streamed") == true
-                mutableState.value = mutableState.value.copy(
-                    messages = settleCurrentTurnSteps(mutableState.value.messages),
-                )
-                if (alreadyStreamed && mutableState.value.streamingText.isNotBlank()) {
-                    finalizeAssistant(
-                        text.ifBlank { mutableState.value.streamingText },
-                        keepRunning = true,
-                        interim = true,
-                    )
-                } else if (text.isNotBlank()) {
-                    finalizeAssistant(text, keepRunning = true, interim = true)
-                }
-            }
-
-            "message.complete" -> {
-                val status = event.payload.string("status")
-                val content = event.payload.string("text")
-                    ?: event.payload.string("content")
-                    ?: event.payload.string("rendered")
-                    ?: ""
-                finalizeAssistant(content, keepRunning = false)
-                mutableState.value = mutableState.value.copy(
-                    messages = settleCurrentTurnSteps(mutableState.value.messages),
-                    turnState = TurnState.Idle,
-                    isCompacting = false,
-                    errorMessage = if (status == "error") {
-                        event.payload.string("error") ?: "Hermes could not finish that response."
-                    } else {
-                        mutableState.value.errorMessage
-                    },
-                )
-            }
-
-            "error", "message.error" -> {
-                finalizeAssistant(keepRunning = false)
-                mutableState.value = mutableState.value.copy(
-                    messages = settleCurrentTurnSteps(mutableState.value.messages),
-                    turnState = TurnState.Idle,
-                    isCompacting = false,
-                    errorMessage = event.payload.string("message") ?: "Hermes reported an error.",
-                )
-            }
-
-            "message.interrupted", "session.interrupted" -> {
-                finalizeAssistant(keepRunning = false)
-                mutableState.value = mutableState.value.copy(
-                    messages = settleCurrentTurnSteps(mutableState.value.messages),
-                    turnState = TurnState.Idle,
-                    isCompacting = false,
-                )
-            }
-
-            "session.busy" -> {
-                val running = event.payload.boolean("busy") == true
-                mutableState.value = mutableState.value.copy(
-                    turnState = if (running) TurnState.Running else TurnState.Idle,
-                    isCompacting = mutableState.value.isCompacting && running,
-                )
-            }
-
-            "session.info" -> {
-                event.payload.boolean("running")?.let { running ->
-                    mutableState.value = mutableState.value.copy(
-                        turnState = if (running) TurnState.Running else TurnState.Idle,
-                        isCompacting = mutableState.value.isCompacting && running,
-                    )
-                }
-            }
-
-            "reasoning.delta", "reasoning.available" -> {
-                val text = event.payload.string("text").orEmpty()
-                if (text.isNotEmpty()) {
-                    if (mutableState.value.streamingText.isNotBlank()) {
-                        finalizeAssistant(keepRunning = true, interim = true)
-                    }
-                    mutableState.value = mutableState.value.copy(
-                        messages = appendReasoningToCurrentTurn(
-                            messages = mutableState.value.messages,
-                            id = nextLocalMessageId("reasoning"),
-                            text = text,
-                            replaceTail = event.type == "reasoning.available",
-                            stepsMessageId = nextLocalMessageId("steps"),
-                        ),
-                        turnState = TurnState.Running,
-                    )
-                }
-            }
-
-            "tool.start" -> {
-                if (mutableState.value.streamingText.isNotBlank()) finalizeAssistant(keepRunning = true)
-                val name = event.payload.string("name") ?: "tool"
-                val context = event.payload.string("args_text")
-                    ?: event.payload.string("context")
-                    ?: event.payload["args"]?.toString().orEmpty()
-                val toolId = event.payload.string("tool_id")
-                    ?: event.payload.string("tool_call_id")
-                    ?: nextLocalMessageId("tool")
-                mutableState.value = mutableState.value.copy(
-                    messages = startToolInCurrentTurn(
-                        messages = mutableState.value.messages,
-                        id = toolId,
-                        name = name,
-                        context = context,
-                        stepsMessageId = nextLocalMessageId("steps"),
-                    ),
-                    turnState = TurnState.Running,
-                )
-            }
-
-            "tool.complete" -> {
-                val name = event.payload.string("name") ?: "tool"
-                val toolId = event.payload.string("tool_id")
-                    ?: event.payload.string("tool_call_id")
-                val context = event.payload.string("args_text")
-                    ?: event.payload.string("context")
-                    ?: event.payload["args"]?.toString().orEmpty()
-                val summary = event.payload.string("summary").orEmpty()
-                val result = event.payload.string("result_text")
-                    ?: event.payload.string("result")
-                    ?: event.payload["result"]?.toString().orEmpty()
-                mutableState.value = mutableState.value.copy(
-                    messages = completeToolInCurrentTurn(
-                        messages = mutableState.value.messages,
-                        id = toolId,
-                        name = name,
-                        context = context,
-                        summary = summary,
-                        result = result,
-                        fallbackStepId = nextLocalMessageId("tool"),
-                        stepsMessageId = nextLocalMessageId("steps"),
-                    ),
-                )
-            }
-        }
-    }
-
-    private fun finalizeAssistant(
-        suppliedContent: String = "",
-        keepRunning: Boolean = mutableState.value.turnState == TurnState.Running,
-        interim: Boolean = false,
-    ) {
-        val streamed = mutableState.value.streamingText
-        val finalText = when {
-            suppliedContent.isBlank() -> streamed
-            streamed.isBlank() -> suppliedContent
-            suppliedContent.startsWith(streamed) -> suppliedContent
-            streamed.startsWith(suppliedContent) -> streamed
-            else -> suppliedContent
-        }.trimEnd()
-        val currentMessages = mutableState.value.messages
-        val previous = currentMessages.lastOrNull()
-        val continuesInterim = !interim &&
-            previous?.role == "assistant" &&
-            previous.interim &&
-            finalText.isNotBlank() &&
-            (finalText.startsWith(previous.text) || previous.text.startsWith(finalText))
-        val messages = when {
-            continuesInterim -> currentMessages.dropLast(1) + previous.copy(
-                text = if (finalText.length >= previous.text.length) finalText else previous.text,
-                interim = false,
-            )
-            finalText.isNotBlank() && previous?.let { it.role == "assistant" && it.text == finalText } != true ->
-                currentMessages + ConversationMessage(
-                    role = "assistant",
-                    text = finalText,
-                    interim = interim,
-                )
-            else -> currentMessages
-        }
-        mutableState.value = mutableState.value.copy(
-            messages = messages,
-            streamingText = "",
-            turnState = if (keepRunning) TurnState.Running else TurnState.Idle,
+        val current = mutableState.value
+        val reduction = reduceConversationEvent(
+            projection = ConversationProjection(
+                messages = current.messages,
+                streamingText = current.streamingText,
+                turnState = current.turnState,
+                isCompacting = current.isCompacting,
+                errorMessage = current.errorMessage,
+            ),
+            event = event,
+            localMessageCounter = localMessageCounter,
+        )
+        localMessageCounter = reduction.localMessageCounter
+        mutableState.value = current.copy(
+            messages = reduction.projection.messages,
+            streamingText = reduction.projection.streamingText,
+            turnState = reduction.projection.turnState,
+            isCompacting = reduction.projection.isCompacting,
+            errorMessage = reduction.projection.errorMessage,
         )
     }
 
