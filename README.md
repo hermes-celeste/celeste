@@ -16,6 +16,7 @@ The installed Android app is named **Hermes Celeste** so it is easy to find in t
 - Uses the dashboard’s existing authentication and profiles
 - Lists, creates, and resumes shared Hermes conversations
 - Sends prompts and streams responses and tool activity live
+- Queues follow-up prompts during active turns and sends them automatically in order
 - Stops active turns and reconciles safely after reconnecting
 - Keeps Hermes as the source of truth without a separate Celeste account, relay, or copied history
 

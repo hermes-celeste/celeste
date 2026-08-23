@@ -96,6 +96,8 @@ data class ResumedSession(
     val taskProgress: TaskProgress? = null,
     val running: Boolean? = null,
     val status: String? = null,
+    val inflightUserText: String = "",
+    val queuedUserText: String = "",
     val inflightAssistantText: String = "",
     val hasLiveProjection: Boolean = false,
 )

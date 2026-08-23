@@ -41,6 +41,7 @@ import dev.hazydreams.hermesceleste.ui.CelesteSurfaceRaised
 import dev.hazydreams.hermesceleste.ui.conversation.ConversationScreen
 import dev.hazydreams.hermesceleste.ui.conversation.ChangesSheetSurface
 import dev.hazydreams.hermesceleste.ui.conversation.ProcessResultSheetSurface
+import dev.hazydreams.hermesceleste.ui.conversation.QueuedPromptsSheetSurface
 import dev.hazydreams.hermesceleste.ui.conversation.StepsSheetSurface
 import dev.hazydreams.hermesceleste.ui.conversation.TaskProgressSheetSurface
 import dev.hazydreams.hermesceleste.ui.gateway.ConnectionLoadingScreen
@@ -204,6 +205,11 @@ private val previewTaskProgress = TaskProgress(
 
 private val previewCompletedTaskProgress = TaskProgress(
     items = previewTaskProgress.items.map { it.copy(status = TaskItemStatus.Completed) },
+)
+
+private val previewQueuedPrompts = listOf(
+    QueuedPrompt("queued-preview-1", "Add the reconnect coverage after this response."),
+    QueuedPrompt("queued-preview-2", "Then summarize the behavior for the pull request."),
 )
 
 private val previewPendingClarification = ConversationMessage(
@@ -788,6 +794,7 @@ fun WorkSurfacesNarrowLargeTextPreviewScreenshot() {
                 previewChangesMessage,
             ),
             taskProgress = previewTaskProgress,
+            queuedPrompts = previewQueuedPrompts,
             turnState = TurnState.Running,
         )
     }
@@ -851,6 +858,61 @@ fun PendingClarificationNarrowPreviewScreenshot() {
             messages = listOf(previewPendingClarification),
             turnState = TurnState.Running,
         )
+    }
+}
+
+@PreviewTest
+@Preview(name = "36 · Queued composer", widthDp = 390, heightDp = 844, showBackground = true)
+@Composable
+fun QueuedComposerPreviewScreenshot() {
+    HermesCelesteTheme {
+        PreviewConversation(
+            messages = listOf(
+                ConversationMessage(
+                    role = "user",
+                    text = "Finish the queue lifecycle first.",
+                    id = "preview-queue-user",
+                ),
+                previewPendingStepsMessage,
+            ),
+            draft = "Also add the narrow-width coverage.",
+            queuedPrompts = previewQueuedPrompts,
+            turnState = TurnState.Running,
+        )
+    }
+}
+
+@PreviewTest
+@Preview(name = "37 · Paused queue sheet", widthDp = 390, heightDp = 844, showBackground = true)
+@Composable
+fun PausedQueueSheetPreviewScreenshot() {
+    HermesCelesteTheme {
+        Box(modifier = Modifier.fillMaxSize()) {
+            PreviewConversation(
+                queuedPrompts = previewQueuedPrompts,
+                isQueuePaused = true,
+                turnState = TurnState.Idle,
+            )
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Color.Black.copy(alpha = 0.62f)),
+            )
+            Surface(
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .fillMaxWidth(),
+                color = CelesteSurfaceRaised,
+                shape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp),
+            ) {
+                QueuedPromptsSheetSurface(
+                    prompts = previewQueuedPrompts,
+                    paused = true,
+                    onResume = {},
+                    onRemove = {},
+                )
+            }
+        }
     }
 }
 
@@ -1013,6 +1075,8 @@ private fun PreviewConversation(
     taskProgress: TaskProgress? = null,
     streamingText: String = "",
     draft: String = "",
+    queuedPrompts: List<QueuedPrompt> = emptyList(),
+    isQueuePaused: Boolean = false,
     turnState: TurnState,
     isCompacting: Boolean = false,
     resumeExhausted: Boolean = false,
@@ -1027,6 +1091,8 @@ private fun PreviewConversation(
         taskProgress = taskProgress,
         streamingText = streamingText,
         draft = draft,
+        queuedPrompts = queuedPrompts,
+        isQueuePaused = isQueuePaused,
         turnState = turnState,
         isCompacting = isCompacting,
         resumeExhausted = resumeExhausted,

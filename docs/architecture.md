@@ -24,7 +24,7 @@ Compose renders `CelesteUiState` and emits intent. It owns navigation and epheme
 
 ### Application state
 
-`CelesteController` owns the selected dashboard and profile, in-memory credential, active session identities, persistent gateway, transcript projection, task progress, draft, turn state, and lifecycle recovery. It delegates deterministic event projection and catalog behavior to their focused owners. Changed-file projections remain durable turn content; task progress remains active-session state.
+`CelesteController` owns the selected dashboard and profile, in-memory credential, active session identities, persistent gateway, transcript projection, task progress, draft, per-session prompt queues, turn state, and lifecycle recovery. It delegates deterministic event projection and catalog behavior to their focused owners. Changed-file projections remain durable turn content; task progress remains active-session state.
 
 The controller runs on the serial dispatcher supplied by its host. Its child work inherits that context, and closing the host lifetime closes the gateway and clears in-memory authentication.
 
