@@ -26,7 +26,6 @@ import dev.hazydreams.hermesceleste.network.resumeStoredSession
 import dev.hazydreams.hermesceleste.network.submitPrompt
 import kotlin.math.min
 import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
@@ -114,53 +113,6 @@ private data class SubmittedSession(
     val projectedMessageCount: Int,
 )
 
-internal fun mergeSessionCatalog(
-    existing: List<StoredSession>,
-    incoming: List<StoredSession>,
-): List<StoredSession> {
-    val remaining = LinkedHashMap<String, StoredSession>()
-    incoming.forEach { session -> remaining[session.id] = session }
-    return buildList {
-        existing.forEach { session -> add(remaining.remove(session.id) ?: session) }
-        addAll(remaining.values)
-    }
-}
-
-private fun searchLoadedSessions(
-    sessions: List<StoredSession>,
-    query: String,
-): List<StoredSession> {
-    val needle = query.trim().lowercase()
-    if (needle.isEmpty()) return emptyList()
-    return sessions.filter { session ->
-        listOfNotNull(
-            session.id,
-            session.title,
-            session.preview,
-            session.source,
-            session.profile,
-            session.model,
-        ).any { value -> needle in value.lowercase() }
-    }
-}
-
-private fun mergeSessionSearchResults(
-    loaded: List<StoredSession>,
-    catalog: List<StoredSession>,
-    remote: List<StoredSession>,
-): List<StoredSession> = buildList {
-    val catalogById = catalog.associateBy(StoredSession::id)
-    val seen = mutableSetOf<String>()
-    val reconciledRemote = remote.map { match ->
-        catalogById[match.id]?.let { catalogSession ->
-            catalogSession.copy(preview = match.preview.ifBlank { catalogSession.preview })
-        } ?: match
-    }
-    (loaded + reconciledRemote).forEach { session ->
-        if (seen.add(session.id)) add(session)
-    }
-}
-
 /**
  * Owns Celeste's portable application and session state.
  *
@@ -187,6 +139,14 @@ internal class CelesteController(
     private val controllerScope = CoroutineScope(parentScope.coroutineContext + controllerJob)
     private val mutableState = MutableStateFlow(CelesteUiState())
     val state: StateFlow<CelesteUiState> = mutableState.asStateFlow()
+    private val sessionCatalog = SessionCatalogCoordinator(
+        scope = controllerScope,
+        dashboard = dashboard,
+        readState = { mutableState.value.sessionCatalogState() },
+        writeState = { catalog ->
+            mutableState.value = mutableState.value.withSessionCatalogState(catalog)
+        },
+    )
 
     private var localMessageCounter = 0L
     private var credential: GatewayCredential? = null
@@ -196,15 +156,7 @@ internal class CelesteController(
     private var reconnectJob: Job? = null
     private var foregroundCheckJob: Job? = null
     private var connectionJob: Job? = null
-    private var sessionPageJob: Job? = null
-    private var sessionSearchJob: Job? = null
-    private val sessionMetadataJobs = mutableSetOf<Job>()
     private var connectionAttempt = 0L
-    private var sessionPageAttempt = 0L
-    private var sessionSearchAttempt = 0L
-    private var sessionActionAttempt = 0L
-    private val pinActionAttempts = mutableMapOf<String, Long>()
-    private val renameActionAttempts = mutableMapOf<String, Long>()
     private val connectionStoreMutex = Mutex()
     private var currentDescriptor: SavedConnectionDescriptor? = null
     private var reconnectAttempts = 0
@@ -249,111 +201,20 @@ internal class CelesteController(
     }
 
     fun updateSessionSearchQuery(value: String) {
-        sessionSearchJob?.cancel()
-        sessionSearchJob = null
-        val requestAttempt = ++sessionSearchAttempt
-        val trimmedQuery = value.trim()
-        val snapshot = mutableState.value
-        val loadedMatches = searchLoadedSessions(snapshot.sessions.orEmpty(), trimmedQuery)
-        mutableState.value = snapshot.copy(
-            sessionSearchQuery = value,
-            sessionSearchResults = loadedMatches,
-            isSearchingSessions = trimmedQuery.isNotEmpty(),
-            sessionSearchError = null,
+        val defaultProfile = mutableState.value.profiles
+            .firstOrNull(DashboardProfile::isDefault)
+            ?.name
+            ?: "default"
+        sessionCatalog.updateSearchQuery(
+            value = value,
+            access = sessionCatalogAccess(),
+            profile = defaultProfile,
         )
-        if (trimmedQuery.isEmpty()) return
-
-        val connection = snapshot.probe
-        val activeCredential = credential
-        if (connection == null || activeCredential == null) {
-            mutableState.value = mutableState.value.copy(isSearchingSessions = false)
-            return
-        }
-        val profile = snapshot.profiles.firstOrNull(DashboardProfile::isDefault)?.name ?: "default"
-        val connectionGeneration = connectionAttempt
-        sessionSearchJob = controllerScope.launch {
-            delay(SESSION_SEARCH_DEBOUNCE_MILLIS)
-            try {
-                val remoteMatches = dashboard.searchSessions(
-                    baseUrl = connection.baseUrl,
-                    credential = activeCredential,
-                    query = trimmedQuery,
-                    profile = profile,
-                    limit = SESSION_SEARCH_LIMIT,
-                )
-                if (
-                    !isCurrentConnectionAttempt(connectionGeneration) ||
-                    sessionSearchAttempt != requestAttempt
-                ) {
-                    return@launch
-                }
-                val current = mutableState.value
-                val catalog = current.sessions.orEmpty()
-                mutableState.value = current.copy(
-                    sessionSearchResults = mergeSessionSearchResults(
-                        loaded = searchLoadedSessions(catalog, trimmedQuery),
-                        catalog = catalog,
-                        remote = remoteMatches,
-                    ),
-                    isSearchingSessions = false,
-                    sessionSearchError = null,
-                )
-            } catch (error: CancellationException) {
-                throw error
-            } catch (error: Throwable) {
-                if (
-                    !isCurrentConnectionAttempt(connectionGeneration) ||
-                    sessionSearchAttempt != requestAttempt
-                ) {
-                    return@launch
-                }
-                mutableState.value = mutableState.value.copy(
-                    isSearchingSessions = false,
-                    sessionSearchError = error.message ?: "Could not search conversations.",
-                )
-            } finally {
-                if (sessionSearchAttempt == requestAttempt) sessionSearchJob = null
-            }
-        }
     }
 
     fun setSessionPinned(summary: StoredSession, pinned: Boolean) {
-        val connection = mutableState.value.probe ?: return
-        val activeCredential = credential ?: return
-        val sessionId = summary.id
-        val previousPinned = currentSession(sessionId)?.pinned ?: summary.pinned
-        val actionAttempt = ++sessionActionAttempt
-        val connectionGeneration = connectionAttempt
-        pinActionAttempts[sessionId] = actionAttempt
-        updateSession(sessionId, sessionActionError = null) { it.copy(pinned = pinned) }
-
-        controllerScope.launch {
-            try {
-                val confirmedPinned = dashboard.setSessionPinned(
-                    baseUrl = connection.baseUrl,
-                    credential = activeCredential,
-                    sessionId = sessionId,
-                    profile = summary.profile,
-                    pinned = pinned,
-                )
-                if (!isCurrentSessionAction(pinActionAttempts, sessionId, actionAttempt, connectionGeneration)) {
-                    return@launch
-                }
-                updateSession(sessionId, sessionActionError = null) { it.copy(pinned = confirmedPinned) }
-            } catch (error: CancellationException) {
-                throw error
-            } catch (error: Throwable) {
-                if (!isCurrentSessionAction(pinActionAttempts, sessionId, actionAttempt, connectionGeneration)) {
-                    return@launch
-                }
-                updateSession(
-                    sessionId = sessionId,
-                    sessionActionError = boundedActionError(error, "Could not update that pin."),
-                ) { it.copy(pinned = previousPinned) }
-            } finally {
-                if (pinActionAttempts[sessionId] == actionAttempt) pinActionAttempts.remove(sessionId)
-            }
-        }
+        val access = sessionCatalogAccess() ?: return
+        sessionCatalog.setPinned(summary, pinned, access)
     }
 
     fun renameSession(
@@ -361,84 +222,19 @@ internal class CelesteController(
         title: String,
         onComplete: (String?) -> Unit,
     ) {
-        val trimmedTitle = title.trim()
-        if (trimmedTitle.isEmpty()) {
-            onComplete("Enter a conversation name.")
-            return
-        }
-        val connection = mutableState.value.probe
-        val activeCredential = credential
-        if (connection == null || activeCredential == null) {
-            onComplete("Hermes is not connected.")
-            return
-        }
-        val sessionId = summary.id
-        val actionAttempt = ++sessionActionAttempt
-        val connectionGeneration = connectionAttempt
-        renameActionAttempts[sessionId] = actionAttempt
-
-        controllerScope.launch {
-            try {
-                val confirmedTitle = dashboard.renameSession(
-                    baseUrl = connection.baseUrl,
-                    credential = activeCredential,
-                    sessionId = sessionId,
-                    profile = summary.profile,
-                    title = trimmedTitle,
-                )
-                if (!isCurrentSessionAction(renameActionAttempts, sessionId, actionAttempt, connectionGeneration)) {
-                    return@launch
-                }
-                updateSession(sessionId, sessionActionError = null) { it.copy(title = confirmedTitle) }
-                onComplete(null)
-            } catch (error: CancellationException) {
-                throw error
-            } catch (error: Throwable) {
-                if (!isCurrentSessionAction(renameActionAttempts, sessionId, actionAttempt, connectionGeneration)) {
-                    return@launch
-                }
-                onComplete(boundedActionError(error, "Could not rename that conversation."))
-            } finally {
-                if (renameActionAttempts[sessionId] == actionAttempt) renameActionAttempts.remove(sessionId)
-            }
-        }
-    }
-
-    private fun currentSession(sessionId: String): StoredSession? =
-        mutableState.value.sessions?.firstOrNull { it.id == sessionId }
-            ?: mutableState.value.sessionSearchResults.firstOrNull { it.id == sessionId }
-            ?: mutableState.value.activeSummary?.takeIf { it.id == sessionId }
-
-    private fun updateSession(
-        sessionId: String,
-        sessionActionError: String?,
-        transform: (StoredSession) -> StoredSession,
-    ) {
-        val current = mutableState.value
-        mutableState.value = current.copy(
-            sessions = current.sessions?.map { session ->
-                if (session.id == sessionId) transform(session) else session
-            },
-            sessionSearchResults = current.sessionSearchResults.map { session ->
-                if (session.id == sessionId) transform(session) else session
-            },
-            activeSummary = current.activeSummary?.let { session ->
-                if (session.id == sessionId) transform(session) else session
-            },
-            sessionActionError = sessionActionError,
+        sessionCatalog.rename(
+            summary = summary,
+            title = title,
+            access = sessionCatalogAccess(),
+            onComplete = onComplete,
         )
     }
 
-    private fun isCurrentSessionAction(
-        attempts: Map<String, Long>,
-        sessionId: String,
-        actionAttempt: Long,
-        connectionGeneration: Long,
-    ): Boolean =
-        attempts[sessionId] == actionAttempt && isCurrentConnectionAttempt(connectionGeneration)
-
-    private fun boundedActionError(error: Throwable, fallback: String): String =
-        error.message?.takeIf(String::isNotBlank)?.take(MAX_SESSION_ACTION_ERROR_LENGTH) ?: fallback
+    private fun sessionCatalogAccess(): SessionCatalogAccess? {
+        val connection = mutableState.value.probe ?: return null
+        val activeCredential = credential ?: return null
+        return SessionCatalogAccess(connection.baseUrl, activeCredential)
+    }
 
     fun findDashboard() {
         val rawUrl = mutableState.value.dashboardUrl
@@ -873,67 +669,20 @@ internal class CelesteController(
 
     private fun invalidateConnectionBoundWork(): Long {
         connectionAttempt += 1
-        cancelSessionPageLoad()
-        cancelSessionSearch()
-        cancelSessionMetadataUpdates()
-        pinActionAttempts.clear()
-        renameActionAttempts.clear()
+        sessionCatalog.invalidateConnection()
         return connectionAttempt
-    }
-
-    private fun cancelSessionPageLoad() {
-        sessionPageAttempt += 1
-        sessionPageJob?.cancel()
-        sessionPageJob = null
-    }
-
-    private fun cancelSessionSearch() {
-        sessionSearchAttempt += 1
-        sessionSearchJob?.cancel()
-        sessionSearchJob = null
-    }
-
-    private fun cancelSessionMetadataUpdates() {
-        sessionMetadataJobs.toList().forEach(Job::cancel)
-        sessionMetadataJobs.clear()
-    }
-
-    private fun launchSessionMetadataUpdate(block: suspend () -> Unit) {
-        val attempt = connectionAttempt
-        lateinit var job: Job
-        job = controllerScope.launch(start = CoroutineStart.LAZY) {
-            try {
-                if (isCurrentConnectionAttempt(attempt)) block()
-            } catch (error: CancellationException) {
-                throw error
-            } catch (_: Throwable) {
-                // Metadata acknowledgement must never block opening the conversation.
-            } finally {
-                sessionMetadataJobs.remove(job)
-            }
-        }
-        sessionMetadataJobs += job
-        job.start()
     }
 
     private fun isCurrentConnectionAttempt(attempt: Long): Boolean = connectionAttempt == attempt
 
     fun openSession(summary: StoredSession) {
-        val connection = mutableState.value.probe ?: return
-        val activeCredential = credential ?: return
-        val visibleSummary = if (summary.unread) summary.copy(unread = false) else summary
-        cancelSessionPageLoad()
+        val catalogAccess = sessionCatalogAccess() ?: return
+        val visibleSummary = sessionCatalog.prepareSessionOpen(summary, catalogAccess)
         closeGateway()
         currentSessionCanResume = true
         currentSessionPublished = true
         mutableState.value = mutableState.value.copy(
             activeSummary = visibleSummary,
-            sessions = mutableState.value.sessions?.map { session ->
-                if (session.id == summary.id) visibleSummary else session
-            },
-            sessionSearchResults = mutableState.value.sessionSearchResults.map { session ->
-                if (session.id == summary.id) visibleSummary else session
-            },
             messages = emptyList(),
             streamingText = "",
             draft = "",
@@ -942,20 +691,9 @@ internal class CelesteController(
             resumeExhausted = false,
             loadingMessage = "Opening ${summary.title.ifBlank { "conversation" }}…",
             errorMessage = null,
-            isLoadingMoreSessions = false,
         )
-        if (summary.unread) {
-            launchSessionMetadataUpdate {
-                dashboard.markSessionRead(
-                    baseUrl = connection.baseUrl,
-                    credential = activeCredential,
-                    sessionId = summary.id,
-                    profile = summary.profile,
-                )
-            }
-        }
 
-        val newGateway = dashboard.createGateway(connection.baseUrl, activeCredential)
+        val newGateway = dashboard.createGateway(catalogAccess.baseUrl, catalogAccess.credential)
         gateway = newGateway
         observeGateway(newGateway)
         controllerScope.launch {
@@ -1126,66 +864,11 @@ internal class CelesteController(
     }
 
     fun loadMoreSessions() {
-        val snapshot = mutableState.value
-        val connection = snapshot.probe ?: return
-        val activeCredential = credential ?: return
-        if (
-            snapshot.sessions == null ||
-            snapshot.sessionSearchQuery.isNotBlank() ||
-            !snapshot.hasMoreSessions ||
-            snapshot.isLoadingMoreSessions ||
-            snapshot.loadingMessage != null
-        ) {
-            return
-        }
-        val requestedOffset = snapshot.nextSessionOffset
-        val connectionGeneration = connectionAttempt
-        val pageAttempt = sessionPageAttempt
-        mutableState.value = snapshot.copy(
-            isLoadingMoreSessions = true,
-            sessionPageError = null,
+        val access = sessionCatalogAccess() ?: return
+        sessionCatalog.loadMore(
+            access = access,
+            conversationIsLoading = mutableState.value.loadingMessage != null,
         )
-        sessionPageJob = controllerScope.launch {
-            try {
-                val page = dashboard.listSessions(
-                    baseUrl = connection.baseUrl,
-                    credential = activeCredential,
-                    limit = SESSION_PAGE_SIZE,
-                    offset = requestedOffset,
-                )
-                if (
-                    !isCurrentConnectionAttempt(connectionGeneration) ||
-                    sessionPageAttempt != pageAttempt
-                ) {
-                    return@launch
-                }
-                val current = mutableState.value
-                val nextOffset = page.nextOffset
-                mutableState.value = current.copy(
-                    sessions = mergeSessionCatalog(current.sessions.orEmpty(), page.sessions),
-                    sessionCatalogTotal = page.total,
-                    nextSessionOffset = nextOffset,
-                    hasMoreSessions = page.hasMore && nextOffset > requestedOffset,
-                    isLoadingMoreSessions = false,
-                    sessionPageError = null,
-                )
-            } catch (error: CancellationException) {
-                throw error
-            } catch (error: Throwable) {
-                if (
-                    !isCurrentConnectionAttempt(connectionGeneration) ||
-                    sessionPageAttempt != pageAttempt
-                ) {
-                    return@launch
-                }
-                mutableState.value = mutableState.value.copy(
-                    isLoadingMoreSessions = false,
-                    sessionPageError = error.message ?: "Could not load older conversations.",
-                )
-            } finally {
-                if (sessionPageJob === coroutineContext[Job]) sessionPageJob = null
-            }
-        }
     }
 
     fun sendMessage() {
@@ -1757,9 +1440,7 @@ internal class CelesteController(
         resourcesReleased = true
         connectionJob?.cancel()
         connectionJob = null
-        cancelSessionPageLoad()
-        cancelSessionSearch()
-        cancelSessionMetadataUpdates()
+        sessionCatalog.invalidateConnection()
         closeGateway()
         dashboard.clearAuthentication()
     }
@@ -1770,10 +1451,6 @@ internal class CelesteController(
     }
 
     companion object {
-        private const val SESSION_PAGE_SIZE = 15
-        private const val SESSION_SEARCH_LIMIT = 20
-        private const val SESSION_SEARCH_DEBOUNCE_MILLIS = 200L
-        private const val MAX_SESSION_ACTION_ERROR_LENGTH = 160
         private const val MAX_RESUME_RETRIES = 4
 
         internal fun unpersistedInflightText(

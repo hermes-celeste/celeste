@@ -33,6 +33,7 @@ The repository does not have shared Kotlin Multiplatform source sets yet. Portab
 - `BackupExclusionTest` owns named descriptor exclusions across legacy backup, cloud backup, and device transfer rules.
 - `HermesGatewayTest` owns readiness, request correlation, events, endpoint refresh, and disconnect behavior.
 - `ConversationEventReducerTest` owns pure transcript, reasoning, tool, streaming, turn-state, and compaction projection.
+- `SessionCatalogCoordinatorTest` owns paging, search, metadata reconciliation, optimistic pin/rename actions, and stale catalog-request rejection.
 - `CelesteViewModelTest` is the current host-unit location for `CelesteController` session creation/resume, session-scoped asynchronous publication, event admission/integration, interruption, reconnect, host lifetime, and no-resend invariants. New portable behavior should exercise the controller directly even while older cases still enter through the thin Android adapter. `CelesteViewModelAutoLoginTest` owns cold restore, connected-readiness gating, typed recovery, remembered login, and cleanup transitions.
 - `LiveHermesDashboardTest` is the opt-in real-server contract.
 
