@@ -165,7 +165,7 @@ internal fun ComposerAttachmentPreviewSheet(
                 verticalArrangement = Arrangement.spacedBy(12.dp),
             ) {
                 if (attachment.kind == ComposerAttachmentKind.Image) {
-                    AndroidAttachmentImage(
+                    AttachmentImagePreview(
                         attachment = attachment,
                         modifier = Modifier
                             .fillMaxWidth()

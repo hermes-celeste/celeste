@@ -24,6 +24,7 @@ import dev.hazydreams.hermesceleste.network.StoredSession
 import dev.hazydreams.hermesceleste.network.TaskProgress
 import dev.hazydreams.hermesceleste.network.bindClarificationRequest
 import dev.hazydreams.hermesceleste.network.boolean
+import dev.hazydreams.hermesceleste.network.closeRuntimeSession
 import dev.hazydreams.hermesceleste.network.createSession
 import dev.hazydreams.hermesceleste.network.detachImage
 import dev.hazydreams.hermesceleste.network.interruptSession
@@ -40,6 +41,7 @@ import kotlin.math.min
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
@@ -145,6 +147,19 @@ private data class UncertainDirectPrompt(
     val userMessageCountBeforeSubmit: Int,
 )
 
+private class SubmissionSupersededException : IOException("The attachment submission was cancelled.")
+
+private class SubmissionLease(
+    val gateway: GatewayConnection,
+    val profile: String,
+    val queuedPromptId: String?,
+    var storedSessionId: String,
+    var runtimeSessionId: String,
+    var attachments: List<ComposerAttachment>,
+    var promptSubmitAttempted: Boolean = false,
+    var cancelled: Boolean = false,
+)
+
 /**
  * Owns Celeste's portable application and session state.
  *
@@ -203,6 +218,9 @@ internal class CelesteController(
     private val composerAttachmentsBySession = mutableMapOf<String, MutableList<ComposerAttachment>>()
     private val directAttachmentsInFlightBySession = mutableMapOf<String, List<ComposerAttachment>>()
     private val uncertainDirectPromptsBySession = mutableMapOf<String, UncertainDirectPrompt>()
+    private val submissionsBySession = mutableMapOf<String, SubmissionLease>()
+    private val attachmentCleanupBySession = mutableMapOf<String, Deferred<Unit>>()
+    private val runtimeRetirementBySession = mutableMapOf<String, String>()
     private val parkedQueueSessions = mutableSetOf<String>()
     private val queueDrainsInFlight = mutableSetOf<String>()
     private var queuedTurnAwaitingActivitySessionId: String? = null
@@ -265,6 +283,7 @@ internal class CelesteController(
         attachments.forEach { picked ->
             if (
                 totalCount < AttachmentLimits.MAX_COUNT &&
+                picked.byteSize <= AttachmentLimits.MAX_ITEM_BYTES &&
                 totalBytes + picked.byteSize <= AttachmentLimits.MAX_TOTAL_BYTES
             ) {
                 totalCount += 1
@@ -283,7 +302,9 @@ internal class CelesteController(
         mutableState.value = mutableState.value.copy(
             composerAttachments = current.toList(),
             errorMessage = if (accepted.size < attachments.size) {
-                "Some attachments were not added. Keep the selection under 10 items and 50 MB."
+                "Some attachments were not added. Keep each under " +
+                    "${AttachmentLimits.MAX_ITEM_MEGABYTES} MB, with up to " +
+                    "${AttachmentLimits.MAX_COUNT} items and 50 MB total."
             } else {
                 null
             },
@@ -300,7 +321,7 @@ internal class CelesteController(
             composerAttachments = composerAttachmentsFor(sessionId),
             errorMessage = null,
         )
-        detachStagedImageIfActive(removed)
+        scheduleStagedImageRemoval(sessionId, removed)
     }
 
     fun reportAttachmentError(message: String) {
@@ -1077,7 +1098,12 @@ internal class CelesteController(
     fun removeQueuedPrompt(promptId: String) {
         val sessionId = currentStoredSessionId ?: mutableState.value.activeSummary?.id ?: return
         val prompt = queuedPromptsBySession[sessionId]?.firstOrNull { it.id == promptId }
-        prompt?.attachments.orEmpty().forEach(::detachStagedImageIfActive)
+        submissionsBySession[sessionId]
+            ?.takeIf { it.queuedPromptId == promptId && !it.promptSubmitAttempted }
+            ?.let { it.cancelled = true }
+        prompt?.attachments.orEmpty().forEach { attachment ->
+            scheduleStagedImageRemoval(sessionId, attachment)
+        }
         removeQueuedPromptFromSession(sessionId, promptId)
     }
 
@@ -1159,6 +1185,16 @@ internal class CelesteController(
         )
         val shouldPublish = !currentSessionPublished
         val userMessageCountBeforeSubmit = snapshot.messages.count { it.role == "user" }
+        val sessionCouldResumeBeforeSubmit = currentSessionCanResume
+        val submission = SubmissionLease(
+            gateway = activeGateway,
+            profile = summary.profile,
+            queuedPromptId = queuedPrompt?.id,
+            storedSessionId = storedSessionId,
+            runtimeSessionId = runtimeId,
+            attachments = attachments,
+        )
+        submissionsBySession[storedSessionId] = submission
         if (queuedPrompt == null) {
             if (attachments.isNotEmpty()) {
                 directAttachmentsInFlightBySession[storedSessionId] = attachments
@@ -1188,18 +1224,11 @@ internal class CelesteController(
             var submittedStoredSessionId = storedSessionId
             var activeSubmittedSession = submittedSession
             try {
-                var stagedAttachments = attachments
-                var promptSubmitAttempted = false
                 val result = runCatching {
                     val stagedBatch = stageAttachmentsWithSessionRecovery(
-                        activeGateway = activeGateway,
-                        initialRuntimeSessionId = runtimeId,
-                        initialStoredSessionId = submittedStoredSessionId,
-                        profile = summary.profile,
-                        queuedPromptId = queuedPrompt?.id,
-                        attachments = attachments,
+                        submission = submission,
                     )
-                    stagedAttachments = stagedBatch.attachments
+                    submission.attachments = stagedBatch.attachments
                     submittedStoredSessionId = stagedBatch.storedSessionId
                     activeSubmittedSession = activeSubmittedSession.copy(
                         storedSessionId = submittedStoredSessionId,
@@ -1207,24 +1236,24 @@ internal class CelesteController(
                             ?.takeIf { it.id == submittedStoredSessionId }
                             ?: activeSubmittedSession.summary.copy(id = submittedStoredSessionId),
                     )
-                    currentCoroutineContext().ensureActive()
-                    if (
-                        gateway !== activeGateway ||
-                        currentStoredSessionId != submittedStoredSessionId ||
-                        currentRuntimeSessionId != stagedBatch.runtimeSessionId
-                    ) {
-                        throw IOException("The conversation changed while Hermes staged its attachments.")
-                    }
+                    ensureSubmissionActive(submission)
                     // prompt.submit creates the durable row before work begins. From this point on,
                     // uncertain delivery must reconcile by stored ID and must never create/resend.
                     currentSessionCanResume = true
-                    promptSubmitAttempted = true
+                    submission.promptSubmitAttempted = true
                     activeGateway.submitPrompt(
                         runtimeSessionId = stagedBatch.runtimeSessionId,
-                        text = modelPromptText(text, stagedAttachments),
+                        text = modelPromptText(text, submission.attachments),
                         queued = queuedPrompt != null,
                     )
                 }
+                submittedStoredSessionId = submission.storedSessionId
+                activeSubmittedSession = activeSubmittedSession.copy(
+                    storedSessionId = submittedStoredSessionId,
+                    summary = mutableState.value.activeSummary
+                        ?.takeIf { it.id == submittedStoredSessionId }
+                        ?: activeSubmittedSession.summary.copy(id = submittedStoredSessionId),
+                )
                 if (result.isSuccess) {
                     if (queuedPrompt == null) {
                         directAttachmentsInFlightBySession.remove(submittedStoredSessionId)
@@ -1242,24 +1271,49 @@ internal class CelesteController(
                 }
 
                 val failure = result.exceptionOrNull() ?: return@launch
-                val failedBeforePromptSubmit = !promptSubmitAttempted
+                val failedBeforePromptSubmit = !submission.promptSubmitAttempted
                 val definitiveRejection = failedBeforePromptSubmit ||
                     (
                         failure is GatewayRpcException &&
                             activeGateway.state.value == GatewayConnectionState.Connected
                     )
+                if (submission.promptSubmitAttempted && definitiveRejection) {
+                    currentSessionCanResume = sessionCouldResumeBeforeSubmit
+                }
                 if (queuedPrompt == null && attachments.isNotEmpty()) {
                     directAttachmentsInFlightBySession.remove(submittedStoredSessionId)
                     if (definitiveRejection) {
-                        restoreComposerAttachmentsAfterFailure(submittedStoredSessionId, stagedAttachments)
+                        restoreComposerAttachmentsAfterFailure(submittedStoredSessionId, submission.attachments)
                     } else {
                         uncertainDirectPromptsBySession[submittedStoredSessionId] = UncertainDirectPrompt(
                             text = text,
                             submittedDraft = submittedDraft.orEmpty(),
-                            attachments = attachmentsForUncertainRetry(stagedAttachments),
+                            attachments = submission.attachments,
                             userMessageCountBeforeSubmit = userMessageCountBeforeSubmit,
                         )
                     }
+                }
+                if (failure is SubmissionSupersededException) {
+                    if (!isActiveSession(activeSubmittedSession)) return@launch
+                    val current = mutableState.value
+                    val queuedPrompts = queuedPromptsFor(submittedStoredSessionId)
+                    mutableState.value = current.copy(
+                        messages = current.messages.filterNot { it.id == localId },
+                        draft = if (submittedDraft == null) current.draft else {
+                            current.draft.ifBlank { submittedDraft }
+                        },
+                        composerAttachments = if (queuedPrompt == null) {
+                            composerAttachmentsFor(submittedStoredSessionId)
+                        } else {
+                            current.composerAttachments
+                        },
+                        queuedPrompts = queuedPrompts,
+                        isQueuePaused = submittedStoredSessionId in parkedQueueSessions &&
+                            queuedPrompts.isNotEmpty(),
+                        turnState = TurnState.Idle,
+                        errorMessage = null,
+                    )
+                    return@launch
                 }
                 if (!isActiveSession(activeSubmittedSession)) {
                     if (queuedPrompt != null) {
@@ -1338,6 +1392,7 @@ internal class CelesteController(
                     definitiveMessage = "Hermes could not send that message.",
                 )
             } finally {
+                unregisterSubmission(submission)
                 if (queuedPrompt != null) {
                     queueDrainsInFlight.remove(submittedStoredSessionId)
                     drainQueuedPromptIfPossible()
@@ -1466,6 +1521,17 @@ internal class CelesteController(
         val sessionId = currentStoredSessionId ?: return
         if (mutableState.value.turnState != TurnState.Running) return
         if (queuedPromptsFor(sessionId).isNotEmpty()) parkedQueueSessions += sessionId
+        submissionsBySession[sessionId]
+            ?.takeIf { !it.promptSubmitAttempted }
+            ?.let { submission ->
+                submission.cancelled = true
+                mutableState.value = mutableState.value.copy(
+                    isQueuePaused = sessionId in parkedQueueSessions,
+                    turnState = TurnState.Synchronizing,
+                    errorMessage = null,
+                )
+                return
+            }
         mutableState.value = mutableState.value.copy(
             isQueuePaused = sessionId in parkedQueueSessions,
             turnState = TurnState.Synchronizing,
@@ -1601,6 +1667,7 @@ internal class CelesteController(
             val connection = snapshot.probe
             val activeCredential = credential
             val profile = snapshot.activeSummary?.profile ?: snapshot.selectedProfile
+            retireRuntimeIfNeeded(activeGateway, storedSessionId)
             val (resumedResult, persistedHistory) = coroutineScope {
                 val persisted = if (connection != null && activeCredential != null && profile.isNotBlank()) {
                     async {
@@ -1672,11 +1739,11 @@ internal class CelesteController(
     }
 
     private fun applyResumedSession(resumed: ResumedSession) {
-        reconcileUncertainQueuedPrompts(resumed)
-        val restoredDirectDraft = reconcileUncertainDirectPrompt(resumed)
         currentRuntimeSessionId = resumed.runtimeSessionId
         currentStoredSessionId = resumed.storedSessionId
         currentSessionCanResume = true
+        reconcileUncertainQueuedPrompts(resumed)
+        val restoredDirectDraft = reconcileUncertainDirectPrompt(resumed)
         if (queuedTurnAwaitingActivitySessionId == resumed.storedSessionId) {
             queuedTurnAwaitingActivitySessionId = null
         }
@@ -1897,6 +1964,7 @@ internal class CelesteController(
                 var resumeAttempted = false
                 val result = runCatching {
                     activeGateway.connect()
+                    retireRuntimeIfNeeded(activeGateway, storedSessionId)
                     resumeAttempted = true
                     if (currentSessionCanResume) {
                         reconcile(activeGateway, storedSessionId)
@@ -1958,72 +2026,97 @@ internal class CelesteController(
         uncertainDirectPromptsBySession.values.forEach { prompt -> addAll(prompt.attachments) }
     }.distinctBy(ComposerAttachment::id)
 
-    private suspend fun stageAttachmentsWithSessionRecovery(
+    private suspend fun retireRuntimeIfNeeded(
         activeGateway: GatewayConnection,
-        initialRuntimeSessionId: String,
-        initialStoredSessionId: String,
-        profile: String,
-        queuedPromptId: String?,
-        attachments: List<ComposerAttachment>,
+        storedSessionId: String,
+    ) {
+        val runtimeId = runtimeRetirementBySession[storedSessionId] ?: return
+        activeGateway.closeRuntimeSession(runtimeId)
+        runtimeRetirementBySession.remove(storedSessionId)
+        clearSessionRuntimeStaging(storedSessionId)
+    }
+
+    private suspend fun stageAttachmentsWithSessionRecovery(
+        submission: SubmissionLease,
     ): StagedAttachmentBatch {
-        var runtimeSessionId = initialRuntimeSessionId
-        var storedSessionId = initialStoredSessionId
-        var stagedAttachments = attachments
+        awaitAttachmentCleanup(submission)
+        ensureSubmissionActive(submission)
+        ensureFreshAttachmentRuntime(submission)
         var index = 0
         var recoveredStaleRuntime = false
 
-        while (index < stagedAttachments.size) {
+        while (index < submission.attachments.size) {
+            ensureSubmissionActive(submission)
+            val attachment = submission.attachments[index]
             val staged = try {
-                activeGateway.stageAttachment(
-                    runtimeSessionId = runtimeSessionId,
-                    attachment = stagedAttachments[index],
+                submission.gateway.stageAttachment(
+                    runtimeSessionId = submission.runtimeSessionId,
+                    attachment = attachment,
                     encodingDispatcher = attachmentEncodingDispatcher,
                 )
             } catch (failure: Throwable) {
+                if (
+                    attachment.kind == ComposerAttachmentKind.Image &&
+                    failure !is GatewayRpcException
+                ) {
+                    markRuntimeForRetirement(submission)
+                    submission.attachments = clearImageStaging(submission.attachments)
+                }
                 if (recoveredStaleRuntime || !failure.isSessionNotFoundFailure()) throw failure
-                val previousStoredSessionId = storedSessionId
+                val previousStoredSessionId = submission.storedSessionId
                 if (currentSessionCanResume) {
-                    val resumed = activeGateway.resumeStoredSession(storedSessionId, profile, clientSource)
+                    val resumed = submission.gateway.resumeStoredSession(
+                        submission.storedSessionId,
+                        submission.profile,
+                        clientSource,
+                    )
                     currentCoroutineContext().ensureActive()
-                    if (gateway !== activeGateway || currentStoredSessionId != storedSessionId) {
+                    if (gateway !== submission.gateway || currentStoredSessionId != previousStoredSessionId) {
                         throw IOException("The conversation changed while Hermes restored its attachment session.")
                     }
-                    runtimeSessionId = resumed.runtimeSessionId
-                    storedSessionId = resumed.storedSessionId
-                    if (previousStoredSessionId != storedSessionId) {
-                        migrateSessionBoundState(previousStoredSessionId, storedSessionId)
-                    }
-                    currentRuntimeSessionId = runtimeSessionId
-                    currentStoredSessionId = storedSessionId
+                    updateSubmissionIdentity(
+                        submission = submission,
+                        storedSessionId = resumed.storedSessionId,
+                        runtimeSessionId = resumed.runtimeSessionId,
+                    )
                     currentSessionCanResume = true
                 } else {
                     val created = recreateBlankSession(
-                        activeGateway = activeGateway,
-                        profile = profile,
+                        activeGateway = submission.gateway,
+                        profile = submission.profile,
                         replacementTurnState = TurnState.Running,
                         drainQueue = false,
                     ) ?: throw IOException("The conversation changed while Hermes restored its attachment session.")
-                    runtimeSessionId = created.runtimeSessionId
-                    storedSessionId = created.storedSessionId
+                    updateSubmissionIdentity(
+                        submission = submission,
+                        storedSessionId = created.storedSessionId,
+                        runtimeSessionId = created.runtimeSessionId,
+                    )
                 }
+                submission.attachments = clearRuntimeStaging(submission.attachments)
                 recoveredStaleRuntime = true
                 index = 0
                 continue
             }
 
-            stagedAttachments = stagedAttachments.toMutableList().also { it[index] = staged }
+            submission.attachments = submission.attachments.toMutableList().also { it[index] = staged }
             rememberStagedAttachments(
-                sessionId = storedSessionId,
-                queuedPromptId = queuedPromptId,
-                attachments = stagedAttachments,
+                sessionId = submission.storedSessionId,
+                queuedPromptId = submission.queuedPromptId,
+                attachments = submission.attachments,
             )
+            if (!isSubmissionActive(submission)) {
+                cleanupCancelledSubmission(submission)
+                throw SubmissionSupersededException()
+            }
+            ensureSubmissionActive(submission)
             index += 1
         }
 
         return StagedAttachmentBatch(
-            attachments = stagedAttachments,
-            runtimeSessionId = runtimeSessionId,
-            storedSessionId = storedSessionId,
+            attachments = submission.attachments,
+            runtimeSessionId = submission.runtimeSessionId,
+            storedSessionId = submission.storedSessionId,
         )
     }
 
@@ -2068,7 +2161,41 @@ internal class CelesteController(
         }
     }
 
-    private fun detachStagedImageIfActive(attachment: ComposerAttachment) {
+    private fun ensureSubmissionActive(submission: SubmissionLease) {
+        if (!isSubmissionActive(submission)) {
+            throw SubmissionSupersededException()
+        }
+    }
+
+    private fun isSubmissionActive(submission: SubmissionLease): Boolean =
+        !submission.cancelled &&
+            gateway === submission.gateway &&
+            submissionsBySession[submission.storedSessionId] === submission &&
+            currentStoredSessionId == submission.storedSessionId &&
+            currentRuntimeSessionId == submission.runtimeSessionId
+
+    private fun updateSubmissionIdentity(
+        submission: SubmissionLease,
+        storedSessionId: String,
+        runtimeSessionId: String,
+    ) {
+        val previousStoredSessionId = submission.storedSessionId
+        if (previousStoredSessionId != storedSessionId) {
+            migrateSessionBoundState(previousStoredSessionId, storedSessionId)
+        }
+        submissionsBySession.entries.removeAll { it.value === submission }
+        submission.storedSessionId = storedSessionId
+        submission.runtimeSessionId = runtimeSessionId
+        submissionsBySession[storedSessionId] = submission
+        currentStoredSessionId = storedSessionId
+        currentRuntimeSessionId = runtimeSessionId
+    }
+
+    private fun unregisterSubmission(submission: SubmissionLease) {
+        submissionsBySession.entries.removeAll { it.value === submission }
+    }
+
+    private fun scheduleStagedImageRemoval(sessionId: String, attachment: ComposerAttachment) {
         val activeGateway = gateway ?: return
         val runtimeId = currentRuntimeSessionId ?: return
         val remotePath = attachment.remotePath?.takeIf(String::isNotBlank) ?: return
@@ -2078,8 +2205,126 @@ internal class CelesteController(
         ) {
             return
         }
-        controllerScope.launch { runCatching { activeGateway.detachImage(runtimeId, remotePath) } }
+        val previousCleanup = attachmentCleanupBySession[sessionId]
+        val cleanup = controllerScope.async {
+            previousCleanup?.await()
+            if (
+                gateway !== activeGateway ||
+                currentStoredSessionId != sessionId ||
+                currentRuntimeSessionId != runtimeId
+            ) {
+                return@async
+            }
+            runCatching { activeGateway.detachImage(runtimeId, remotePath) }
+                .onFailure { runtimeRetirementBySession[sessionId] = runtimeId }
+        }
+        attachmentCleanupBySession[sessionId] = cleanup
+        controllerScope.launch {
+            runCatching { cleanup.await() }
+            if (attachmentCleanupBySession[sessionId] === cleanup) {
+                attachmentCleanupBySession.remove(sessionId)
+            }
+        }
     }
+
+    private suspend fun awaitAttachmentCleanup(submission: SubmissionLease) {
+        attachmentCleanupBySession[submission.storedSessionId]?.await()
+    }
+
+    private suspend fun ensureFreshAttachmentRuntime(submission: SubmissionLease) {
+        val runtimeToRetire = runtimeRetirementBySession[submission.storedSessionId] ?: return
+        submission.gateway.closeRuntimeSession(runtimeToRetire)
+        ensureSubmissionActive(submission)
+        val previousStoredSessionId = submission.storedSessionId
+        if (currentSessionCanResume) {
+            val resumed = submission.gateway.resumeStoredSession(
+                previousStoredSessionId,
+                submission.profile,
+                clientSource,
+            )
+            updateSubmissionIdentity(
+                submission = submission,
+                storedSessionId = resumed.storedSessionId,
+                runtimeSessionId = resumed.runtimeSessionId,
+            )
+            currentSessionCanResume = true
+        } else {
+            val created = recreateBlankSession(
+                activeGateway = submission.gateway,
+                profile = submission.profile,
+                replacementTurnState = TurnState.Running,
+                drainQueue = false,
+            ) ?: throw SubmissionSupersededException()
+            updateSubmissionIdentity(
+                submission = submission,
+                storedSessionId = created.storedSessionId,
+                runtimeSessionId = created.runtimeSessionId,
+            )
+        }
+        runtimeRetirementBySession.remove(previousStoredSessionId)
+        runtimeRetirementBySession.remove(submission.storedSessionId)
+        clearSessionRuntimeStaging(submission.storedSessionId)
+        submission.attachments = clearRuntimeStaging(submission.attachments)
+    }
+
+    private suspend fun cleanupCancelledSubmission(submission: SubmissionLease) {
+        submission.attachments
+            .filter { attachment ->
+                attachment.kind == ComposerAttachmentKind.Image &&
+                    attachment.attachedRuntimeSessionId == submission.runtimeSessionId &&
+                    !attachment.remotePath.isNullOrBlank()
+            }
+            .forEach { attachment ->
+                runCatching {
+                    submission.gateway.detachImage(
+                        submission.runtimeSessionId,
+                        attachment.remotePath.orEmpty(),
+                    )
+                }.onFailure {
+                    markRuntimeForRetirement(submission)
+                }
+            }
+        submission.attachments = clearImageStaging(submission.attachments)
+    }
+
+    private fun markRuntimeForRetirement(submission: SubmissionLease) {
+        runtimeRetirementBySession[submission.storedSessionId] = submission.runtimeSessionId
+    }
+
+    private fun clearSessionRuntimeStaging(sessionId: String) {
+        composerAttachmentsBySession[sessionId]?.replaceAll { attachment ->
+            clearRuntimeStaging(attachment)
+        }
+        queuedPromptsBySession[sessionId]?.replaceAll { prompt ->
+            prompt.copy(attachments = clearRuntimeStaging(prompt.attachments))
+        }
+        directAttachmentsInFlightBySession[sessionId]?.let { attachments ->
+            directAttachmentsInFlightBySession[sessionId] = clearRuntimeStaging(attachments)
+        }
+        uncertainDirectPromptsBySession[sessionId]?.let { prompt ->
+            uncertainDirectPromptsBySession[sessionId] = prompt.copy(
+                attachments = clearRuntimeStaging(prompt.attachments),
+            )
+        }
+        refreshActiveQueueProjection(sessionId)
+    }
+
+    private fun clearRuntimeStaging(attachments: List<ComposerAttachment>): List<ComposerAttachment> =
+        attachments.map(::clearRuntimeStaging)
+
+    private fun clearRuntimeStaging(attachment: ComposerAttachment): ComposerAttachment = attachment.copy(
+        attachedRuntimeSessionId = null,
+        remotePath = if (attachment.kind == ComposerAttachmentKind.Image) null else attachment.remotePath,
+    )
+
+    private fun clearImageStaging(attachments: List<ComposerAttachment>): List<ComposerAttachment> =
+        attachments.map { attachment ->
+            if (attachment.kind == ComposerAttachmentKind.Image) {
+                attachment.copy(attachedRuntimeSessionId = null, remotePath = null)
+            } else {
+                attachment
+            }
+        }
 
     private fun modelPromptText(
         text: String,
@@ -2119,6 +2364,16 @@ internal class CelesteController(
         if (fromSessionId == toSessionId) return
         migrateQueuedSessionState(fromSessionId, toSessionId)
         migrateComposerAttachmentSessionState(fromSessionId, toSessionId)
+        submissionsBySession.remove(fromSessionId)?.let { submission ->
+            submission.storedSessionId = toSessionId
+            submissionsBySession[toSessionId] = submission
+        }
+        attachmentCleanupBySession.remove(fromSessionId)?.let { cleanup ->
+            attachmentCleanupBySession[toSessionId] = cleanup
+        }
+        runtimeRetirementBySession.remove(fromSessionId)?.let { runtimeId ->
+            runtimeRetirementBySession[toSessionId] = runtimeId
+        }
         val snapshot = mutableState.value
         val migratedSummary = snapshot.activeSummary
             ?.takeIf { it.id == fromSessionId }
@@ -2143,7 +2398,7 @@ internal class CelesteController(
         queue.replaceAll { prompt ->
             if (prompt.id == promptId) {
                 prompt.copy(
-                    attachments = attachmentsForUncertainRetry(prompt.attachments),
+                    attachments = prompt.attachments,
                     deliveryUncertain = true,
                     userMessageCountBeforeSubmit = userMessageCountBeforeSubmit,
                 )
@@ -2157,6 +2412,18 @@ internal class CelesteController(
 
     private fun reconcileUncertainQueuedPrompts(resumed: ResumedSession) {
         val queue = queuedPromptsBySession[resumed.storedSessionId] ?: return
+        queue.replaceAll { prompt ->
+            if (prompt.deliveryUncertain) {
+                prompt.copy(
+                    attachments = attachmentsForResumedRuntime(
+                        prompt.attachments,
+                        resumed.runtimeSessionId,
+                    ),
+                )
+            } else {
+                prompt
+            }
+        }
         val representedLiveUserText = sequenceOf(
             resumed.inflightUserText,
             resumed.queuedUserText,
@@ -2213,20 +2480,21 @@ internal class CelesteController(
         if (resumed.running == true || resumed.hasLiveProjection) return null
 
         uncertainDirectPromptsBySession.remove(resumed.storedSessionId)
-        restoreComposerAttachmentsAfterFailure(resumed.storedSessionId, prompt.attachments)
+        restoreComposerAttachmentsAfterFailure(
+            resumed.storedSessionId,
+            attachmentsForResumedRuntime(prompt.attachments, resumed.runtimeSessionId),
+        )
         return prompt.submittedDraft
     }
 
-    private fun attachmentsForUncertainRetry(
+    private fun attachmentsForResumedRuntime(
         attachments: List<ComposerAttachment>,
+        runtimeSessionId: String,
     ): List<ComposerAttachment> = attachments.map { attachment ->
-        if (attachment.kind == ComposerAttachmentKind.Image) {
-            attachment.copy(
-                attachedRuntimeSessionId = null,
-                remotePath = null,
-            )
-        } else {
+        if (attachment.attachedRuntimeSessionId == runtimeSessionId) {
             attachment
+        } else {
+            clearRuntimeStaging(attachment)
         }
     }
 
@@ -2251,6 +2519,11 @@ internal class CelesteController(
     }
 
     private fun clearAllQueuedPrompts() {
+        submissionsBySession.values.forEach { it.cancelled = true }
+        attachmentCleanupBySession.values.forEach { it.cancel() }
+        submissionsBySession.clear()
+        attachmentCleanupBySession.clear()
+        runtimeRetirementBySession.clear()
         queuedPromptsBySession.clear()
         composerAttachmentsBySession.clear()
         directAttachmentsInFlightBySession.clear()

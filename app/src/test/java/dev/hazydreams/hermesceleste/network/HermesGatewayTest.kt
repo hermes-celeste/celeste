@@ -162,6 +162,16 @@ class HermesGatewayTest {
         )
     }
 
+    @Test
+    fun resumedHistoryPreservesOrdinaryUserWhitespace() {
+        val messages = decodeGatewayMessages(
+            Json.parseToJsonElement(
+                """[{"row_id":4,"role":"user","text":"  indented\n\ntrailing  "}]""",
+            ).jsonArray,
+        )
+
+        assertEquals("  indented\n\ntrailing  ", messages.single().text)
+    }
 
     @Test
     fun resumedHistoryRebuildsChangedFilesAndLatestTaskProgress() {

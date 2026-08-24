@@ -378,15 +378,15 @@ class CelesteViewModelTest {
         viewModel.updateDraft("First")
         viewModel.sendMessage()
         viewModel.addPickedAttachments(
-            listOf(
+            (1..4).map { index ->
                 pickedAttachment(
                     kind = ComposerAttachmentKind.File,
-                    name = "queued.bin",
+                    name = "queued-$index.bin",
                     mimeType = "application/octet-stream",
                     contentBase64 = "cXVldWVk",
-                    byteSize = 25L * 1024L * 1024L,
-                ),
-            ),
+                    byteSize = AttachmentLimits.MAX_ITEM_BYTES,
+                )
+            },
         )
         viewModel.updateDraft("Queued")
         viewModel.sendMessage()
@@ -397,7 +397,7 @@ class CelesteViewModelTest {
                     name = "selected.bin",
                     mimeType = "application/octet-stream",
                     contentBase64 = "c2VsZWN0ZWQ=",
-                    byteSize = 25L * 1024L * 1024L,
+                    byteSize = AttachmentLimits.MAX_ITEM_BYTES,
                 ),
             ),
         )
@@ -413,19 +413,22 @@ class CelesteViewModelTest {
             ),
         )
 
-        assertEquals(listOf("queued.bin"), viewModel.state.value.queuedPrompts.single().attachments.map { it.name })
+        assertEquals(
+            (1..4).map { "queued-$it.bin" },
+            viewModel.state.value.queuedPrompts.single().attachments.map { it.name },
+        )
         assertEquals(listOf("selected.bin"), viewModel.state.value.composerAttachments.map { it.name })
-        assertEquals(2, viewModel.attachmentImportBudget().attachmentCount)
+        assertEquals(5, viewModel.attachmentImportBudget().attachmentCount)
         assertEquals(50L * 1024L * 1024L, viewModel.attachmentImportBudget().byteSize)
         assertEquals(
-            "Some attachments were not added. Keep the selection under 10 items and 50 MB.",
+            "Some attachments were not added. Keep each under 10 MB, with up to 10 items and 50 MB total.",
             viewModel.state.value.errorMessage,
         )
         viewModel.controller.close()
     }
 
     @Test
-    fun uncertainDirectAttachmentRestoresForManualRetryAndRestagesItsImage() = runTest {
+    fun uncertainDirectAttachmentRestoresForManualRetryWithoutRestagingOnTheSameRuntime() = runTest {
         val gateway = FakeGateway().apply {
             promptFailure = IOException("socket closed during submit")
             resumePayload = resumePayload(messages = emptyList(), running = false)
@@ -458,7 +461,7 @@ class CelesteViewModelTest {
         advanceUntilIdle()
 
         assertEquals(2, gateway.methods.count { it == "prompt.submit" })
-        assertEquals(2, gateway.methods.count { it == "image.attach_bytes" })
+        assertEquals(1, gateway.methods.count { it == "image.attach_bytes" })
         assertTrue(viewModel.state.value.composerAttachments.isEmpty())
         viewModel.controller.close()
     }
@@ -687,6 +690,194 @@ class CelesteViewModelTest {
 
         assertTrue(viewModel.state.value.composerAttachments.isEmpty())
         assertEquals(1, gateway.methods.count { it == "image.detach" })
+        viewModel.controller.close()
+    }
+
+    @Test
+    fun removingQueuedPromptDuringImageStagingNeverSubmitsIt() = runTest {
+        val gateway = FakeGateway()
+        val viewModel = openConversation(gateway)
+
+        viewModel.updateDraft("First")
+        viewModel.sendMessage()
+        viewModel.addPickedAttachments(
+            listOf(
+                pickedAttachment(
+                    kind = ComposerAttachmentKind.Image,
+                    name = "queued.jpg",
+                    mimeType = "image/jpeg",
+                    contentBase64 = "aW1hZ2U=",
+                ),
+            ),
+        )
+        viewModel.updateDraft("Queued image")
+        viewModel.sendMessage()
+        val attachmentGate = CompletableDeferred<Unit>()
+        gateway.attachmentGate = attachmentGate
+        gateway.emit("message.complete", """{"content":"First done","status":"complete"}""")
+        runCurrent()
+
+        val queuedPromptId = viewModel.state.value.queuedPrompts.single().id
+        viewModel.removeQueuedPrompt(queuedPromptId)
+        attachmentGate.complete(Unit)
+        advanceUntilIdle()
+
+        assertEquals(1, gateway.methods.count { it == "prompt.submit" })
+        assertEquals(1, gateway.methods.count { it == "image.detach" })
+        assertTrue(viewModel.state.value.queuedPrompts.isEmpty())
+        assertEquals(TurnState.Idle, viewModel.state.value.turnState)
+        viewModel.controller.close()
+    }
+
+    @Test
+    fun stopDuringImageStagingRestoresTheDraftWithoutSubmitting() = runTest {
+        val attachmentGate = CompletableDeferred<Unit>()
+        val gateway = FakeGateway().apply { this.attachmentGate = attachmentGate }
+        val viewModel = openConversation(gateway)
+
+        viewModel.addPickedAttachments(
+            listOf(
+                pickedAttachment(
+                    kind = ComposerAttachmentKind.Image,
+                    name = "stop.jpg",
+                    mimeType = "image/jpeg",
+                    contentBase64 = "aW1hZ2U=",
+                ),
+            ),
+        )
+        viewModel.updateDraft("Do not send this")
+        viewModel.sendMessage()
+        runCurrent()
+        viewModel.interrupt()
+        attachmentGate.complete(Unit)
+        advanceUntilIdle()
+
+        assertEquals(0, gateway.methods.count { it == "prompt.submit" })
+        assertEquals(0, gateway.methods.count { it == "session.interrupt" })
+        assertEquals(1, gateway.methods.count { it == "image.detach" })
+        assertEquals("Do not send this", viewModel.state.value.draft)
+        assertEquals(listOf("stop.jpg"), viewModel.state.value.composerAttachments.map { it.name })
+        assertEquals(TurnState.Idle, viewModel.state.value.turnState)
+        viewModel.controller.close()
+    }
+
+    @Test
+    fun recoveredStoredIdentityOwnsALaterAttachmentFailure() = runTest {
+        val gateway = FakeGateway().apply {
+            attachmentFailuresByCall[1] = GatewayRpcException(4001, "session not found")
+            attachmentFailuresByCall[3] = IOException("second attachment failed")
+        }
+        val viewModel = openConversation(gateway)
+        gateway.resumePayload = resumePayload(
+            messages = emptyList(),
+            running = false,
+            runtimeSessionId = "runtime-8",
+            storedSessionId = "stored-8",
+        )
+
+        viewModel.addPickedAttachments(
+            listOf(
+                pickedAttachment(ComposerAttachmentKind.File, "first.txt", "text/plain", "Zmlyc3Q="),
+                pickedAttachment(ComposerAttachmentKind.File, "second.txt", "text/plain", "c2Vjb25k"),
+            ),
+        )
+        viewModel.updateDraft("Recover then fail")
+        viewModel.sendMessage()
+        advanceUntilIdle()
+
+        assertEquals("stored-8", viewModel.state.value.activeSummary?.id)
+        assertEquals(
+            listOf("first.txt", "second.txt"),
+            viewModel.state.value.composerAttachments.map { it.name },
+        )
+        assertEquals(0, gateway.methods.count { it == "prompt.submit" })
+        viewModel.controller.close()
+    }
+
+    @Test
+    fun uncertainImageUploadRetiresTheRuntimeBeforeManualRetry() = runTest {
+        val gateway = FakeGateway().apply {
+            attachmentFailure = IOException("image response was lost")
+        }
+        val viewModel = openConversation(gateway)
+        gateway.resumePayload = resumePayload(
+            messages = emptyList(),
+            running = false,
+            runtimeSessionId = "runtime-8",
+        )
+
+        viewModel.addPickedAttachments(
+            listOf(
+                pickedAttachment(
+                    kind = ComposerAttachmentKind.Image,
+                    name = "uncertain.jpg",
+                    mimeType = "image/jpeg",
+                    contentBase64 = "aW1hZ2U=",
+                ),
+            ),
+        )
+        viewModel.updateDraft("Retry safely")
+        viewModel.sendMessage()
+        advanceUntilIdle()
+
+        gateway.attachmentFailure = null
+        viewModel.sendMessage()
+        advanceUntilIdle()
+
+        assertEquals(1, gateway.methods.count { it == "session.close" })
+        assertEquals(
+            listOf("runtime-7", "runtime-8"),
+            gateway.requests.filter { it.first == "image.attach_bytes" }
+                .map { it.second["session_id"]?.jsonPrimitive?.content },
+        )
+        assertEquals(
+            "runtime-8",
+            gateway.requests.single { it.first == "prompt.submit" }
+                .second["session_id"]?.jsonPrimitive?.content,
+        )
+        viewModel.controller.close()
+    }
+
+    @Test
+    fun failedImageDetachRetiresTheRuntimeBeforeTheNextPrompt() = runTest {
+        val gateway = FakeGateway().apply {
+            promptFailure = GatewayRpcException(409, "Hermes rejected the prompt.")
+            detachFailure = IOException("detach response was lost")
+        }
+        val viewModel = openConversation(gateway)
+        gateway.resumePayload = resumePayload(
+            messages = emptyList(),
+            running = false,
+            runtimeSessionId = "runtime-8",
+        )
+
+        viewModel.addPickedAttachments(
+            listOf(
+                pickedAttachment(
+                    kind = ComposerAttachmentKind.Image,
+                    name = "remove.jpg",
+                    mimeType = "image/jpeg",
+                    contentBase64 = "aW1hZ2U=",
+                ),
+            ),
+        )
+        viewModel.sendMessage()
+        advanceUntilIdle()
+        viewModel.removeComposerAttachment(viewModel.state.value.composerAttachments.single().id)
+        advanceUntilIdle()
+
+        gateway.promptFailure = null
+        gateway.detachFailure = null
+        viewModel.updateDraft("Clean runtime")
+        viewModel.sendMessage()
+        advanceUntilIdle()
+
+        assertEquals(1, gateway.methods.count { it == "session.close" })
+        assertEquals(
+            "runtime-8",
+            gateway.requests.last { it.first == "prompt.submit" }
+                .second["session_id"]?.jsonPrimitive?.content,
+        )
         viewModel.controller.close()
     }
 
@@ -2319,6 +2510,9 @@ class CelesteViewModelTest {
         var promptFailure: Throwable? = null
         var attachmentFailure: Throwable? = null
         var attachmentFailureOnce = false
+        val attachmentFailuresByCall = mutableMapOf<Int, Throwable>()
+        var attachmentRequestCount = 0
+        var detachFailure: Throwable? = null
         var interruptFailure: Throwable? = null
         var clarifyFailure: Throwable? = null
         var createGate: CompletableDeferred<Unit>? = null
@@ -2333,6 +2527,8 @@ class CelesteViewModelTest {
         }
 
         private fun throwAttachmentFailureIfPresent() {
+            attachmentRequestCount += 1
+            attachmentFailuresByCall.remove(attachmentRequestCount)?.let { throw it }
             val failure = attachmentFailure ?: return
             if (attachmentFailureOnce) attachmentFailure = null
             throw failure
@@ -2395,7 +2591,11 @@ class CelesteViewModelTest {
                         put("ref_text", "@file:attachments/$name")
                     }
                 }
-                "image.detach" -> buildJsonObject { put("detached", true) }
+                "image.detach" -> {
+                    detachFailure?.let { throw it }
+                    buildJsonObject { put("detached", true) }
+                }
+                "session.close" -> buildJsonObject { put("closed", true) }
                 "session.interrupt" -> {
                     interruptFailure?.let { throw it }
                     buildJsonObject { put("status", "interrupting") }

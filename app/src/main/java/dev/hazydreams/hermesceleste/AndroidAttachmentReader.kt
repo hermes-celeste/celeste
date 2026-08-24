@@ -44,12 +44,14 @@ internal class AndroidAttachmentReader(
     ): PickedComposerAttachment {
         val metadata = queryMetadata(uri)
         if (metadata.size != null && metadata.size > AttachmentLimits.MAX_ITEM_BYTES) {
-            throw IOException("${metadata.name} is larger than 25 MB.")
+            throw IOException(
+                "${metadata.name} is larger than ${AttachmentLimits.MAX_ITEM_MEGABYTES} MB.",
+            )
         }
         val readLimit = minOf(AttachmentLimits.MAX_ITEM_BYTES, remainingBytes)
         if (metadata.size != null && metadata.size > readLimit) throw IOException(TOTAL_SIZE_ERROR)
         val bytes = contentResolver.openInputStream(uri)?.use { input ->
-            readBounded(input, readLimit)
+            readBounded(input, readLimit, metadata.size)
         }
             ?: throw IOException("${metadata.name} could not be opened.")
         val mimeType = contentResolver.getType(uri)
@@ -98,8 +100,17 @@ internal class AndroidAttachmentReader(
         )
     }
 
-    private fun readBounded(input: java.io.InputStream, maxBytes: Long): ByteArray {
-        val output = ByteArrayOutputStream()
+    private fun readBounded(
+        input: java.io.InputStream,
+        maxBytes: Long,
+        expectedBytes: Long?,
+    ): ByteArray {
+        val initialCapacity = minOf(
+            expectedBytes?.coerceAtLeast(0L) ?: DEFAULT_BUFFER_SIZE.toLong(),
+            maxBytes,
+            Int.MAX_VALUE.toLong(),
+        ).toInt()
+        val output = ByteArrayOutputStream(initialCapacity)
         val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
         var total = 0L
         while (true) {
@@ -111,7 +122,7 @@ internal class AndroidAttachmentReader(
                     if (maxBytes < AttachmentLimits.MAX_ITEM_BYTES) {
                         TOTAL_SIZE_ERROR
                     } else {
-                        "This attachment is larger than 25 MB."
+                        "This attachment is larger than ${AttachmentLimits.MAX_ITEM_MEGABYTES} MB."
                     },
                 )
             }

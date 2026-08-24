@@ -1,5 +1,6 @@
 package dev.hazydreams.hermesceleste
 
+import android.net.Uri
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import dev.hazydreams.hermesceleste.connection.ConnectionStore
@@ -12,18 +13,24 @@ import dev.hazydreams.hermesceleste.network.StoredSession
 import kotlin.math.min
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 
 /** Android lifetime adapter for the platform-neutral application controller. */
 internal class CelesteViewModel(
     dashboard: DashboardService = DashboardClient(),
     connectionStore: ConnectionStore = InMemoryConnectionStore(),
     clientSource: String = "android",
+    private val attachmentReader: AndroidAttachmentReader? = null,
     attachmentEncodingDispatcher: CoroutineDispatcher = Dispatchers.Default,
     reconnectDelayMillis: (attempt: Int, wasRunning: Boolean) -> Long = { attempt, wasRunning ->
         if (wasRunning && attempt == 0) 100L else min(5_000L, 1_000L shl attempt.coerceAtMost(2))
     },
 ) : ViewModel() {
     private val composerFocusRequests = ComposerFocusRequests()
+    private val attachmentImportMutex = Mutex()
 
     internal val controller = CelesteController(
         parentScope = viewModelScope,
@@ -59,6 +66,40 @@ internal class CelesteViewModel(
         controller.removeComposerAttachment(attachmentId)
 
     fun reportAttachmentError(message: String) = controller.reportAttachmentError(message)
+
+    fun importAttachments(
+        uris: List<Uri>,
+        kind: ComposerAttachmentKind,
+        expectedGeneration: Long,
+    ) {
+        val reader = attachmentReader ?: return
+        if (uris.isEmpty()) return
+        viewModelScope.launch {
+            attachmentImportMutex.withLock {
+                if (state.value.composerAttachmentGeneration != expectedGeneration) {
+                    reportAttachmentError("Attachments weren't added because the conversation changed.")
+                    return@withLock
+                }
+                val budget = attachmentImportBudget()
+                val result = withContext(Dispatchers.IO) {
+                    reader.read(
+                        uris = uris,
+                        kind = kind,
+                        existingAttachmentCount = budget.attachmentCount,
+                        existingAttachmentBytes = budget.byteSize,
+                    )
+                }
+                if (state.value.composerAttachmentGeneration != expectedGeneration) {
+                    reportAttachmentError("Attachments weren't added because the conversation changed.")
+                    return@withLock
+                }
+                if (result.attachments.isNotEmpty()) {
+                    addPickedAttachments(result.attachments, expectedGeneration)
+                }
+                result.errors.firstOrNull()?.let(::reportAttachmentError)
+            }
+        }
+    }
 
     fun selectProfile(name: String) = controller.selectProfile(name)
 

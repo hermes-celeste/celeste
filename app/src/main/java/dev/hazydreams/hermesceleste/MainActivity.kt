@@ -10,6 +10,7 @@ import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.lifecycle.Lifecycle
@@ -18,22 +19,18 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import androidx.lifecycle.lifecycleScope
 import dev.hazydreams.hermesceleste.connection.AndroidConnectionStore
 import dev.hazydreams.hermesceleste.ui.CelesteRoutes
 import dev.hazydreams.hermesceleste.ui.HermesCelesteTheme
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.sync.withLock
-import kotlinx.coroutines.withContext
+import dev.hazydreams.hermesceleste.ui.conversation.AndroidAttachmentImageDecoder
+import dev.hazydreams.hermesceleste.ui.conversation.LocalAttachmentImageDecoder
+
 
 class MainActivity : ComponentActivity() {
     private val celesteViewModel by viewModels<CelesteViewModel> {
         CelesteViewModelFactory(applicationContext)
     }
-    private val attachmentReader by lazy { AndroidAttachmentReader(contentResolver) }
-    private val attachmentImportMutex = Mutex()
+
     private var imagePickerGeneration: Long? = null
     private var filePickerGeneration: Long? = null
     private val imagePicker = registerForActivityResult(
@@ -42,7 +39,7 @@ class MainActivity : ComponentActivity() {
         val expectedGeneration = imagePickerGeneration
         imagePickerGeneration = null
         if (expectedGeneration != null) {
-            importAttachments(uris, ComposerAttachmentKind.Image, expectedGeneration)
+            celesteViewModel.importAttachments(uris, ComposerAttachmentKind.Image, expectedGeneration)
         }
     }
     private val filePicker = registerForActivityResult(
@@ -51,7 +48,7 @@ class MainActivity : ComponentActivity() {
         val expectedGeneration = filePickerGeneration
         filePickerGeneration = null
         if (expectedGeneration != null) {
-            importAttachments(uris, ComposerAttachmentKind.File, expectedGeneration)
+            celesteViewModel.importAttachments(uris, ComposerAttachmentKind.File, expectedGeneration)
         }
     }
 
@@ -69,19 +66,23 @@ class MainActivity : ComponentActivity() {
         )
         setContent {
             HermesCelesteTheme {
-                HermesCelesteApp(
-                    viewModel = celesteViewModel,
-                    onPickImages = {
-                        imagePickerGeneration = celesteViewModel.state.value.composerAttachmentGeneration
-                        imagePicker.launch(
-                            PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly),
-                        )
-                    },
-                    onPickFiles = {
-                        filePickerGeneration = celesteViewModel.state.value.composerAttachmentGeneration
-                        filePicker.launch(arrayOf("*/*"))
-                    },
-                )
+                CompositionLocalProvider(
+                    LocalAttachmentImageDecoder provides AndroidAttachmentImageDecoder,
+                ) {
+                    HermesCelesteApp(
+                        viewModel = celesteViewModel,
+                        onPickImages = {
+                            imagePickerGeneration = celesteViewModel.state.value.composerAttachmentGeneration
+                            imagePicker.launch(
+                                PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly),
+                            )
+                        },
+                        onPickFiles = {
+                            filePickerGeneration = celesteViewModel.state.value.composerAttachmentGeneration
+                            filePicker.launch(arrayOf("*/*"))
+                        },
+                    )
+                }
             }
         }
     }
@@ -92,42 +93,6 @@ class MainActivity : ComponentActivity() {
         super.onSaveInstanceState(outState)
     }
 
-    private fun importAttachments(
-        uris: List<android.net.Uri>,
-        kind: ComposerAttachmentKind,
-        expectedGeneration: Long,
-    ) {
-        if (uris.isEmpty()) return
-        lifecycleScope.launch {
-            attachmentImportMutex.withLock {
-                if (celesteViewModel.state.value.composerAttachmentGeneration != expectedGeneration) {
-                    celesteViewModel.reportAttachmentError(
-                        "Attachments weren't added because the conversation changed.",
-                    )
-                    return@withLock
-                }
-                val budget = celesteViewModel.attachmentImportBudget()
-                val result = withContext(Dispatchers.IO) {
-                    attachmentReader.read(
-                        uris = uris,
-                        kind = kind,
-                        existingAttachmentCount = budget.attachmentCount,
-                        existingAttachmentBytes = budget.byteSize,
-                    )
-                }
-                if (celesteViewModel.state.value.composerAttachmentGeneration != expectedGeneration) {
-                    celesteViewModel.reportAttachmentError(
-                        "Attachments weren't added because the conversation changed.",
-                    )
-                    return@withLock
-                }
-                if (result.attachments.isNotEmpty()) {
-                    celesteViewModel.addPickedAttachments(result.attachments, expectedGeneration)
-                }
-                result.errors.firstOrNull()?.let(celesteViewModel::reportAttachmentError)
-            }
-        }
-    }
 
     private companion object {
         const val IMAGE_PICKER_GENERATION_KEY = "attachment.image_picker_generation"
@@ -141,7 +106,10 @@ private class CelesteViewModelFactory(
     @Suppress("UNCHECKED_CAST")
     override fun <T : ViewModel> create(modelClass: Class<T>): T {
         require(modelClass.isAssignableFrom(CelesteViewModel::class.java))
-        return CelesteViewModel(connectionStore = AndroidConnectionStore(context)) as T
+        return CelesteViewModel(
+            connectionStore = AndroidConnectionStore(context),
+            attachmentReader = AndroidAttachmentReader(context.contentResolver),
+        ) as T
     }
 }
 

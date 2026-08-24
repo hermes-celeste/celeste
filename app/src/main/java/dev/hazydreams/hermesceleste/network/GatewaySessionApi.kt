@@ -211,6 +211,15 @@ suspend fun GatewayConnection.interruptSession(runtimeSessionId: String): JsonOb
     ).asObject("Hermes returned no interrupt status.")
 }
 
+suspend fun GatewayConnection.closeRuntimeSession(runtimeSessionId: String): Boolean {
+    require(runtimeSessionId.isNotBlank()) { "No Hermes conversation is open." }
+    return request(
+        method = "session.close",
+        params = buildJsonObject { put("session_id", runtimeSessionId) },
+    ).asObject("Hermes returned no session close status.")
+        .boolean("closed") == true
+}
+
 private data class PersistedToolCall(
     val name: String,
     val arguments: JsonObject?,
@@ -245,6 +254,9 @@ private fun persistedUserPresentation(text: String): PersistedUserPresentation {
         true
     }.toMutableList()
 
+    if (attachments.isEmpty()) {
+        return PersistedUserPresentation(text = text, attachments = emptyList())
+    }
     if (attachments.any { it.kind == ComposerAttachmentKind.Image }) {
         visibleLines.removeAll { line -> line.trim() == "[screenshot]" || line.trim() == "[image]" }
     }
