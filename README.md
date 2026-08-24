@@ -4,31 +4,59 @@
 
 [![Latest test APK](https://img.shields.io/github/actions/workflow/status/hermes-celeste/celeste/android.yml?branch=main&event=push&label=latest%20APK&logo=android)](https://github.com/hermes-celeste/celeste/releases/download/latest-test/Hermes-Celeste-latest.apk)
 
-Celeste is an Android-first native client for a self-hosted [Hermes Agent](https://github.com/NousResearch/hermes-agent) dashboard. It connects directly to the same Hermes server as Desktop, so your profiles, conversations, and agent work stay together.
+Celeste is a native Android client for a self-hosted [Hermes Agent](https://github.com/NousResearch/hermes-agent) dashboard. It connects directly to the same Hermes server as Desktop, so you can continue the same profiles, conversations, and agent work from your phone.
 
-Android is the only application target today. Celeste is being structured as one Compose Multiplatform product so a future iOS target can share protocol behavior, application state, and custom UI instead of becoming a separately maintained client.
+<table>
+  <tr>
+    <td width="33%"><img src="docs/images/readme/conversation.png" alt="A rich Hermes conversation rendered in Celeste" /></td>
+    <td width="33%"><img src="docs/images/readme/thinking.png" alt="Thinking, task progress, and changed files in Celeste" /></td>
+    <td width="33%"><img src="docs/images/readme/conversations.png" alt="Celeste conversation search and navigation" /></td>
+  </tr>
+  <tr>
+    <td align="center"><sub>Rich native conversations</sub></td>
+    <td align="center"><sub>Thinking and agent work</sub></td>
+    <td align="center"><sub>Shared conversation history</sub></td>
+  </tr>
+</table>
 
-The installed Android app is named **Hermes Celeste** so it is easy to find in the launcher and app list.
+<sub>Screenshots use synthetic test conversations and contain no private data.</sub>
 
-## What it does
+## Use Celeste today
 
-- Connects directly to a Hermes dashboard over HTTPS, a private network, or Tailscale
-- Uses the dashboard’s existing authentication and profiles
-- Lists, creates, and resumes shared Hermes conversations
-- Sends prompts and streams responses and tool activity live
-- Sends selected images and files with prompts through Android's system pickers
-- Queues follow-up prompts during active turns and sends them automatically in order
-- Stops active turns and reconciles safely after reconnecting
-- Keeps Hermes as the source of truth without a separate Celeste account, relay, or copied history
+The rolling **[Latest test build](https://github.com/hermes-celeste/celeste/releases/download/latest-test/Hermes-Celeste-latest.apk)** is the current Celeste distribution. It is published after successful checks on `main` and supports Android 9 or newer.
+
+Install the APK, open **Hermes Celeste**, and connect to a Hermes dashboard that your phone can reach over HTTPS, a private network, or Tailscale.
+
+## What works
+
+- Connect directly to your Hermes dashboard using its existing authentication and profiles
+- Create, browse, search, pin, rename, and resume shared conversations
+- Send prompts and stream assistant responses, reasoning, and tool activity live
+- Inspect Thinking steps, background processes, task progress, and changed files through compact mobile work surfaces
+- Read rich Markdown, code, links, checklists, quotes, and tables in the transcript
+- Answer agent clarification questions inline
+- Send selected images and files through Android’s system pickers
+- Queue follow-up prompts during active turns and send them automatically in order
+- Stop active work and recover the current conversation after connection changes
+
+## One Hermes, another surface
+
+Hermes remains the source of truth for profiles, sessions, messages, and agent work. Celeste adds a mobile-native interface without a separate account, relay, or copied conversation store.
+
+Android is the current application target. Protocol behavior, application state, and custom Compose UI are being kept portable so a future iOS target can share the same Kotlin Multiplatform foundation.
 
 ## Status
 
-Celeste is in early development. The native Android chat flow, rich Markdown for ordinary messages, image and file attachments, and secure connection restoration are functional; OAuth sign-in, approvals, and broader Hermes management features are still ahead. There is no iOS application or release commitment yet.
+Celeste is usable today as a mobile conversation client and is under active development. Current work expands Hermes capability coverage, customization, and the shared Android/iOS architecture while the rolling test build stays available for everyday use.
 
 ## Development
 
+Use the repository environment wrapper with the checked-in Gradle wrapper:
+
 ```bash
-scripts/celeste-env ./gradlew --no-daemon testDebugUnitTest lintDebug
+scripts/celeste-env ./gradlew --no-daemon testDebugUnitTest
+scripts/celeste-env ./gradlew --no-daemon lintDebug
+scripts/celeste-env ./gradlew --no-daemon validateDebugScreenshotTest
 ```
 
-GitHub Actions verifies APK assembly on pull requests and publishes the rolling **Latest test build** pre-release from successful `main` builds. Local development uses unit tests, lint, and screenshot validation rather than distributable APK assembly.
+GitHub Actions owns APK assembly, signing, and the full regression matrix. See [`AGENTS.md`](AGENTS.md) and [`docs/development.md`](docs/development.md) for the project workflow.
