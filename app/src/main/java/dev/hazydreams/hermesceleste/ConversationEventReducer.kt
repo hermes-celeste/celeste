@@ -104,7 +104,7 @@ internal fun reduceConversationEvent(
                 next
             } else {
                 next.copy(
-                    messages = settleCurrentReasoning(next.messages),
+                    messages = settleCurrentTurnSteps(next.messages),
                     streamingText = next.streamingText + delta,
                     turnState = TurnState.Running,
                 )

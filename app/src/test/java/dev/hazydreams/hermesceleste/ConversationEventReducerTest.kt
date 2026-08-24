@@ -217,6 +217,20 @@ class ConversationEventReducerTest {
     }
 
     @Test
+    fun streamedAssistantProseCompletesTheThinkingCapsuleItFollows() {
+        val result = reduceEvents(
+            event("message.start"),
+            event("reasoning.delta", """{"text":"Prepare the issue."}"""),
+            event("message.delta", """{"text":"I’ll create one focused issue."}"""),
+        )
+
+        val thinking = result.projection.messages.single { it.role == "steps" }
+        assertFalse(thinking.pending)
+        assertTrue(thinking.steps.none { it.pending })
+        assertEquals("I’ll create one focused issue.", result.projection.streamingText)
+    }
+
+    @Test
     fun finalAnswerEchoedThroughReasoningSettlesToOneAssistantMessage() {
         val answer = "hello from inside the little app we built"
         val result = reduceEvents(
