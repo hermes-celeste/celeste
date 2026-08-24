@@ -126,6 +126,20 @@ suspend fun GatewayConnection.submitPrompt(
     ).asObject("Hermes returned no prompt status.")
 }
 
+suspend fun GatewayConnection.redirectSession(runtimeSessionId: String, text: String): Boolean {
+    require(runtimeSessionId.isNotBlank()) { "No Hermes conversation is open." }
+    require(text.isNotBlank()) { "A correction is required." }
+    val result = request(
+        method = "session.redirect",
+        params = buildJsonObject {
+            put("session_id", runtimeSessionId)
+            put("text", text)
+        },
+        timeoutMillis = 30_000,
+    ).asObject("Hermes returned no redirect status.")
+    return result.string("status") in setOf("redirected", "queued")
+}
+
 suspend fun GatewayConnection.stageAttachment(
     runtimeSessionId: String,
     attachment: ComposerAttachment,

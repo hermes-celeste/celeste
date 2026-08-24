@@ -1,6 +1,7 @@
 package dev.hazydreams.hermesceleste
 
 import dev.hazydreams.hermesceleste.network.ConversationMessage
+import dev.hazydreams.hermesceleste.network.ConversationStepKind
 import dev.hazydreams.hermesceleste.network.GatewayEvent
 import dev.hazydreams.hermesceleste.network.TaskProgress
 import dev.hazydreams.hermesceleste.network.appendCurrentTurnMessage
@@ -132,6 +133,7 @@ internal fun reduceConversationEvent(
                 ?: event.payload.string("rendered")
                 ?: ""
             next = next.finalizeAssistant(content, keepRunning = false)
+            next = next.removeReasoningEchoOfFinalAnswer()
             next.copy(
                 messages = clearUnansweredClarifications(settleCurrentTurnSteps(next.messages)),
                 turnState = TurnState.Idle,
@@ -343,7 +345,7 @@ private fun ConversationProjection.finalizeAssistant(
         streamingText.startsWith(suppliedContent) -> streamingText
         else -> suppliedContent
     }.trimEnd()
-    val previousIndex = currentTurnContentTailIndex(messages)
+    val previousIndex = currentTurnLastAssistantIndex(messages)
     val previous = messages.getOrNull(previousIndex)
     val continuesInterim = !interim &&
         previous?.role == "assistant" &&
@@ -373,4 +375,33 @@ private fun ConversationProjection.finalizeAssistant(
         streamingText = "",
         turnState = if (keepRunning) TurnState.Running else TurnState.Idle,
     )
+}
+
+private fun currentTurnLastAssistantIndex(messages: List<ConversationMessage>): Int {
+    val userIndex = messages.indexOfLast { it.role == "user" }
+    return messages.indices.reversed().firstOrNull { index ->
+        index > userIndex && messages[index].role == "assistant"
+    } ?: currentTurnContentTailIndex(messages)
+}
+
+private fun ConversationProjection.removeReasoningEchoOfFinalAnswer(): ConversationProjection {
+    val finalText = messages.getOrNull(currentTurnLastAssistantIndex(messages))
+        ?.takeIf { it.role == "assistant" }
+        ?.text
+        ?.trimEnd()
+        .orEmpty()
+    if (finalText.isBlank()) return this
+    val userIndex = messages.indexOfLast { it.role == "user" }
+    var changed = false
+    val nextMessages = messages.mapIndexedNotNull { index, message ->
+        if (index <= userIndex || message.role != "steps") return@mapIndexedNotNull message
+        val nextSteps = message.steps.filterNot { step ->
+            step.kind == ConversationStepKind.Reasoning &&
+                step.detail.trimEnd() == finalText
+        }
+        if (nextSteps.size == message.steps.size) return@mapIndexedNotNull message
+        changed = true
+        message.copy(steps = nextSteps).takeIf { nextSteps.isNotEmpty() }
+    }
+    return if (changed) copy(messages = nextMessages) else this
 }

@@ -54,13 +54,14 @@ Persisted history loads with `order=latest` and `include_compacted=true`. The tr
 | `file.attach` | runtime session ID | Stage file bytes and return a model-facing file reference |
 | `image.detach` | runtime session ID | Remove an image staged for the next prompt |
 | `prompt.submit` | runtime session ID | Persist and begin a user turn |
+| `session.redirect` | runtime session ID | Correct a live turn with a text-only follow-up |
 | `session.interrupt` | runtime session ID | Stop work before reconciliation |
 | `session.close` | runtime session ID | Retire a runtime that cannot be safely reused |
 | `clarify.respond` | clarification request ID | Answer or skip a pending clarification |
 
 Creation and resume include `source: "android"` and terminal columns. Hermes creates the durable session row lazily on first prompt submission, so an untouched local draft stays out of the catalog.
 
-Image and file bytes are staged into the current runtime before `prompt.submit`. File references returned by Hermes are prepended only to the model-facing prompt; the local transcript keeps the user’s natural text and attachment summaries. Queue drains stage their own attachments first and submit with `queued: true`.
+Image and file bytes are staged into the current runtime before `prompt.submit`. File references returned by Hermes are prepended only to the model-facing prompt; the local transcript keeps the user’s natural text and attachment summaries. A text-only Send during live work uses `session.redirect`; attachments, reconnecting sessions, compaction, pending clarification, and rejected redirects use the per-session queue. Queue drains stage their own attachments first and submit with `queued: true`.
 
 ## Event projection
 

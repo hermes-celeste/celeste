@@ -217,6 +217,20 @@ class ConversationEventReducerTest {
     }
 
     @Test
+    fun finalAnswerEchoedThroughReasoningSettlesToOneAssistantMessage() {
+        val answer = "hello from inside the little app we built"
+        val result = reduceEvents(
+            event("message.start"),
+            event("message.delta", """{"text":"$answer"}"""),
+            event("reasoning.delta", """{"text":"$answer"}"""),
+            event("message.complete", """{"content":"$answer","status":"complete"}"""),
+        )
+
+        assertEquals(listOf("user", "assistant"), result.projection.messages.map { it.role })
+        assertEquals(answer, result.projection.messages.single { it.role == "assistant" }.text)
+    }
+
+    @Test
     fun assistantInterimEndsTheCurrentStepsCapsuleAndKeepsItsMessageVisible() {
         val result = reduceEvents(
             event("message.start"),

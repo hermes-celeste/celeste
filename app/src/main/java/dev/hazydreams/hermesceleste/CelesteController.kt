@@ -8,6 +8,7 @@ import dev.hazydreams.hermesceleste.connection.SavedConnectionDescriptor
 import dev.hazydreams.hermesceleste.connection.connectionBootstrapDecision
 import dev.hazydreams.hermesceleste.network.AuthenticationRejected
 import dev.hazydreams.hermesceleste.network.AuthenticationMaterial
+import dev.hazydreams.hermesceleste.network.appendCurrentTurnMessage
 import dev.hazydreams.hermesceleste.network.ConversationMessage
 import dev.hazydreams.hermesceleste.network.CreatedSession
 import dev.hazydreams.hermesceleste.network.DashboardProfile
@@ -31,8 +32,10 @@ import dev.hazydreams.hermesceleste.network.interruptSession
 import dev.hazydreams.hermesceleste.network.markClarificationSubmitting
 import dev.hazydreams.hermesceleste.network.resetClarificationSubmission
 import dev.hazydreams.hermesceleste.network.respondToClarification
+import dev.hazydreams.hermesceleste.network.redirectSession
 import dev.hazydreams.hermesceleste.network.resumeStoredSession
 import dev.hazydreams.hermesceleste.network.settleClarificationLocally
+import dev.hazydreams.hermesceleste.network.settleCurrentTurnSteps
 import dev.hazydreams.hermesceleste.network.stageAttachment
 import dev.hazydreams.hermesceleste.network.submitPrompt
 import dev.hazydreams.hermesceleste.network.string
@@ -1066,6 +1069,13 @@ internal class CelesteController(
         val attachments = snapshot.composerAttachments
         if (text.isBlank() && attachments.isEmpty()) return
         when {
+            snapshot.turnState == TurnState.Running &&
+                attachments.isEmpty() &&
+                !snapshot.isCompacting &&
+                snapshot.messages.none { it.role == "clarification" && it.pending } -> {
+                redirectRunningDraft(snapshot, text)
+                return
+            }
             snapshot.turnState == TurnState.Running || snapshot.turnState == TurnState.Reconnecting -> {
                 enqueueDraft(snapshot, text, attachments)
                 return
@@ -1097,6 +1107,85 @@ internal class CelesteController(
             submittedDraft = snapshot.draft,
             queuedPrompt = null,
         )
+    }
+
+    private fun redirectRunningDraft(snapshot: CelesteUiState, text: String) {
+        val activeGateway = gateway
+        val runtimeSessionId = currentRuntimeSessionId
+        val storedSessionId = currentStoredSessionId ?: snapshot.activeSummary?.id
+        if (activeGateway == null || runtimeSessionId == null || storedSessionId == null) {
+            enqueueDraft(snapshot, text, emptyList())
+            return
+        }
+
+        val redirectMessageId = nextLocalMessageId("redirect")
+        val settledMessages = settleCurrentTurnSteps(snapshot.messages)
+        val messagesWithStream = if (snapshot.streamingText.isBlank()) {
+            settledMessages
+        } else {
+            appendCurrentTurnMessage(
+                messages = settledMessages,
+                message = ConversationMessage(
+                    role = "assistant",
+                    text = snapshot.streamingText.trimEnd(),
+                    interim = true,
+                ),
+            )
+        }
+        mutableState.value = snapshot.copy(
+            messages = appendCurrentTurnMessage(
+                messages = messagesWithStream,
+                message = ConversationMessage(
+                    role = "user",
+                    text = text,
+                    id = redirectMessageId,
+                    pending = true,
+                ),
+            ),
+            streamingText = "",
+            draft = "",
+            composerAttachmentGeneration = nextComposerAttachmentGeneration(),
+            errorMessage = null,
+        )
+        val redirectConnectionAttempt = connectionAttempt
+        controllerScope.launch {
+            val accepted = runCatching {
+                activeGateway.redirectSession(runtimeSessionId, text)
+            }.getOrDefault(false)
+            if (
+                gateway !== activeGateway ||
+                connectionAttempt != redirectConnectionAttempt ||
+                currentStoredSessionId != storedSessionId
+            ) {
+                if (!accepted) enqueueRedirectFallback(storedSessionId, text)
+                return@launch
+            }
+
+            mutableState.value = if (accepted) {
+                mutableState.value.copy(
+                    messages = mutableState.value.messages.map { message ->
+                        if (message.id == redirectMessageId) message.copy(pending = false) else message
+                    },
+                )
+            } else {
+                mutableState.value.copy(
+                    messages = mutableState.value.messages.filterNot { it.id == redirectMessageId },
+                )
+            }
+            if (!accepted) enqueueRedirectFallback(storedSessionId, text)
+        }
+    }
+
+    private fun enqueueRedirectFallback(sessionId: String, text: String) {
+        queuedPromptsBySession.getOrPut(sessionId) { mutableListOf() } += QueuedPrompt(
+            id = nextLocalMessageId("queued"),
+            text = text,
+        )
+        parkedQueueSessions.remove(sessionId)
+        if (currentStoredSessionId == sessionId) {
+            refreshActiveQueueProjection(sessionId)
+            drainQueuedPromptIfPossible()
+        }
     }
 
     fun removeQueuedPrompt(promptId: String) {

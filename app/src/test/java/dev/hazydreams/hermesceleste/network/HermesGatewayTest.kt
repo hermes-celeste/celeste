@@ -139,6 +139,18 @@ class HermesGatewayTest {
     }
 
     @Test
+    fun redirectsAConversationThatIsAlreadyRunning() = runBlocking {
+        server.enqueue(chatWebSocket())
+        val gateway = gateway()
+        gateway.connect()
+
+        val accepted = gateway.redirectSession("runtime-7", "Use the simpler path")
+
+        assertTrue(accepted)
+        gateway.close()
+    }
+
+    @Test
     fun imageDetachRequiresConfirmedStatus() = runBlocking {
         server.enqueue(chatWebSocket())
         val gateway = gateway()
@@ -762,6 +774,10 @@ One test failed
 
                             "image.detach" -> webSocket.send(
                                 """{"jsonrpc":"2.0","id":$id,"result":{"detached":false,"count":1}}""",
+                            )
+
+                            "session.redirect" -> webSocket.send(
+                                """{"jsonrpc":"2.0","id":$id,"result":{"status":"redirected"}}""",
                             )
 
                             "prompt.submit" -> {

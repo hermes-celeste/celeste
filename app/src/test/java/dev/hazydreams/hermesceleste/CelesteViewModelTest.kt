@@ -412,6 +412,7 @@ class CelesteViewModelTest {
 
         assertEquals(listOf("later.pdf"), viewModel.state.value.queuedPrompts.single().attachments.map { it.name })
         assertTrue(viewModel.state.value.composerAttachments.isEmpty())
+        assertEquals(0, gateway.methods.count { it == "session.redirect" })
 
         gateway.emit("message.complete", """{"content":"First done","status":"complete"}""")
         advanceUntilIdle()
@@ -1036,6 +1037,52 @@ class CelesteViewModelTest {
         gateway.emit("message.complete", """{"content":"Third done","status":"complete"}""")
         advanceUntilIdle()
         assertEquals(TurnState.Idle, viewModel.state.value.turnState)
+        viewModel.controller.close()
+    }
+
+    @Test
+    fun textOnlyBusySendRedirectsTheRunningTurnInsteadOfWaitingInTheQueue() = runTest {
+        val gateway = FakeGateway().apply { redirectStatus = "redirected" }
+        val viewModel = openConversation(gateway)
+        advanceUntilIdle()
+
+        viewModel.updateDraft("First")
+        viewModel.sendMessage()
+        gateway.emit("message.delta", """{"text":"Working on it"}""")
+        viewModel.updateDraft("Actually, use the simpler path")
+        viewModel.sendMessage()
+        advanceUntilIdle()
+
+        val redirect = gateway.requests.single { it.first == "session.redirect" }.second
+        assertEquals("runtime-7", redirect["session_id"]?.jsonPrimitive?.content)
+        assertEquals("Actually, use the simpler path", redirect["text"]?.jsonPrimitive?.content)
+        assertTrue(viewModel.state.value.queuedPrompts.isEmpty())
+        assertEquals("", viewModel.state.value.draft)
+        assertEquals(
+            listOf("user", "assistant", "user"),
+            viewModel.state.value.messages.map { it.role },
+        )
+        assertEquals("Working on it", viewModel.state.value.messages[1].text)
+        assertFalse(viewModel.state.value.messages.last().pending)
+        assertEquals(1, gateway.methods.count { it == "prompt.submit" })
+        viewModel.controller.close()
+    }
+
+    @Test
+    fun rejectedBusyRedirectFallsBackToTheClientQueue() = runTest {
+        val gateway = FakeGateway().apply { redirectStatus = "rejected" }
+        val viewModel = openConversation(gateway)
+        advanceUntilIdle()
+
+        viewModel.updateDraft("First")
+        viewModel.sendMessage()
+        viewModel.updateDraft("Keep this correction")
+        viewModel.sendMessage()
+        advanceUntilIdle()
+
+        assertEquals(1, gateway.methods.count { it == "session.redirect" })
+        assertEquals(listOf("Keep this correction"), viewModel.state.value.queuedPrompts.map { it.text })
+        assertEquals(listOf("user"), viewModel.state.value.messages.map { it.role })
         viewModel.controller.close()
     }
 
@@ -2603,6 +2650,7 @@ class CelesteViewModelTest {
         var resumeFailure: Throwable? = null
         var createFailure: Throwable? = null
         var promptFailure: Throwable? = null
+        var redirectStatus = "rejected"
         var attachmentFailure: Throwable? = null
         var attachmentFailureOnce = false
         val attachmentFailuresByCall = mutableMapOf<Int, Throwable>()
@@ -2668,6 +2716,7 @@ class CelesteViewModelTest {
                     promptFailure?.let { throw it }
                     buildJsonObject { put("status", "streaming") }
                 }
+                "session.redirect" -> buildJsonObject { put("status", redirectStatus) }
                 "image.attach_bytes" -> {
                     attachmentGate?.await()
                     throwAttachmentFailureIfPresent()
