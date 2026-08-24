@@ -60,16 +60,19 @@ suspend fun GatewayConnection.createSession(
 
 suspend fun GatewayConnection.resumeStoredSession(
     storedSessionId: String,
+    profile: String,
     clientSource: String,
 ): ResumedSession {
     require(storedSessionId.isNotBlank()) { "Choose a Hermes session to open." }
     require(clientSource.isNotBlank()) { "A client source is required." }
+    val selectedProfile = profile.trim().ifEmpty { "default" }
     val result = request(
         method = "session.resume",
         params = buildJsonObject {
             put("session_id", storedSessionId)
             put("cols", 96)
             put("source", clientSource)
+            put("profile", selectedProfile)
         },
         timeoutMillis = 30_000,
     ).asObject("Hermes returned no resumed session.")

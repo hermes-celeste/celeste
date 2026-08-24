@@ -603,6 +603,65 @@ class CelesteViewModelTest {
     }
 
     @Test
+    fun staleRuntimeDuringFirstAttachmentStagingRecreatesBlankSessionWithoutResume() = runTest {
+        val gateway = FakeGateway().apply {
+            attachmentFailure = GatewayRpcException(4001, "session not found")
+            attachmentFailureOnce = true
+        }
+        val dashboard = FakeDashboard(gateway)
+        val viewModel = CelesteViewModel(
+            dashboard = dashboard,
+            reconnectDelayMillis = { _, _ -> 0L },
+        )
+        viewModel.updateDashboardUrl("http://hermes.test:9119")
+        viewModel.findDashboard()
+        viewModel.loadSessions()
+        advanceUntilIdle()
+        viewModel.selectProfile("work")
+        viewModel.createNewConversation()
+        advanceUntilIdle()
+
+        viewModel.addPickedAttachments(
+            listOf(
+                pickedAttachment(
+                    kind = ComposerAttachmentKind.File,
+                    name = "first.txt",
+                    mimeType = "text/plain",
+                    contentBase64 = "Zmlyc3Q=",
+                ),
+            ),
+        )
+        viewModel.updateDraft("Send the first attachment")
+        viewModel.sendMessage()
+        advanceUntilIdle()
+
+        assertEquals(
+            "methods=${gateway.methods}, state=${viewModel.state.value}",
+            2,
+            gateway.methods.count { it == "session.create" },
+        )
+        assertEquals(0, gateway.methods.count { it == "session.resume" })
+        assertEquals(
+            "methods=${gateway.methods}, state=${viewModel.state.value}",
+            listOf("runtime-new-1", "runtime-new-2"),
+            gateway.requests.filter { it.first == "file.attach" }
+                .map { it.second["session_id"]?.jsonPrimitive?.content },
+        )
+        assertEquals(
+            "runtime-new-2",
+            gateway.requests.single { it.first == "prompt.submit" }
+                .second["session_id"]?.jsonPrimitive?.content,
+        )
+        assertTrue(
+            gateway.requests.filter { it.first == "session.create" }
+                .all { it.second["profile"]?.jsonPrimitive?.content == "work" },
+        )
+        assertEquals("stored-new-2", viewModel.state.value.activeSummary?.id)
+        assertTrue(viewModel.state.value.composerAttachments.isEmpty())
+        viewModel.controller.close()
+    }
+
+    @Test
     fun removingRejectedStagedImageDetachesItFromTheRuntime() = runTest {
         val gateway = FakeGateway().apply {
             promptFailure = GatewayRpcException(409, "Hermes rejected the prompt.")
@@ -1994,6 +2053,7 @@ class CelesteViewModelTest {
 
         val resumeParams = gateway.requests.single { it.first == "session.resume" }.second
         assertEquals("stored-42", resumeParams["session_id"]?.jsonPrimitive?.content)
+        assertEquals("default", resumeParams["profile"]?.jsonPrimitive?.content)
         assertEquals("ios", resumeParams["source"]?.jsonPrimitive?.content)
         controller.close()
     }

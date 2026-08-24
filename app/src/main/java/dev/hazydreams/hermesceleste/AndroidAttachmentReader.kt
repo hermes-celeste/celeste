@@ -17,11 +17,11 @@ internal class AndroidAttachmentReader(
     ): AttachmentReadResult {
         val attachments = mutableListOf<PickedComposerAttachment>()
         val errors = mutableListOf<String>()
-        val remainingAttachmentCount = (MAX_ATTACHMENTS - existingAttachmentCount).coerceAtLeast(0)
-        var totalBytes = existingAttachmentBytes.coerceIn(0L, MAX_TOTAL_ATTACHMENT_BYTES)
+        val remainingAttachmentCount = (AttachmentLimits.MAX_COUNT - existingAttachmentCount).coerceAtLeast(0)
+        var totalBytes = existingAttachmentBytes.coerceIn(0L, AttachmentLimits.MAX_TOTAL_BYTES)
         uris.take(remainingAttachmentCount).forEach { uri ->
             runCatching {
-                val remainingBytes = MAX_TOTAL_ATTACHMENT_BYTES - totalBytes
+                val remainingBytes = AttachmentLimits.MAX_TOTAL_BYTES - totalBytes
                 if (remainingBytes <= 0L) throw IOException(TOTAL_SIZE_ERROR)
                 readOne(uri, kind, remainingBytes)
             }.onSuccess { attachment ->
@@ -32,7 +32,7 @@ internal class AndroidAttachmentReader(
             }
         }
         if (uris.size > remainingAttachmentCount) {
-            errors += "The composer holds up to $MAX_ATTACHMENTS attachments."
+            errors += "The composer holds up to ${AttachmentLimits.MAX_COUNT} attachments."
         }
         return AttachmentReadResult(attachments = attachments, errors = errors)
     }
@@ -43,10 +43,10 @@ internal class AndroidAttachmentReader(
         remainingBytes: Long,
     ): PickedComposerAttachment {
         val metadata = queryMetadata(uri)
-        if (metadata.size != null && metadata.size > MAX_ATTACHMENT_BYTES) {
+        if (metadata.size != null && metadata.size > AttachmentLimits.MAX_ITEM_BYTES) {
             throw IOException("${metadata.name} is larger than 25 MB.")
         }
-        val readLimit = minOf(MAX_ATTACHMENT_BYTES, remainingBytes)
+        val readLimit = minOf(AttachmentLimits.MAX_ITEM_BYTES, remainingBytes)
         if (metadata.size != null && metadata.size > readLimit) throw IOException(TOTAL_SIZE_ERROR)
         val bytes = contentResolver.openInputStream(uri)?.use { input ->
             readBounded(input, readLimit)
@@ -108,7 +108,11 @@ internal class AndroidAttachmentReader(
             total += read
             if (total > maxBytes) {
                 throw IOException(
-                    if (maxBytes < MAX_ATTACHMENT_BYTES) TOTAL_SIZE_ERROR else "This attachment is larger than 25 MB.",
+                    if (maxBytes < AttachmentLimits.MAX_ITEM_BYTES) {
+                        TOTAL_SIZE_ERROR
+                    } else {
+                        "This attachment is larger than 25 MB."
+                    },
                 )
             }
             output.write(buffer, 0, read)
@@ -122,9 +126,6 @@ internal class AndroidAttachmentReader(
     )
 
     companion object {
-        private const val MAX_ATTACHMENTS = 10
-        private const val MAX_ATTACHMENT_BYTES = 25L * 1024L * 1024L
-        private const val MAX_TOTAL_ATTACHMENT_BYTES = 50L * 1024L * 1024L
         private const val TOTAL_SIZE_ERROR = "The selected attachments are larger than 50 MB together."
     }
 }

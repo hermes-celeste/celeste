@@ -57,17 +57,26 @@ internal fun ComposerAttachmentStrip(
             items = attachments,
             key = { attachment -> attachment.id },
         ) { attachment ->
-            when (attachment.kind) {
-                ComposerAttachmentKind.Image -> ImageAttachmentChip(attachment, onOpen, onRemove)
-                ComposerAttachmentKind.File -> FileAttachmentChip(attachment, onOpen, onRemove)
-            }
+            AttachmentChip(
+                attachment = attachment,
+                leadingLabel = if (attachment.kind == ComposerAttachmentKind.Image) {
+                    "IMG"
+                } else {
+                    attachmentExtension(attachment.name)
+                },
+                openAction = if (attachment.kind == ComposerAttachmentKind.Image) "Preview" else "Inspect",
+                onOpen = onOpen,
+                onRemove = onRemove,
+            )
         }
     }
 }
 
 @Composable
-private fun ImageAttachmentChip(
+private fun AttachmentChip(
     attachment: ComposerAttachment,
+    leadingLabel: String,
+    openAction: String,
     onOpen: (ComposerAttachment) -> Unit,
     onRemove: (String) -> Unit,
 ) {
@@ -83,64 +92,13 @@ private fun ImageAttachmentChip(
             }
             .clickable(
                 role = Role.Button,
-                onClickLabel = "Preview ${attachment.name}",
+                onClickLabel = "$openAction ${attachment.name}",
             ) { onOpen(attachment) }
             .padding(start = 12.dp, end = 6.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Text(
-            text = "IMG",
-            color = CelesteAccent,
-            style = MaterialTheme.typography.labelSmall,
-            fontWeight = FontWeight.Bold,
-        )
-        Spacer(Modifier.width(9.dp))
-        Column(modifier = Modifier.weight(1f)) {
-            Text(
-                text = attachment.name,
-                color = CelesteTextPrimary,
-                style = MaterialTheme.typography.bodySmall,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
-            Text(
-                text = formatAttachmentBytes(attachment.byteSize),
-                color = CelesteTextMuted,
-                style = MaterialTheme.typography.labelSmall,
-            )
-        }
-        RemoveAttachmentButton(
-            name = attachment.name,
-            onClick = { onRemove(attachment.id) },
-        )
-    }
-}
-
-@Composable
-private fun FileAttachmentChip(
-    attachment: ComposerAttachment,
-    onOpen: (ComposerAttachment) -> Unit,
-    onRemove: (String) -> Unit,
-) {
-    Row(
-        modifier = Modifier
-            .height(56.dp)
-            .widthIn(max = 220.dp)
-            .clip(RoundedCornerShape(15.dp))
-            .background(CelesteSurfacePrimary)
-            .semantics {
-                contentDescription = attachment.accessibilityLabel
-                stateDescription = "Ready to send"
-            }
-            .clickable(
-                role = Role.Button,
-                onClickLabel = "Inspect ${attachment.name}",
-            ) { onOpen(attachment) }
-            .padding(start = 12.dp, end = 6.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Text(
-            text = attachmentExtension(attachment.name),
+            text = leadingLabel,
             color = CelesteAccent,
             style = MaterialTheme.typography.labelSmall,
             fontWeight = FontWeight.Bold,

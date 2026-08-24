@@ -9,6 +9,7 @@ import dev.hazydreams.hermesceleste.connection.connectionBootstrapDecision
 import dev.hazydreams.hermesceleste.network.AuthenticationRejected
 import dev.hazydreams.hermesceleste.network.AuthenticationMaterial
 import dev.hazydreams.hermesceleste.network.ConversationMessage
+import dev.hazydreams.hermesceleste.network.CreatedSession
 import dev.hazydreams.hermesceleste.network.DashboardProfile
 import dev.hazydreams.hermesceleste.network.DashboardProbeResult
 import dev.hazydreams.hermesceleste.network.DashboardService
@@ -263,8 +264,8 @@ internal class CelesteController(
         val accepted = mutableListOf<ComposerAttachment>()
         attachments.forEach { picked ->
             if (
-                totalCount < MAX_COMPOSER_ATTACHMENTS &&
-                totalBytes + picked.byteSize <= MAX_COMPOSER_ATTACHMENT_BYTES
+                totalCount < AttachmentLimits.MAX_COUNT &&
+                totalBytes + picked.byteSize <= AttachmentLimits.MAX_TOTAL_BYTES
             ) {
                 totalCount += 1
                 totalBytes += picked.byteSize
@@ -1183,9 +1184,6 @@ internal class CelesteController(
             queueDrainsInFlight += storedSessionId
             queuedTurnAwaitingActivitySessionId = storedSessionId
         }
-        // prompt.submit creates the durable row before work begins. From this point on,
-        // uncertain delivery must reconcile by stored ID and must never create/resend.
-        currentSessionCanResume = true
         controllerScope.launch {
             var submittedStoredSessionId = storedSessionId
             var activeSubmittedSession = submittedSession
@@ -1197,6 +1195,7 @@ internal class CelesteController(
                         activeGateway = activeGateway,
                         initialRuntimeSessionId = runtimeId,
                         initialStoredSessionId = submittedStoredSessionId,
+                        profile = summary.profile,
                         queuedPromptId = queuedPrompt?.id,
                         attachments = attachments,
                     )
@@ -1204,6 +1203,9 @@ internal class CelesteController(
                     submittedStoredSessionId = stagedBatch.storedSessionId
                     activeSubmittedSession = activeSubmittedSession.copy(
                         storedSessionId = submittedStoredSessionId,
+                        summary = mutableState.value.activeSummary
+                            ?.takeIf { it.id == submittedStoredSessionId }
+                            ?: activeSubmittedSession.summary.copy(id = submittedStoredSessionId),
                     )
                     currentCoroutineContext().ensureActive()
                     if (
@@ -1213,6 +1215,9 @@ internal class CelesteController(
                     ) {
                         throw IOException("The conversation changed while Hermes staged its attachments.")
                     }
+                    // prompt.submit creates the durable row before work begins. From this point on,
+                    // uncertain delivery must reconcile by stored ID and must never create/resend.
+                    currentSessionCanResume = true
                     promptSubmitAttempted = true
                     activeGateway.submitPrompt(
                         runtimeSessionId = stagedBatch.runtimeSessionId,
@@ -1616,7 +1621,7 @@ internal class CelesteController(
                     null
                 }
                 val runtime = runCatching {
-                    activeGateway.resumeStoredSession(storedSessionId, clientSource)
+                    activeGateway.resumeStoredSession(storedSessionId, profile, clientSource)
                 }
                 runtime to persisted?.await()
             }
@@ -1642,8 +1647,7 @@ internal class CelesteController(
                 ?.let { bindClarificationRequest(presentedMessages, it) }
                 ?: presentedMessages
             if (storedSessionId != resumed.storedSessionId) {
-                migrateQueuedSessionState(storedSessionId, resumed.storedSessionId)
-                migrateComposerAttachmentSessionState(storedSessionId, resumed.storedSessionId)
+                migrateSessionBoundState(storedSessionId, resumed.storedSessionId)
             }
             applyResumedSession(
                 resumed.copy(
@@ -1823,28 +1827,33 @@ internal class CelesteController(
     private suspend fun recreateBlankSession(
         activeGateway: GatewayConnection,
         profile: String,
-    ) {
+        replacementTurnState: TurnState = TurnState.Idle,
+        drainQueue: Boolean = true,
+    ): CreatedSession? {
         val previousStoredId = currentStoredSessionId
         reconciling = true
         bufferedEvents.clear()
         try {
             val created = activeGateway.createSession(profile, clientSource)
-            if (gateway !== activeGateway) return
+            if (gateway !== activeGateway) {
+                bufferedEvents.clear()
+                reconciling = false
+                return null
+            }
             currentRuntimeSessionId = created.runtimeSessionId
             currentStoredSessionId = created.storedSessionId
             previousStoredId?.let { previousId ->
-                migrateQueuedSessionState(previousId, created.storedSessionId)
-                migrateComposerAttachmentSessionState(previousId, created.storedSessionId)
+                migrateSessionBoundState(previousId, created.storedSessionId)
             }
             val previousSummary = mutableState.value.activeSummary
                 ?: throw IllegalStateException("No draft conversation is open.")
-            val updatedSummary = previousSummary.copy(id = created.storedSessionId, profile = profile)
+            val updatedSummary = previousSummary.copy(id = created.storedSessionId, profile = created.profile)
             mutableState.value = mutableState.value.copy(
                 activeSummary = updatedSummary,
                 sessions = mutableState.value.sessions?.map { session ->
                     if (session.id == previousStoredId) updatedSummary else session
                 },
-                turnState = TurnState.Idle,
+                turnState = replacementTurnState,
                 resumeExhausted = false,
                 errorMessage = null,
             )
@@ -1852,7 +1861,8 @@ internal class CelesteController(
             bufferedEvents.clear()
             reconciling = false
             events.forEach(::applyEvent)
-            drainQueuedPromptIfPossible()
+            if (drainQueue) drainQueuedPromptIfPossible()
+            return created
         } catch (error: Throwable) {
             bufferedEvents.clear()
             reconciling = false
@@ -1952,6 +1962,7 @@ internal class CelesteController(
         activeGateway: GatewayConnection,
         initialRuntimeSessionId: String,
         initialStoredSessionId: String,
+        profile: String,
         queuedPromptId: String?,
         attachments: List<ComposerAttachment>,
     ): StagedAttachmentBatch {
@@ -1970,22 +1981,31 @@ internal class CelesteController(
                 )
             } catch (failure: Throwable) {
                 if (recoveredStaleRuntime || !failure.isSessionNotFoundFailure()) throw failure
-                val resumed = activeGateway.resumeStoredSession(storedSessionId, clientSource)
-                currentCoroutineContext().ensureActive()
-                if (gateway !== activeGateway || currentStoredSessionId != storedSessionId) {
-                    throw IOException("The conversation changed while Hermes restored its attachment session.")
-                }
-
                 val previousStoredSessionId = storedSessionId
-                runtimeSessionId = resumed.runtimeSessionId
-                storedSessionId = resumed.storedSessionId
-                if (previousStoredSessionId != storedSessionId) {
-                    migrateQueuedSessionState(previousStoredSessionId, storedSessionId)
-                    migrateComposerAttachmentSessionState(previousStoredSessionId, storedSessionId)
+                if (currentSessionCanResume) {
+                    val resumed = activeGateway.resumeStoredSession(storedSessionId, profile, clientSource)
+                    currentCoroutineContext().ensureActive()
+                    if (gateway !== activeGateway || currentStoredSessionId != storedSessionId) {
+                        throw IOException("The conversation changed while Hermes restored its attachment session.")
+                    }
+                    runtimeSessionId = resumed.runtimeSessionId
+                    storedSessionId = resumed.storedSessionId
+                    if (previousStoredSessionId != storedSessionId) {
+                        migrateSessionBoundState(previousStoredSessionId, storedSessionId)
+                    }
+                    currentRuntimeSessionId = runtimeSessionId
+                    currentStoredSessionId = storedSessionId
+                    currentSessionCanResume = true
+                } else {
+                    val created = recreateBlankSession(
+                        activeGateway = activeGateway,
+                        profile = profile,
+                        replacementTurnState = TurnState.Running,
+                        drainQueue = false,
+                    ) ?: throw IOException("The conversation changed while Hermes restored its attachment session.")
+                    runtimeSessionId = created.runtimeSessionId
+                    storedSessionId = created.storedSessionId
                 }
-                currentRuntimeSessionId = runtimeSessionId
-                currentStoredSessionId = storedSessionId
-                currentSessionCanResume = true
                 recoveredStaleRuntime = true
                 index = 0
                 continue
@@ -2092,6 +2112,25 @@ internal class CelesteController(
         if (queueDrainsInFlight.remove(fromSessionId)) queueDrainsInFlight += toSessionId
         if (queuedTurnAwaitingActivitySessionId == fromSessionId) {
             queuedTurnAwaitingActivitySessionId = toSessionId
+        }
+    }
+
+    private fun migrateSessionBoundState(fromSessionId: String, toSessionId: String) {
+        if (fromSessionId == toSessionId) return
+        migrateQueuedSessionState(fromSessionId, toSessionId)
+        migrateComposerAttachmentSessionState(fromSessionId, toSessionId)
+        val snapshot = mutableState.value
+        val migratedSummary = snapshot.activeSummary
+            ?.takeIf { it.id == fromSessionId }
+            ?.copy(id = toSessionId)
+        val migratedSessions = snapshot.sessions?.map { session ->
+            if (session.id == fromSessionId) session.copy(id = toSessionId) else session
+        }?.distinctBy(StoredSession::id)
+        if (migratedSummary != null || migratedSessions != snapshot.sessions) {
+            mutableState.value = snapshot.copy(
+                activeSummary = migratedSummary ?: snapshot.activeSummary,
+                sessions = migratedSessions,
+            )
         }
     }
 
@@ -2270,8 +2309,6 @@ internal class CelesteController(
 
     companion object {
         private const val MAX_RESUME_RETRIES = 4
-        private const val MAX_COMPOSER_ATTACHMENTS = 10
-        private const val MAX_COMPOSER_ATTACHMENT_BYTES = 50L * 1024L * 1024L
         private const val DRAFT_COMPOSER_SESSION_ID = "__draft_composer__"
         private const val TASK_PROGRESS_FINISHED_LINGER_MILLIS = 4_000L
 

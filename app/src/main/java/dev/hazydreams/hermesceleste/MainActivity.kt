@@ -37,7 +37,7 @@ class MainActivity : ComponentActivity() {
     private var imagePickerGeneration: Long? = null
     private var filePickerGeneration: Long? = null
     private val imagePicker = registerForActivityResult(
-        ActivityResultContracts.PickMultipleVisualMedia(maxItems = 10),
+        ActivityResultContracts.PickMultipleVisualMedia(maxItems = AttachmentLimits.MAX_COUNT),
     ) { uris ->
         val expectedGeneration = imagePickerGeneration
         imagePickerGeneration = null
