@@ -137,6 +137,13 @@ internal fun ConversationScreen(
     }
     val focusManager = LocalFocusManager.current
     val transcriptKeys = remember(messages) { transcriptItemKeys(messages) }
+    val streamingInsertionIndex = remember(messages) { streamingTranscriptInsertionIndex(messages) }
+    val messagesBeforeStreaming = remember(messages, streamingInsertionIndex) {
+        messages.subList(0, streamingInsertionIndex)
+    }
+    val messagesAfterStreaming = remember(messages, streamingInsertionIndex) {
+        messages.subList(streamingInsertionIndex, messages.size)
+    }
     val pendingClarificationFollowKey = remember(messages) { pendingClarificationFollowKey(messages) }
     val visibleMessageCount = messages.size +
         (if (streamingText.isNotBlank()) 1 else 0) +
@@ -212,7 +219,7 @@ internal fun ConversationScreen(
                     verticalArrangement = Arrangement.spacedBy(20.dp),
                 ) {
                     itemsIndexed(
-                        items = messages,
+                        items = messagesBeforeStreaming,
                         key = { index, _ -> transcriptKeys[index] },
                     ) { _, message ->
                         MessageBubble(
@@ -228,6 +235,16 @@ internal fun ConversationScreen(
                                 streaming = true,
                             )
                         }
+                    }
+                    itemsIndexed(
+                        items = messagesAfterStreaming,
+                        key = { index, _ -> transcriptKeys[streamingInsertionIndex + index] },
+                    ) { _, message ->
+                        MessageBubble(
+                            message = message,
+                            onOpenInspection = { openedInspectionMessageId = message.id },
+                            onClarificationRespond = onClarificationRespond,
+                        )
                     }
                     if (isCompacting) {
                         item(key = "compaction-status:$conversationKey") {
@@ -359,6 +376,10 @@ private fun ResumeExhaustedCard(
 
 internal fun latestTranscriptIndex(visibleMessageCount: Int): Int? =
     (visibleMessageCount - 1).takeIf { it >= 0 }
+
+internal fun streamingTranscriptInsertionIndex(messages: List<ConversationMessage>): Int =
+    messages.lastIndex.takeIf { index -> index >= 0 && messages[index].role == "changes" }
+        ?: messages.size
 
 internal fun pendingClarificationFollowKey(messages: List<ConversationMessage>): String? =
     messages.lastOrNull { message ->

@@ -38,7 +38,7 @@ Other conversational products are composition references, not identities to copy
 - Render canonical Markdown natively. Code and tables use raised surfaces and scroll internally within message width.
 - Pause automatic transcript following when the reader scrolls up; resume at the bottom or through the jump-to-latest control.
 - Keep tool and system activity labeled and contained; keep ordinary assistant prose conversational.
-- Represent a turn’s file edits once with a compact filled Changes pill that opens bounded per-file detail.
+- Represent a turn’s file edits once at the end with a compact filled Changes pill that opens bounded per-file detail while preserving transcript activity order.
 - Keep active task progress in one compact filled pill, left-aligned immediately above the composer; acknowledge completion briefly, then clear it.
 - Present pending clarifications inline with nearby choices and actions, then collapse answered or skipped requests into compact transcript content.
 - Present active work with concise copy and restrained motion that stops when inactive or not visible.

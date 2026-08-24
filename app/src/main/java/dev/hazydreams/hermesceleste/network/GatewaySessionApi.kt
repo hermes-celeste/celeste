@@ -210,14 +210,17 @@ internal fun decodeGatewayConversation(elements: List<JsonElement>): DecodedGate
             restoredAssistantSegments(reasoning, commentary).forEach { segment ->
                 if (segment.commentary) {
                     messages = settleCurrentTurnSteps(messages)
-                    messages = messages + ConversationMessage(
-                        role = "assistant",
-                        text = segment.text,
-                        id = uniqueMessageId(
-                            preferred = "$baseIdentity:commentary-$commentaryIndex",
-                            fallback = "resume-$index-commentary-$commentaryIndex",
+                    messages = appendCurrentTurnMessage(
+                        messages = messages,
+                        message = ConversationMessage(
+                            role = "assistant",
+                            text = segment.text,
+                            id = uniqueMessageId(
+                                preferred = "$baseIdentity:commentary-$commentaryIndex",
+                                fallback = "resume-$index-commentary-$commentaryIndex",
+                            ),
+                            interim = true,
                         ),
-                        interim = true,
                     )
                     commentaryIndex += 1
                 } else {
@@ -301,11 +304,16 @@ internal fun decodeGatewayConversation(elements: List<JsonElement>): DecodedGate
         }
 
         if (text.isBlank()) return@forEachIndexed
-        messages = messages + ConversationMessage(
+        val message = ConversationMessage(
             role = role,
             text = text,
             id = uniqueMessageId(sourceIdentity, "resume-$index"),
         )
+        messages = if (role == "user") {
+            messages + message
+        } else {
+            appendCurrentTurnMessage(messages, message)
+        }
     }
 
     return DecodedGatewayConversation(

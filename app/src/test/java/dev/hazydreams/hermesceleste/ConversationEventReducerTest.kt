@@ -41,7 +41,7 @@ class ConversationEventReducerTest {
             event("message.complete", """{"content":"Both files are updated.","status":"complete"}"""),
         )
 
-        assertEquals(listOf("user", "steps", "changes", "assistant"), result.projection.messages.map { it.role })
+        assertEquals(listOf("user", "steps", "assistant", "changes"), result.projection.messages.map { it.role })
         val thinking = result.projection.messages.single { it.role == "steps" }
         assertEquals(
             listOf("Choose the first edit.", "Check the second boundary."),
@@ -238,6 +238,42 @@ class ConversationEventReducerTest {
         val thinkingCapsules = messages.filter { it.role == "steps" }
         assertTrue(thinkingCapsules.none { it.pending })
         assertTrue(thinkingCapsules.flatMap { it.steps }.none { it.pending })
+    }
+
+    @Test
+    fun changedFilesStayAtTheEndWithoutReorderingCommentaryAndLaterActivity() {
+        val result = reduceEvents(
+            event("message.start"),
+            event("reasoning.delta", """{"text":"Plan the edit."}"""),
+            event("tool.start", """{"tool_id":"edit-a","name":"patch","args":{"path":"App.kt"}}"""),
+            event(
+                "tool.complete",
+                """{"tool_id":"edit-a","name":"patch","args":{"path":"App.kt"},"inline_diff":"a/App.kt → b/App.kt\n@@\n-old\n+new"}""",
+            ),
+            event("reasoning.delta", """{"text":"Check the first result."}"""),
+            event("message.interim", """{"text":"The edit is in; I’m checking it."}"""),
+            event("reasoning.delta", """{"text":"Run the focused tests."}"""),
+            event("tool.start", """{"tool_id":"test-a","name":"terminal","context":"./gradlew focusedTest"}"""),
+            event("tool.complete", """{"tool_id":"test-a","name":"terminal","summary":"Tests passed"}"""),
+            event("reasoning.delta", """{"text":"Verify the diff."}"""),
+            event("tool.start", """{"tool_id":"read-a","name":"read_file","context":"App.kt"}"""),
+            event("tool.complete", """{"tool_id":"read-a","name":"read_file","summary":"Read App.kt"}"""),
+            event("message.complete", """{"content":"Everything checks out.","status":"complete"}"""),
+        )
+
+        assertEquals(
+            listOf("user", "steps", "assistant", "steps", "assistant", "changes"),
+            result.projection.messages.map { it.role },
+        )
+        assertEquals("The edit is in; I’m checking it.", result.projection.messages[2].text)
+        assertEquals("Everything checks out.", result.projection.messages[4].text)
+        val thinking = result.projection.messages.filter { it.role == "steps" }
+        assertEquals(2, thinking.size)
+        assertEquals(
+            listOf(ConversationStepKind.Reasoning, ConversationStepKind.Tool, ConversationStepKind.Reasoning, ConversationStepKind.Tool),
+            thinking[1].steps.map { it.kind },
+        )
+        assertEquals(listOf("App.kt"), result.projection.messages.last().changedFiles().map { it.path })
     }
 
     @Test
