@@ -1,5 +1,6 @@
 package dev.hazydreams.hermesceleste.network
 
+import dev.hazydreams.hermesceleste.ComposerAttachmentKind
 import java.io.IOException
 import java.util.concurrent.atomic.AtomicInteger
 import kotlinx.coroutines.CompletableDeferred
@@ -108,7 +109,7 @@ class HermesGatewayTest {
         val gateway = gateway()
         gateway.connect()
 
-        val resumed = gateway.resumeStoredSession("stored-42", "android")
+        val resumed = gateway.resumeStoredSession("stored-42", "work", "android")
         assertEquals("runtime-7", resumed.runtimeSessionId)
         assertTrue(resumed.running == false)
 
@@ -126,6 +127,33 @@ class HermesGatewayTest {
     }
 
     @Test
+    fun attachmentOnlyPromptAllowsEmptyText() = runBlocking {
+        server.enqueue(chatWebSocket())
+        val gateway = gateway()
+        gateway.connect()
+
+        val accepted = gateway.submitPrompt("runtime-7", "")
+
+        assertEquals("streaming", accepted.string("status"))
+        gateway.close()
+    }
+
+    @Test
+    fun imageDetachRequiresConfirmedStatus() = runBlocking {
+        server.enqueue(chatWebSocket())
+        val gateway = gateway()
+        gateway.connect()
+
+        val failure = runCatching {
+            gateway.detachImage("runtime-7", "/tmp/photo.jpg")
+        }.exceptionOrNull()
+
+        assertTrue(failure is IOException)
+        assertEquals("Hermes could not detach the staged image.", failure?.message)
+        gateway.close()
+    }
+
+    @Test
     fun resumedHistoryUsesDurableAndFallbackMessageIdentities() {
         val messages = decodeGatewayMessages(
             Json.parseToJsonElement(
@@ -136,6 +164,55 @@ class HermesGatewayTest {
         assertEquals(listOf("row-41", "steps:resume-1"), messages.map { it.id })
         assertEquals(messages.size, messages.map { it.id }.toSet().size)
         assertEquals(listOf("resume-1:tool", "resume-2:tool"), messages.single { it.role == "steps" }.steps.map { it.id })
+    }
+
+    @Test
+    fun resumedHistoryLiftsPersistedAttachmentDirectivesOutOfUserText() {
+        val messages = decodeGatewayMessages(
+            Json.parseToJsonElement(
+                """[
+                    {"row_id":1,"role":"user","text":"Summarize this\n@file:`attachments/report final.pdf`"},
+                    {"row_id":2,"role":"user","text":"Compare these\n@image:`/tmp/cat photo.png`\n[screenshot]"},
+                    {"row_id":3,"role":"user","text":"What do you see in this image?\n@image:/tmp/only.png"}
+                ]""".trimIndent(),
+            ).jsonArray,
+        )
+
+        assertEquals(
+            listOf("Summarize this", "Compare these", "What do you see in this image?"),
+            messages.map { it.text },
+        )
+        assertEquals(
+            listOf(ComposerAttachmentKind.File, ComposerAttachmentKind.Image, ComposerAttachmentKind.Image),
+            messages.map { it.attachments.single().kind },
+        )
+        assertEquals(
+            listOf("report final.pdf", "cat photo.png", "only.png"),
+            messages.map { it.attachments.single().name },
+        )
+    }
+
+    @Test
+    fun resumedHistoryPreservesOrdinaryUserWhitespace() {
+        val messages = decodeGatewayMessages(
+            Json.parseToJsonElement(
+                """[{"row_id":4,"role":"user","text":"  indented\n\ntrailing  "}]""",
+            ).jsonArray,
+        )
+
+        assertEquals("  indented\n\ntrailing  ", messages.single().text)
+    }
+
+    @Test
+    fun resumedHistoryPreservesDistinctAttachmentsWithTheSameName() {
+        val message = decodeGatewayMessages(
+            Json.parseToJsonElement(
+                """[{"row_id":5,"role":"user","text":"Compare these\n@image:/tmp/a/photo.jpg\n@image:/tmp/b/photo.jpg"}]""",
+            ).jsonArray,
+        ).single()
+
+        assertEquals("Compare these", message.text)
+        assertEquals(listOf("photo.jpg", "photo.jpg"), message.attachments.map { it.name })
     }
 
     @Test
@@ -681,6 +758,10 @@ One test failed
                         when (request["method"]?.jsonPrimitive?.content) {
                             "session.resume" -> webSocket.send(
                                 """{"jsonrpc":"2.0","id":$id,"result":{"session_id":"runtime-7","resumed":"stored-42","running":false,"status":"idle","inflight":null,"messages":[{"id":"u1","role":"user","text":"Earlier message"}]}}""",
+                            )
+
+                            "image.detach" -> webSocket.send(
+                                """{"jsonrpc":"2.0","id":$id,"result":{"detached":false,"count":1}}""",
                             )
 
                             "prompt.submit" -> {
