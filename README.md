@@ -8,13 +8,13 @@ Celeste is a native Android client for a self-hosted [Hermes Agent](https://gith
 
 <table>
   <tr>
-    <td width="33%"><img src="docs/images/readme/conversation.png" alt="A rich Hermes conversation rendered in Celeste" /></td>
-    <td width="33%"><img src="docs/images/readme/thinking.png" alt="Thinking, task progress, and changed files in Celeste" /></td>
+    <td width="33%"><img src="docs/images/readme/conversation.png" alt="A rich Hermes conversation with Thinking and task progress in Celeste" /></td>
+    <td width="33%"><img src="docs/images/readme/thinking.png" alt="Opened Thinking steps and tool calls in Celeste" /></td>
     <td width="33%"><img src="docs/images/readme/conversations.png" alt="Celeste conversation search and navigation" /></td>
   </tr>
   <tr>
-    <td align="center"><sub>Rich native conversations</sub></td>
-    <td align="center"><sub>Thinking and agent work</sub></td>
+    <td align="center"><sub>Rich conversation and tasks</sub></td>
+    <td align="center"><sub>Thinking steps and tool calls</sub></td>
     <td align="center"><sub>Shared conversation history</sub></td>
   </tr>
 </table>
@@ -26,6 +26,13 @@ Celeste is a native Android client for a self-hosted [Hermes Agent](https://gith
 The rolling **[Latest test build](https://github.com/hermes-celeste/celeste/releases/download/latest-test/Hermes-Celeste-latest.apk)** is the current Celeste distribution. It is published after successful checks on `main` and supports Android 9 or newer.
 
 Install the APK, open **Hermes Celeste**, and connect to a Hermes dashboard that your phone can reach over HTTPS, a private network, or Tailscale.
+
+## How to connect
+
+1. [Set up Hermes Agent](https://hermes-agent.nousresearch.com/docs/getting-started/quickstart) and verify that a normal chat works on the Hermes machine.
+2. For the easiest private connection, [install Tailscale](https://tailscale.com/kb/1017/install) on the phone and the Hermes machine, then note the machine’s `100.x` address. A same-LAN address also works.
+3. On the Hermes machine, configure dashboard username/password authentication and start the dashboard on that reachable address. Nous documents the required bind and authentication setup in [Remote dashboard setup](https://hermes-agent.nousresearch.com/docs/user-guide/features/web-dashboard#remote-dashboard-setup). SSH may be how you administer a remote Hermes machine; Celeste itself connects to the dashboard, not through SSH.
+4. In Celeste, enter the dashboard URL, such as `http://100.x.y.z:9119` for a Tailscale address, then sign in with the dashboard username and password.
 
 ## What works
 
