@@ -50,11 +50,16 @@ Persisted history loads with `order=latest` and `include_compacted=true`. The tr
 | `session.list` | none | Foreground gateway health check |
 | `session.create` | profile | Create the runtime for a local draft’s first Send |
 | `session.resume` | stored session ID | Bind durable history to a runtime |
+| `image.attach_bytes` | runtime session ID | Stage image bytes for the next prompt |
+| `file.attach` | runtime session ID | Stage file bytes and return a model-facing file reference |
+| `image.detach` | runtime session ID | Remove an image staged for the next prompt |
 | `prompt.submit` | runtime session ID | Persist and begin a user turn |
 | `session.interrupt` | runtime session ID | Stop work before reconciliation |
 | `clarify.respond` | clarification request ID | Answer or skip a pending clarification |
 
 Creation and resume include `source: "android"` and terminal columns. Hermes creates the durable session row lazily on first prompt submission, so an untouched local draft stays out of the catalog.
+
+Image and file bytes are staged into the current runtime before `prompt.submit`. File references returned by Hermes are prepended only to the model-facing prompt; the local transcript keeps the user’s natural text and attachment summaries. Queue drains stage their own attachments first and submit with `queued: true`.
 
 ## Event projection
 

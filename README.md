@@ -16,13 +16,14 @@ The installed Android app is named **Hermes Celeste** so it is easy to find in t
 - Uses the dashboard’s existing authentication and profiles
 - Lists, creates, and resumes shared Hermes conversations
 - Sends prompts and streams responses and tool activity live
+- Sends selected images and files with prompts through Android's system pickers
 - Queues follow-up prompts during active turns and sends them automatically in order
 - Stops active turns and reconciles safely after reconnecting
 - Keeps Hermes as the source of truth without a separate Celeste account, relay, or copied history
 
 ## Status
 
-Celeste is in early development. The native Android chat flow, rich Markdown for ordinary messages, and secure connection restoration are functional; OAuth sign-in, attachments, approvals, and broader Hermes management features are still ahead. There is no iOS application or release commitment yet.
+Celeste is in early development. The native Android chat flow, rich Markdown for ordinary messages, image and file attachments, and secure connection restoration are functional; OAuth sign-in, approvals, and broader Hermes management features are still ahead. There is no iOS application or release commitment yet.
 
 ## Development
 

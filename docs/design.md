@@ -41,6 +41,7 @@ Other conversational products are composition references, not identities to copy
 - Represent a turn’s file edits once at the end with a compact filled Changes pill that opens bounded per-file detail while preserving transcript activity order.
 - Keep active task progress in one compact filled pill, left-aligned immediately above the composer; acknowledge completion briefly, then clear it.
 - Present pending clarifications inline with nearby choices and actions, then collapse answered or skipped requests into compact transcript content.
+- Keep selected images and files in a horizontally scrolling row inside the composer, with concise identity and size metadata and nearby removal; open image previews on demand and summarize sent attachments inside the user bubble.
 - Present active work with concise copy and restrained motion that stops when inactive or not visible.
 - Expose only destinations and controls with working behavior.
 

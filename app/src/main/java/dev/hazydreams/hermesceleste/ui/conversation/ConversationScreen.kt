@@ -34,6 +34,8 @@ import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -70,6 +72,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import dev.hazydreams.hermesceleste.ComposerAttachment
 import dev.hazydreams.hermesceleste.QueuedPrompt
 import dev.hazydreams.hermesceleste.TurnState
 import dev.hazydreams.hermesceleste.network.ConversationMessage
@@ -95,6 +98,7 @@ internal fun ConversationScreen(
     taskProgress: TaskProgress?,
     streamingText: String,
     draft: String,
+    composerAttachments: List<ComposerAttachment> = emptyList(),
     queuedPrompts: List<QueuedPrompt> = emptyList(),
     isQueuePaused: Boolean = false,
     turnState: TurnState,
@@ -104,6 +108,9 @@ internal fun ConversationScreen(
     errorMessage: String?,
     onDraftChange: (String) -> Unit,
     onSend: () -> Unit,
+    onPickImages: () -> Unit = {},
+    onPickFiles: () -> Unit = {},
+    onRemoveComposerAttachment: (String) -> Unit = {},
     onRemoveQueuedPrompt: (String) -> Unit = {},
     onResumeQueuedPrompts: () -> Unit = {},
     onInterrupt: () -> Unit,
@@ -122,6 +129,7 @@ internal fun ConversationScreen(
         mutableStateOf(initiallyFollowLatest)
     }
     var openedInspectionMessageId by remember(conversationKey) { mutableStateOf<String?>(null) }
+    var openedComposerAttachment by remember(conversationKey) { mutableStateOf<ComposerAttachment?>(null) }
     var tasksSheetOpen by remember(conversationKey) { mutableStateOf(false) }
     var queueSheetOpen by remember(conversationKey) { mutableStateOf(false) }
     LaunchedEffect(taskProgress) {
@@ -286,6 +294,7 @@ internal fun ConversationScreen(
 
             ConversationComposer(
                 draft = draft,
+                attachments = composerAttachments,
                 turnState = turnState,
                 taskProgress = taskProgress,
                 queuedPrompts = queuedPrompts,
@@ -297,6 +306,10 @@ internal fun ConversationScreen(
                     focusManager.clearFocus()
                 },
                 onInterrupt = onInterrupt,
+                onPickImages = onPickImages,
+                onPickFiles = onPickFiles,
+                onOpenAttachment = { openedComposerAttachment = it },
+                onRemoveAttachment = onRemoveComposerAttachment,
                 onOpenTasks = {
                     focusManager.clearFocus()
                     tasksSheetOpen = true
@@ -315,6 +328,12 @@ internal fun ConversationScreen(
         ConversationInspectionSheet(
             message = message,
             onDismiss = { openedInspectionMessageId = null },
+        )
+    }
+    openedComposerAttachment?.let { attachment ->
+        ComposerAttachmentPreviewSheet(
+            attachment = attachment,
+            onDismiss = { openedComposerAttachment = null },
         )
     }
     if (tasksSheetOpen && taskProgress != null) {
@@ -509,6 +528,7 @@ private fun ConversationHeader(
 @Composable
 private fun ConversationComposer(
     draft: String,
+    attachments: List<ComposerAttachment>,
     turnState: TurnState,
     taskProgress: TaskProgress?,
     queuedPrompts: List<QueuedPrompt>,
@@ -516,6 +536,10 @@ private fun ConversationComposer(
     onDraftChange: (String) -> Unit,
     onSend: () -> Unit,
     onInterrupt: () -> Unit,
+    onPickImages: () -> Unit,
+    onPickFiles: () -> Unit,
+    onOpenAttachment: (ComposerAttachment) -> Unit,
+    onRemoveAttachment: (String) -> Unit,
     onOpenTasks: () -> Unit,
     onOpenQueue: () -> Unit,
     focusRequest: Long?,
@@ -523,6 +547,7 @@ private fun ConversationComposer(
 ) {
     val focusRequester = remember { FocusRequester() }
     val keyboardController = LocalSoftwareKeyboardController.current
+    var attachmentMenuExpanded by remember { mutableStateOf(false) }
 
     LaunchedEffect(focusRequest, turnState) {
         val requestId = focusRequest ?: return@LaunchedEffect
@@ -531,7 +556,8 @@ private fun ConversationComposer(
         keyboardController?.show()
         onFocusRequestHandled(requestId)
     }
-    val shouldQueueDraft = draft.isNotBlank() && (
+    val canSubmitDraft = draft.isNotBlank() || attachments.isNotEmpty()
+    val shouldQueueDraft = canSubmitDraft && (
         turnState == TurnState.Running ||
             turnState == TurnState.Reconnecting ||
             queuedPrompts.isNotEmpty()
@@ -574,107 +600,150 @@ private fun ConversationComposer(
             borderColor = Color.Transparent,
             contentPadding = PaddingValues(2.dp),
         ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                BasicTextField(
-                    value = draft,
-                    onValueChange = onDraftChange,
-                    enabled = turnState != TurnState.Synchronizing,
-                    modifier = Modifier
-                        .weight(1f)
-                        .focusRequester(focusRequester),
-                    minLines = 1,
-                    maxLines = 4,
-                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
-                    keyboardActions = KeyboardActions(
-                        onSend = {
-                            if (draft.isNotBlank() && turnState != TurnState.Synchronizing) onSend()
-                        },
-                    ),
-                    textStyle = MaterialTheme.typography.bodyMedium.copy(color = CelesteTextPrimary),
-                    cursorBrush = SolidColor(CelesteAccent),
-                    decorationBox = { innerTextField ->
-                        Box(
-                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
-                            contentAlignment = Alignment.CenterStart,
+            Column(modifier = Modifier.fillMaxWidth()) {
+                if (attachments.isNotEmpty()) {
+                    ComposerAttachmentStrip(
+                        attachments = attachments,
+                        onOpen = onOpenAttachment,
+                        onRemove = onRemoveAttachment,
+                    )
+                }
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Box {
+                        IconButton(
+                            onClick = { attachmentMenuExpanded = true },
+                            enabled = turnState != TurnState.Synchronizing,
+                            modifier = Modifier.size(CONVERSATION_CONTROL_SIZE),
                         ) {
-                            if (draft.isEmpty()) {
-                                Text(
-                                    text = when (turnState) {
-                                        TurnState.Idle -> "Message Hermes…"
-                                        TurnState.Running -> "Message Hermes…"
-                                        TurnState.Synchronizing -> "Synchronizing…"
-                                        TurnState.Reconnecting -> "Message Hermes…"
-                                    },
-                                    color = CelesteTextMuted,
-                                    style = MaterialTheme.typography.bodyMedium,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis,
-                                )
-                            }
-                            innerTextField()
+                            Icon(
+                                imageVector = AddAttachmentIcon,
+                                contentDescription = "Add attachment",
+                                modifier = Modifier.size(CONVERSATION_ICON_SIZE),
+                                tint = CelesteTextMuted,
+                            )
                         }
-                    },
-                )
-                Spacer(Modifier.width(4.dp))
-                when {
-                    turnState == TurnState.Running && shouldQueueDraft -> {
-                        ComposerTextAction(
+                        DropdownMenu(
+                            expanded = attachmentMenuExpanded,
+                            onDismissRequest = { attachmentMenuExpanded = false },
+                            containerColor = CelesteSurfaceRaised,
+                        ) {
+                            DropdownMenuItem(
+                                text = { Text("Photos") },
+                                onClick = {
+                                    attachmentMenuExpanded = false
+                                    onPickImages()
+                                },
+                            )
+                            DropdownMenuItem(
+                                text = { Text("Files") },
+                                onClick = {
+                                    attachmentMenuExpanded = false
+                                    onPickFiles()
+                                },
+                            )
+                        }
+                    }
+                    BasicTextField(
+                        value = draft,
+                        onValueChange = onDraftChange,
+                        enabled = turnState != TurnState.Synchronizing,
+                        modifier = Modifier
+                            .weight(1f)
+                            .focusRequester(focusRequester),
+                        minLines = 1,
+                        maxLines = 4,
+                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
+                        keyboardActions = KeyboardActions(
+                            onSend = {
+                                if (canSubmitDraft && turnState != TurnState.Synchronizing) onSend()
+                            },
+                        ),
+                        textStyle = MaterialTheme.typography.bodyMedium.copy(color = CelesteTextPrimary),
+                        cursorBrush = SolidColor(CelesteAccent),
+                        decorationBox = { innerTextField ->
+                            Box(
+                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+                                contentAlignment = Alignment.CenterStart,
+                            ) {
+                                if (draft.isEmpty()) {
+                                    Text(
+                                        text = when (turnState) {
+                                            TurnState.Idle -> "Message Hermes…"
+                                            TurnState.Running -> "Message Hermes…"
+                                            TurnState.Synchronizing -> "Synchronizing…"
+                                            TurnState.Reconnecting -> "Message Hermes…"
+                                        },
+                                        color = CelesteTextMuted,
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                    )
+                                }
+                                innerTextField()
+                            }
+                        },
+                    )
+                    Spacer(Modifier.width(4.dp))
+                    when {
+                        turnState == TurnState.Running && shouldQueueDraft -> {
+                            ComposerTextAction(
+                                label = "Stop",
+                                onClick = onInterrupt,
+                                containerColor = CelesteSurfacePrimary,
+                                contentColor = CelesteTextPrimary,
+                                width = 48.dp,
+                            )
+                            Spacer(Modifier.width(4.dp))
+                            ComposerTextAction(
+                                label = "Queue",
+                                onClick = onSend,
+                                containerColor = CelesteAccent,
+                                contentColor = CelesteAccentContent,
+                                width = 56.dp,
+                            )
+                        }
+
+                        turnState == TurnState.Running -> ComposerTextAction(
                             label = "Stop",
                             onClick = onInterrupt,
                             containerColor = CelesteSurfacePrimary,
                             contentColor = CelesteTextPrimary,
-                            width = 48.dp,
+                            width = 54.dp,
                         )
-                        Spacer(Modifier.width(4.dp))
-                        ComposerTextAction(
+
+                        shouldQueueDraft -> ComposerTextAction(
                             label = "Queue",
                             onClick = onSend,
                             containerColor = CelesteAccent,
                             contentColor = CelesteAccentContent,
-                            width = 56.dp,
+                            width = 58.dp,
                         )
+
+                        else -> Button(
+                            onClick = onSend,
+                            enabled = canSubmitDraft && turnState == TurnState.Idle,
+                            modifier = Modifier.size(CONVERSATION_CONTROL_SIZE),
+                            shape = CircleShape,
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = CelesteAccent,
+                                contentColor = CelesteAccentContent,
+                                disabledContainerColor = CelesteSurfacePrimary,
+                                disabledContentColor = CelesteTextMuted,
+                            ),
+                            contentPadding = PaddingValues(0.dp),
+                        ) {
+                            Icon(
+                                imageVector = SendMessageIcon,
+                                contentDescription = "Send message",
+                                modifier = Modifier.size(CONVERSATION_ICON_SIZE),
+                            )
+                        }
                     }
-
-                    turnState == TurnState.Running -> ComposerTextAction(
-                        label = "Stop",
-                        onClick = onInterrupt,
-                        containerColor = CelesteSurfacePrimary,
-                        contentColor = CelesteTextPrimary,
-                        width = 54.dp,
-                    )
-
-                    shouldQueueDraft -> ComposerTextAction(
-                        label = "Queue",
-                        onClick = onSend,
-                        containerColor = CelesteAccent,
-                        contentColor = CelesteAccentContent,
-                        width = 58.dp,
-                    )
-
-                    else -> Button(
-                        onClick = onSend,
-                        enabled = draft.isNotBlank() && turnState == TurnState.Idle,
-                        modifier = Modifier.size(CONVERSATION_CONTROL_SIZE),
-                        shape = CircleShape,
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = CelesteAccent,
-                            contentColor = CelesteAccentContent,
-                            disabledContainerColor = CelesteSurfacePrimary,
-                            disabledContentColor = CelesteTextMuted,
-                        ),
-                        contentPadding = PaddingValues(0.dp),
-                    ) {
-                        Icon(
-                            imageVector = SendMessageIcon,
-                            contentDescription = "Send message",
-                            modifier = Modifier.size(CONVERSATION_ICON_SIZE),
-                        )
-                    }
+                    Spacer(Modifier.width(2.dp))
                 }
-                Spacer(Modifier.width(2.dp))
             }
         }
     }
@@ -740,6 +809,27 @@ private val NavigationDrawerIcon: ImageVector by lazy {
             horizontalLineTo(19f)
             moveTo(5f, 17f)
             horizontalLineTo(15f)
+        }
+    }.build()
+}
+
+private val AddAttachmentIcon: ImageVector by lazy {
+    ImageVector.Builder(
+        name = "Add attachment",
+        defaultWidth = 24.dp,
+        defaultHeight = 24.dp,
+        viewportWidth = 24f,
+        viewportHeight = 24f,
+    ).apply {
+        path(
+            stroke = SolidColor(Color.Black),
+            strokeLineWidth = 1.9f,
+            strokeLineCap = StrokeCap.Round,
+        ) {
+            moveTo(12f, 5f)
+            verticalLineTo(19f)
+            moveTo(5f, 12f)
+            horizontalLineTo(19f)
         }
     }.build()
 }

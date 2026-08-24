@@ -194,12 +194,22 @@ private fun QueuedPromptRow(
             )
             Spacer(Modifier.size(3.dp))
             Text(
-                text = prompt.text,
+                text = prompt.text.ifBlank {
+                    prompt.attachments.joinToString(", ") { it.name }
+                },
                 color = CelesteTextPrimary,
                 style = MaterialTheme.typography.bodyMedium,
                 maxLines = 3,
                 overflow = TextOverflow.Ellipsis,
             )
+            if (prompt.attachments.isNotEmpty() && prompt.text.isNotBlank()) {
+                Spacer(Modifier.size(3.dp))
+                Text(
+                    text = "${prompt.attachments.size} attachment${if (prompt.attachments.size == 1) "" else "s"}",
+                    color = CelesteTextMuted,
+                    style = MaterialTheme.typography.labelSmall,
+                )
+            }
         }
         IconButton(
             onClick = onRemove,

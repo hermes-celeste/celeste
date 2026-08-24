@@ -1,5 +1,7 @@
 package dev.hazydreams.hermesceleste.network
 
+import dev.hazydreams.hermesceleste.ConversationAttachment
+
 enum class ConversationStepKind {
     Reasoning,
     Tool,
@@ -26,6 +28,7 @@ data class ConversationMessage(
     val processResult: BackgroundProcessResult? = null,
     val fileEdits: List<FileEditOperation> = emptyList(),
     val clarification: ClarificationExchange? = null,
+    val attachments: List<ConversationAttachment> = emptyList(),
 )
 
 internal fun appendReasoningToCurrentTurn(

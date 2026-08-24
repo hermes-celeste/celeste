@@ -24,6 +24,4 @@ Android is the shipping target. Protocol behavior, application state, and custom
 
 ## Scope
 
-Celeste connects and authenticates to a Hermes dashboard, securely restores supported connections, browses and manages conversations, and runs native mobile conversation sessions with rich transcript rendering, streaming activity, interruption, and recovery.
-
-Browser-based sign-in, attachments, approvals, profile administration, and broad Desktop management surfaces require separate product decisions.
+Celeste connects and authenticates to a Hermes dashboard, securely restores supported connections, browses and manages conversations, and runs native mobile conversation sessions with image and file attachments, rich transcript rendering, streaming activity, interruption, and recovery.

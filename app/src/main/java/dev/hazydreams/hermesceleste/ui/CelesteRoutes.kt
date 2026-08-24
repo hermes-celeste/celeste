@@ -34,6 +34,8 @@ internal fun CelesteRoutes(
     composerFocusRequest: Long?,
     onComposerFocusRequestHandled: (Long) -> Unit,
     onNewConversation: () -> Unit,
+    onPickImages: () -> Unit,
+    onPickFiles: () -> Unit,
 ) {
     val activeSummary = ui.activeSummary
     val sessions = ui.sessions
@@ -139,6 +141,7 @@ internal fun CelesteRoutes(
                         taskProgress = ui.taskProgress,
                         streamingText = ui.streamingText,
                         draft = ui.draft,
+                        composerAttachments = ui.composerAttachments,
                         queuedPrompts = ui.queuedPrompts,
                         isQueuePaused = ui.isQueuePaused,
                         turnState = ui.turnState,
@@ -148,6 +151,9 @@ internal fun CelesteRoutes(
                         errorMessage = ui.errorMessage,
                         onDraftChange = controller::updateDraft,
                         onSend = controller::sendMessage,
+                        onPickImages = onPickImages,
+                        onPickFiles = onPickFiles,
+                        onRemoveComposerAttachment = controller::removeComposerAttachment,
                         onRemoveQueuedPrompt = controller::removeQueuedPrompt,
                         onResumeQueuedPrompts = controller::resumeQueuedPrompts,
                         onInterrupt = controller::interrupt,

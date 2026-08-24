@@ -1068,6 +1068,54 @@ private val richPreviewMessages = listOf(
     ),
 )
 
+@PreviewTest
+@Preview(name = "39 · Composer attachments", widthDp = 390, heightDp = 844, showBackground = true)
+@Composable
+fun ComposerAttachmentsPreviewScreenshot() {
+    HermesCelesteTheme {
+        PreviewConversation(
+            messages = listOf(
+                ConversationMessage(
+                    role = "assistant",
+                    text = "Send the screenshot and notes together and I’ll compare them.",
+                    id = "preview-attachment-assistant",
+                ),
+                ConversationMessage(
+                    role = "user",
+                    text = "These belong to the same turn.",
+                    id = "preview-attachment-user",
+                    attachments = listOf(
+                        ConversationAttachment(ComposerAttachmentKind.Image, "screen.png"),
+                        ConversationAttachment(ComposerAttachmentKind.File, "notes.txt"),
+                    ),
+                ),
+            ),
+            composerAttachments = listOf(
+                ComposerAttachment(
+                    id = "preview-image",
+                    kind = ComposerAttachmentKind.Image,
+                    name = "next-screen.png",
+                    mimeType = "image/png",
+                    contentBytes = java.util.Base64.getDecoder().decode(
+                        "iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAYAAADED76LAAAAO0lEQVR4nH3GMRGAMAAEwZNzcqIhGtCAhmhInRINWIJX8MXOLI7zNTiTAq+kwDspcCUF7qTAJynwTYofTpyagRFf4HcAAAAASUVORK5CYII=",
+                    ),
+                    byteSize = 116,
+                ),
+                ComposerAttachment(
+                    id = "preview-file",
+                    kind = ComposerAttachmentKind.File,
+                    name = "review-notes.md",
+                    mimeType = "text/markdown",
+                    contentBytes = "# Notes".encodeToByteArray(),
+                    byteSize = 7,
+                ),
+            ),
+            draft = "Compare these next",
+            turnState = TurnState.Idle,
+        )
+    }
+}
+
 @Composable
 private fun PreviewConversation(
     summary: StoredSession? = previewSessions[1],
@@ -1075,6 +1123,7 @@ private fun PreviewConversation(
     taskProgress: TaskProgress? = null,
     streamingText: String = "",
     draft: String = "",
+    composerAttachments: List<ComposerAttachment> = emptyList(),
     queuedPrompts: List<QueuedPrompt> = emptyList(),
     isQueuePaused: Boolean = false,
     turnState: TurnState,
@@ -1091,6 +1140,7 @@ private fun PreviewConversation(
         taskProgress = taskProgress,
         streamingText = streamingText,
         draft = draft,
+        composerAttachments = composerAttachments,
         queuedPrompts = queuedPrompts,
         isQueuePaused = isQueuePaused,
         turnState = turnState,

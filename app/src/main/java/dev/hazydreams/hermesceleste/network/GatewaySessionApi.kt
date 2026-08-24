@@ -1,6 +1,13 @@
 package dev.hazydreams.hermesceleste.network
 
+import dev.hazydreams.hermesceleste.ComposerAttachment
+import dev.hazydreams.hermesceleste.ComposerAttachmentKind
+import dev.hazydreams.hermesceleste.ConversationAttachment
 import java.io.IOException
+import kotlin.io.encoding.Base64
+import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
@@ -117,6 +124,71 @@ suspend fun GatewayConnection.submitPrompt(
     ).asObject("Hermes returned no prompt status.")
 }
 
+suspend fun GatewayConnection.stageAttachment(
+    runtimeSessionId: String,
+    attachment: ComposerAttachment,
+    encodingDispatcher: CoroutineDispatcher = Dispatchers.Default,
+): ComposerAttachment {
+    require(runtimeSessionId.isNotBlank()) { "No Hermes conversation is open." }
+    if (attachment.attachedRuntimeSessionId == runtimeSessionId) return attachment
+    val contentBase64 = withContext(encodingDispatcher) {
+        Base64.encode(attachment.contentBytes)
+    }
+    return when (attachment.kind) {
+        ComposerAttachmentKind.Image -> {
+            val result = request(
+                method = "image.attach_bytes",
+                params = buildJsonObject {
+                    put("session_id", runtimeSessionId)
+                    put("content_base64", contentBase64)
+                    put("filename", attachment.name)
+                },
+                timeoutMillis = 60_000,
+            ).asObject("Hermes returned no image attachment status.")
+            if (result.boolean("attached") != true) {
+                throw IOException(result.string("message") ?: "Hermes could not attach ${attachment.name}.")
+            }
+            attachment.copy(
+                attachedRuntimeSessionId = runtimeSessionId,
+                remotePath = result.string("path"),
+            )
+        }
+
+        ComposerAttachmentKind.File -> {
+            val result = request(
+                method = "file.attach",
+                params = buildJsonObject {
+                    put("session_id", runtimeSessionId)
+                    put("name", attachment.name)
+                    put("data_url", "data:${attachment.mimeType};base64,$contentBase64")
+                },
+                timeoutMillis = 60_000,
+            ).asObject("Hermes returned no file attachment status.")
+            val refText = result.string("ref_text")?.takeIf(String::isNotBlank)
+            if (result.boolean("attached") != true || refText == null) {
+                throw IOException(result.string("message") ?: "Hermes could not attach ${attachment.name}.")
+            }
+            attachment.copy(
+                attachedRuntimeSessionId = runtimeSessionId,
+                remotePath = result.string("path"),
+                refText = refText,
+            )
+        }
+    }
+}
+
+suspend fun GatewayConnection.detachImage(runtimeSessionId: String, remotePath: String): JsonObject {
+    require(runtimeSessionId.isNotBlank()) { "No Hermes conversation is open." }
+    require(remotePath.isNotBlank()) { "No staged image is available." }
+    return request(
+        method = "image.detach",
+        params = buildJsonObject {
+            put("session_id", runtimeSessionId)
+            put("path", remotePath)
+        },
+    ).asObject("Hermes returned no image detach status.")
+}
+
 suspend fun GatewayConnection.respondToClarification(requestId: String, answer: String): JsonObject {
     require(requestId.isNotBlank()) { "No Hermes clarification request is open." }
     return request(
@@ -141,6 +213,53 @@ private data class PersistedToolCall(
     val arguments: JsonObject?,
     val context: String,
 )
+
+private data class PersistedUserPresentation(
+    val text: String,
+    val attachments: List<ConversationAttachment>,
+)
+
+private val persistedAttachmentLine = Regex(
+    """^@(image|file):(`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|\S+)$""",
+    RegexOption.IGNORE_CASE,
+)
+
+private fun persistedUserPresentation(text: String): PersistedUserPresentation {
+    val attachments = mutableListOf<ConversationAttachment>()
+    val visibleLines = text.lines().filterNot { line ->
+        val match = persistedAttachmentLine.matchEntire(line.trim()) ?: return@filterNot false
+        val kind = if (match.groupValues[1].equals("image", ignoreCase = true)) {
+            ComposerAttachmentKind.Image
+        } else {
+            ComposerAttachmentKind.File
+        }
+        val path = match.groupValues[2].removeSurrounding("`")
+            .removeSurrounding("\"")
+            .removeSurrounding("'")
+        val fallback = if (kind == ComposerAttachmentKind.Image) "image" else "file"
+        val name = path.replace('\\', '/').substringAfterLast('/').ifBlank { fallback }
+        attachments += ConversationAttachment(kind = kind, name = name)
+        true
+    }.toMutableList()
+
+    if (attachments.any { it.kind == ComposerAttachmentKind.Image }) {
+        visibleLines.removeAll { line -> line.trim() == "[screenshot]" || line.trim() == "[image]" }
+    }
+    val visibleText = visibleLines.joinToString("\n").trim().let { value ->
+        if (
+            attachments.any { it.kind == ComposerAttachmentKind.Image } &&
+            value == "What do you see in this image?"
+        ) {
+            ""
+        } else {
+            value
+        }
+    }
+    return PersistedUserPresentation(
+        text = visibleText,
+        attachments = attachments.distinct(),
+    )
+}
 
 internal fun decodeGatewayMessages(elements: List<JsonElement>): List<ConversationMessage> =
     decodeGatewayConversation(elements).messages
@@ -303,11 +422,13 @@ internal fun decodeGatewayConversation(elements: List<JsonElement>): DecodedGate
             return@forEachIndexed
         }
 
-        if (text.isBlank()) return@forEachIndexed
+        val userPresentation = if (role == "user") persistedUserPresentation(text) else null
+        if (text.isBlank() && userPresentation?.attachments.isNullOrEmpty()) return@forEachIndexed
         val message = ConversationMessage(
             role = role,
-            text = text,
+            text = userPresentation?.text ?: text,
             id = uniqueMessageId(sourceIdentity, "resume-$index"),
+            attachments = userPresentation?.attachments.orEmpty(),
         )
         messages = if (role == "user") {
             messages + message

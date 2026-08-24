@@ -83,6 +83,13 @@ private fun UserMessage(message: ConversationMessage, streaming: Boolean) {
                 .background(CelesteSurfaceSelected, RoundedCornerShape(18.dp))
                 .padding(horizontal = 15.dp, vertical = 11.dp),
         ) {
+            if (message.attachments.isNotEmpty()) {
+                TranscriptAttachmentSummaries(
+                    attachments = message.attachments,
+                    pending = message.pending,
+                )
+                if (message.text.isNotBlank()) Spacer(Modifier.height(8.dp))
+            }
             if (message.text.isNotBlank()) {
                 RichMarkdown(
                     content = message.text,

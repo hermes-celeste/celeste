@@ -1,5 +1,6 @@
 package dev.hazydreams.hermesceleste.network
 
+import dev.hazydreams.hermesceleste.ComposerAttachmentKind
 import java.io.IOException
 import java.util.concurrent.atomic.AtomicInteger
 import kotlinx.coroutines.CompletableDeferred
@@ -137,6 +138,30 @@ class HermesGatewayTest {
         assertEquals(messages.size, messages.map { it.id }.toSet().size)
         assertEquals(listOf("resume-1:tool", "resume-2:tool"), messages.single { it.role == "steps" }.steps.map { it.id })
     }
+
+    @Test
+    fun resumedHistoryLiftsPersistedAttachmentDirectivesOutOfUserText() {
+        val messages = decodeGatewayMessages(
+            Json.parseToJsonElement(
+                """[
+                    {"row_id":1,"role":"user","text":"Summarize this\n@file:`attachments/report final.pdf`"},
+                    {"row_id":2,"role":"user","text":"Compare these\n@image:`/tmp/cat photo.png`\n[screenshot]"},
+                    {"row_id":3,"role":"user","text":"What do you see in this image?\n@image:/tmp/only.png"}
+                ]""".trimIndent(),
+            ).jsonArray,
+        )
+
+        assertEquals(listOf("Summarize this", "Compare these", ""), messages.map { it.text })
+        assertEquals(
+            listOf(ComposerAttachmentKind.File, ComposerAttachmentKind.Image, ComposerAttachmentKind.Image),
+            messages.map { it.attachments.single().kind },
+        )
+        assertEquals(
+            listOf("report final.pdf", "cat photo.png", "only.png"),
+            messages.map { it.attachments.single().name },
+        )
+    }
+
 
     @Test
     fun resumedHistoryRebuildsChangedFilesAndLatestTaskProgress() {

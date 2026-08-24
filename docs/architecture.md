@@ -24,7 +24,7 @@ Compose renders `CelesteUiState` and emits intent. It owns navigation and epheme
 
 ### Application state
 
-`CelesteController` owns the selected dashboard and profile, in-memory credential, active session identities, persistent gateway, transcript projection, task progress, draft, per-session prompt queues, turn state, and lifecycle recovery. It delegates deterministic event projection and catalog behavior to their focused owners. Changed-file projections remain durable turn content; task progress remains active-session state.
+`CelesteController` owns the selected dashboard and profile, in-memory credential, active session identities, persistent gateway, transcript projection, task progress, draft, per-session attachment selections and prompt queues, turn state, and lifecycle recovery. It stages selected attachment bytes into the active Hermes runtime before prompt submission and keeps queued attachments bound to their owning prompt. It delegates deterministic event projection and catalog behavior to their focused owners. Changed-file projections remain durable turn content; task progress remains active-session state.
 
 The controller runs on the serial dispatcher supplied by its host. Its child work inherits that context, and closing the host lifetime closes the gateway and clears in-memory authentication.
 
@@ -52,7 +52,7 @@ The dashboard remains authoritative for profiles, sessions, messages, and capabi
 
 ## Shared and platform ownership
 
-Protocol models, reducers, application state, and custom Compose UI stay free of Android, AndroidX, and JVM APIs. Platform code owns application entry points, lifecycle bridges, secure storage, system navigation, keyboard and insets, notifications, and other operating-system integrations.
+Protocol models, reducers, application state, and custom Compose UI stay free of Android, AndroidX, and JVM APIs. Platform code owns application entry points, lifecycle bridges, secure storage, system navigation, keyboard and insets, attachment pickers and bounded content-URI reads, notifications, and other operating-system integrations.
 
 A future platform host supplies equivalent lifetime and platform adapters rather than reimplementing product behavior.
 
