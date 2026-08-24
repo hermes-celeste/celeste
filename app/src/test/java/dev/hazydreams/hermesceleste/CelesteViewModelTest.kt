@@ -24,6 +24,7 @@ import dev.hazydreams.hermesceleste.network.TaskItemStatus
 import dev.hazydreams.hermesceleste.network.TaskProgress
 import dev.hazydreams.hermesceleste.network.TaskProgressItem
 import dev.hazydreams.hermesceleste.network.TaskProgressSnapshot
+import dev.hazydreams.hermesceleste.network.UserMessagePlacement
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
@@ -1065,6 +1066,132 @@ class CelesteViewModelTest {
         assertEquals("Working on it", viewModel.state.value.messages[1].text)
         assertFalse(viewModel.state.value.messages.last().pending)
         assertEquals(1, gateway.methods.count { it == "prompt.submit" })
+        viewModel.controller.close()
+    }
+
+    @Test
+    fun redirectedCompletionKeepsArrivalOrderWithoutRepeatingPreCorrectionProse() = runTest {
+        val gateway = FakeGateway().apply { redirectStatus = "redirected" }
+        val viewModel = openConversation(gateway)
+        advanceUntilIdle()
+
+        viewModel.updateDraft("First")
+        viewModel.sendMessage()
+        gateway.emit("message.delta", """{"text":"Before."}""")
+        viewModel.updateDraft("Change direction")
+        viewModel.sendMessage()
+        advanceUntilIdle()
+        gateway.emit("message.delta", """{"text":"After."}""")
+        gateway.emit("message.complete", """{"content":"Before.After.","status":"complete"}""")
+        advanceUntilIdle()
+
+        assertEquals(
+            listOf("First", "Before.", "Change direction", "After."),
+            viewModel.state.value.messages.map { it.text },
+        )
+        assertEquals(
+            UserMessagePlacement.MidTurnCorrection,
+            viewModel.state.value.messages[2].userPlacement,
+        )
+        viewModel.controller.close()
+    }
+
+    @Test
+    fun gatewayQueuedRedirectKeepsTheCurrentReplyBeforeTheNextTurn() = runTest {
+        val gateway = FakeGateway().apply { redirectStatus = "queued" }
+        val viewModel = openConversation(gateway)
+        advanceUntilIdle()
+
+        viewModel.updateDraft("First")
+        viewModel.sendMessage()
+        viewModel.updateDraft("Run this next")
+        viewModel.sendMessage()
+        advanceUntilIdle()
+        gateway.emit("message.complete", """{"content":"First answer","status":"complete"}""")
+        advanceUntilIdle()
+
+        assertEquals(
+            listOf("First", "First answer", "Run this next"),
+            viewModel.state.value.messages.map { it.text },
+        )
+        assertEquals(UserMessagePlacement.NextTurn, viewModel.state.value.messages.last().userPlacement)
+        viewModel.controller.close()
+    }
+
+    @Test
+    fun resumeRestoresAcceptedRedirectAtItsAssistantOffset() = runTest {
+        val gateway = FakeGateway().apply {
+            resumePayload = resumePayload(
+                messages = listOf(ConversationMessage(role = "user", text = "First", id = "server-user")),
+                running = true,
+                inflightJson = """{"user":"First","assistant":"Before.After.","streaming":true,"corrections":["Change direction"],"correction_offsets":[7]}""",
+            )
+        }
+        val viewModel = openConversation(gateway)
+        advanceUntilIdle()
+
+        assertEquals(
+            listOf("First", "Before.", "Change direction"),
+            viewModel.state.value.messages.map { it.text },
+        )
+        assertEquals("After.", viewModel.state.value.streamingText)
+        assertEquals(
+            UserMessagePlacement.MidTurnCorrection,
+            viewModel.state.value.messages.last().userPlacement,
+        )
+        viewModel.controller.close()
+    }
+
+    @Test
+    fun staleRuntimeRedirectResumesAndRetriesOnce() = runTest {
+        val gateway = FakeGateway().apply { redirectStatus = "redirected" }
+        val viewModel = openConversation(gateway)
+        advanceUntilIdle()
+        gateway.redirectFailure = GatewayRpcException(4001, "session not found")
+        gateway.redirectFailureOnce = true
+        gateway.resumePayload = resumePayload(
+            messages = emptyList(),
+            running = true,
+            runtimeSessionId = "runtime-recovered",
+        )
+
+        viewModel.updateDraft("First")
+        viewModel.sendMessage()
+        viewModel.updateDraft("Use recovered runtime")
+        viewModel.sendMessage()
+        advanceUntilIdle()
+
+        assertEquals(
+            listOf("runtime-7", "runtime-recovered"),
+            gateway.requests.filter { it.first == "session.redirect" }
+                .map { it.second["session_id"]?.jsonPrimitive?.content },
+        )
+        assertTrue(viewModel.state.value.queuedPrompts.isEmpty())
+        viewModel.controller.close()
+    }
+
+    @Test
+    fun rejectedRedirectFallbackFollowsRecoveredStoredSessionIdentity() = runTest {
+        val gateway = FakeGateway().apply { redirectStatus = "rejected" }
+        val viewModel = openConversation(gateway)
+        advanceUntilIdle()
+        gateway.redirectFailure = GatewayRpcException(4001, "session not found")
+        gateway.redirectFailureOnce = true
+        gateway.resumePayload = resumePayload(
+            messages = emptyList(),
+            running = true,
+            runtimeSessionId = "runtime-recovered",
+            storedSessionId = "stored-recovered",
+        )
+
+        viewModel.updateDraft("First")
+        viewModel.sendMessage()
+        viewModel.updateDraft("Keep this correction")
+        viewModel.sendMessage()
+        advanceUntilIdle()
+
+        assertEquals("stored-recovered", viewModel.state.value.activeSummary?.id)
+        assertEquals(listOf("Keep this correction"), viewModel.state.value.queuedPrompts.map { it.text })
         viewModel.controller.close()
     }
 
@@ -2651,6 +2778,8 @@ class CelesteViewModelTest {
         var createFailure: Throwable? = null
         var promptFailure: Throwable? = null
         var redirectStatus = "rejected"
+        var redirectFailure: Throwable? = null
+        var redirectFailureOnce = false
         var attachmentFailure: Throwable? = null
         var attachmentFailureOnce = false
         val attachmentFailuresByCall = mutableMapOf<Int, Throwable>()
@@ -2716,7 +2845,13 @@ class CelesteViewModelTest {
                     promptFailure?.let { throw it }
                     buildJsonObject { put("status", "streaming") }
                 }
-                "session.redirect" -> buildJsonObject { put("status", redirectStatus) }
+                "session.redirect" -> {
+                    redirectFailure?.let { failure ->
+                        if (redirectFailureOnce) redirectFailure = null
+                        throw failure
+                    }
+                    buildJsonObject { put("status", redirectStatus) }
+                }
                 "image.attach_bytes" -> {
                     attachmentGate?.await()
                     throwAttachmentFailureIfPresent()
@@ -2778,12 +2913,13 @@ class CelesteViewModelTest {
             running: Boolean,
             runtimeSessionId: String = "runtime-7",
             storedSessionId: String = "stored-42",
+            inflightJson: String = "null",
         ): JsonObject {
             val encodedMessages = messages.joinToString(",") { message ->
                 """{"id":${Json.encodeToString(message.id ?: "")},"role":${Json.encodeToString(message.role)},"text":${Json.encodeToString(message.text)}}"""
             }
             return Json.parseToJsonElement(
-                """{"session_id":"$runtimeSessionId","resumed":"$storedSessionId","running":$running,"status":"${if (running) "streaming" else "idle"}","inflight":null,"messages":[$encodedMessages]}""",
+                """{"session_id":"$runtimeSessionId","resumed":"$storedSessionId","running":$running,"status":"${if (running) "streaming" else "idle"}","inflight":$inflightJson,"messages":[$encodedMessages]}""",
             ) as JsonObject
         }
     }

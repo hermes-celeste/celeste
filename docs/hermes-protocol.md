@@ -78,7 +78,7 @@ Celeste recognizes message lifecycle, interim assistant prose, reasoning, tools,
 - Background-process completion produces one compact result row with details available on demand.
 - Notifications with a blank session ID apply to the active conversation; nonblank mismatched runtime IDs are ignored.
 
-`session.resume` binds runtime state while the dashboard history route supplies persisted display history. Resume retries are bounded, preserve readable history, and end in an explicit Retry surface.
+`session.resume` binds runtime state while the dashboard history route supplies persisted display history. Accepted mid-turn corrections are rebuilt from the inflight correction list and assistant-text offsets so reconnect preserves their arrival order. Resume retries are bounded, preserve readable history, and end in an explicit Retry surface.
 
 ## Update workflow
 

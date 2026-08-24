@@ -20,6 +20,7 @@ import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.put
 
 data class CreatedSession(
@@ -92,6 +93,18 @@ suspend fun GatewayConnection.resumeStoredSession(
     val resumedMessages = pendingClarification
         ?.let { bindClarificationRequest(decoded.messages, it) }
         ?: decoded.messages
+    val inflightObject = inflight as? JsonObject
+    val correctionOffsets = (inflightObject?.get("correction_offsets") as? JsonArray)
+        ?.map { it.jsonPrimitive.intOrNull }
+        .orEmpty()
+    val inflightCorrections = (inflightObject?.get("corrections") as? JsonArray)
+        ?.mapIndexedNotNull { index, correction ->
+            correction.jsonPrimitive.contentOrNull
+                ?.trim()
+                ?.takeIf(String::isNotEmpty)
+                ?.let { text -> InflightCorrection(text, correctionOffsets.getOrNull(index)) }
+        }
+        .orEmpty()
     return ResumedSession(
         runtimeSessionId = runtimeId,
         storedSessionId = result.string("resumed")
@@ -105,6 +118,7 @@ suspend fun GatewayConnection.resumeStoredSession(
         inflightUserText = (inflight as? JsonObject)?.string("user").orEmpty(),
         queuedUserText = (queued as? JsonObject)?.string("user").orEmpty(),
         inflightAssistantText = inflightAssistantText(inflight),
+        inflightCorrections = inflightCorrections,
         hasLiveProjection = inflight.isTruthy() || queued.isTruthy() || pendingClarification != null,
     )
 }
@@ -126,7 +140,7 @@ suspend fun GatewayConnection.submitPrompt(
     ).asObject("Hermes returned no prompt status.")
 }
 
-suspend fun GatewayConnection.redirectSession(runtimeSessionId: String, text: String): Boolean {
+suspend fun GatewayConnection.redirectSession(runtimeSessionId: String, text: String): SessionRedirectStatus {
     require(runtimeSessionId.isNotBlank()) { "No Hermes conversation is open." }
     require(text.isNotBlank()) { "A correction is required." }
     val result = request(
@@ -137,7 +151,11 @@ suspend fun GatewayConnection.redirectSession(runtimeSessionId: String, text: St
         },
         timeoutMillis = 30_000,
     ).asObject("Hermes returned no redirect status.")
-    return result.string("status") in setOf("redirected", "queued")
+    return when (result.string("status")) {
+        "redirected" -> SessionRedirectStatus.Redirected
+        "queued" -> SessionRedirectStatus.Queued
+        else -> SessionRedirectStatus.Rejected
+    }
 }
 
 suspend fun GatewayConnection.stageAttachment(

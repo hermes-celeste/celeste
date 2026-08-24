@@ -7,6 +7,12 @@ enum class ConversationStepKind {
     Tool,
 }
 
+enum class UserMessagePlacement {
+    Prompt,
+    MidTurnCorrection,
+    NextTurn,
+}
+
 data class ConversationStep(
     val id: String,
     val kind: ConversationStepKind,
@@ -24,6 +30,7 @@ data class ConversationMessage(
     val id: String? = null,
     val pending: Boolean = false,
     val interim: Boolean = false,
+    val userPlacement: UserMessagePlacement = UserMessagePlacement.Prompt,
     val steps: List<ConversationStep> = emptyList(),
     val processResult: BackgroundProcessResult? = null,
     val fileEdits: List<FileEditOperation> = emptyList(),

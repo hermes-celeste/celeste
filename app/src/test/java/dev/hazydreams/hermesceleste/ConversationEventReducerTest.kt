@@ -245,6 +245,18 @@ class ConversationEventReducerTest {
     }
 
     @Test
+    fun matchingFinalAnswerDoesNotDeleteUnstreamedReasoning() {
+        val result = reduceEvents(
+            event("message.start"),
+            event("reasoning.delta", """{"text":"Done"}"""),
+            event("message.complete", """{"content":"Done","status":"complete"}"""),
+        )
+
+        assertEquals(listOf("user", "steps", "assistant"), result.projection.messages.map { it.role })
+        assertEquals("Done", result.projection.messages.single { it.role == "steps" }.steps.single().detail)
+    }
+
+    @Test
     fun assistantInterimEndsTheCurrentStepsCapsuleAndKeepsItsMessageVisible() {
         val result = reduceEvents(
             event("message.start"),
