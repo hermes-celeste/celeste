@@ -8,6 +8,7 @@ import dev.hazydreams.hermesceleste.ui.conversation.latestTranscriptIndex
 import dev.hazydreams.hermesceleste.ui.conversation.pendingClarificationFollowKey
 import dev.hazydreams.hermesceleste.ui.conversation.remainingScrollToLatest
 import dev.hazydreams.hermesceleste.ui.conversation.shouldShowJumpToLatest
+import dev.hazydreams.hermesceleste.ui.conversation.streamingTranscriptInsertionIndex
 import dev.hazydreams.hermesceleste.ui.conversation.streamingTranscriptKey
 import dev.hazydreams.hermesceleste.ui.conversation.transcriptItemKeys
 import dev.hazydreams.hermesceleste.ui.conversation.updatedFollowLatest
@@ -63,6 +64,17 @@ class TranscriptItemKeysTest {
         assertEquals(null, latestTranscriptIndex(0))
         assertEquals(0, latestTranscriptIndex(1))
         assertEquals(4, latestTranscriptIndex(5))
+    }
+
+    @Test
+    fun streamingAssistantRendersBeforeOnlyATrailingChangesSummary() {
+        val assistant = message("assistant")
+        val changes = ConversationMessage(role = "changes", text = "", id = "changes")
+
+        assertEquals(0, streamingTranscriptInsertionIndex(emptyList()))
+        assertEquals(1, streamingTranscriptInsertionIndex(listOf(assistant)))
+        assertEquals(1, streamingTranscriptInsertionIndex(listOf(assistant, changes)))
+        assertEquals(2, streamingTranscriptInsertionIndex(listOf(changes, assistant)))
     }
 
     @Test
