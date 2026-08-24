@@ -39,6 +39,7 @@ import dev.hazydreams.hermesceleste.ui.CelesteSurfacePrimary
 import dev.hazydreams.hermesceleste.ui.CelesteSurfaceRaised
 import dev.hazydreams.hermesceleste.ui.CelesteTextMuted
 import dev.hazydreams.hermesceleste.ui.CelesteTextPrimary
+import kotlin.math.roundToLong
 
 @Composable
 internal fun ComposerAttachmentStrip(
@@ -233,7 +234,12 @@ private fun attachmentExtension(name: String): String =
     name.substringAfterLast('.', "FILE").take(5).uppercase()
 
 private fun formatAttachmentBytes(bytes: Long): String = when {
-    bytes >= 1_048_576L -> "%.1f MB".format(bytes / 1_048_576.0)
-    bytes >= 1_024L -> "%.1f KB".format(bytes / 1_024.0)
+    bytes >= 1_048_576L -> formatAttachmentUnit(bytes, 1_048_576L, "MB")
+    bytes >= 1_024L -> formatAttachmentUnit(bytes, 1_024L, "KB")
     else -> "$bytes B"
+}
+
+private fun formatAttachmentUnit(bytes: Long, unitBytes: Long, label: String): String {
+    val tenths = (bytes.toDouble() * 10.0 / unitBytes).roundToLong()
+    return "${tenths / 10}.${tenths % 10} $label"
 }

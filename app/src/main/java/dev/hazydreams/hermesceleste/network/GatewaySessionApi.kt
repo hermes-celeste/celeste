@@ -183,13 +183,17 @@ suspend fun GatewayConnection.stageAttachment(
 suspend fun GatewayConnection.detachImage(runtimeSessionId: String, remotePath: String): JsonObject {
     require(runtimeSessionId.isNotBlank()) { "No Hermes conversation is open." }
     require(remotePath.isNotBlank()) { "No staged image is available." }
-    return request(
+    val result = request(
         method = "image.detach",
         params = buildJsonObject {
             put("session_id", runtimeSessionId)
             put("path", remotePath)
         },
     ).asObject("Hermes returned no image detach status.")
+    if (result.boolean("detached") != true) {
+        throw IOException(result.string("message") ?: "Hermes could not detach the staged image.")
+    }
+    return result
 }
 
 suspend fun GatewayConnection.respondToClarification(requestId: String, answer: String): JsonObject {

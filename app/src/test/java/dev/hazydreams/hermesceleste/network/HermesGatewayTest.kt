@@ -127,6 +127,21 @@ class HermesGatewayTest {
     }
 
     @Test
+    fun imageDetachRequiresConfirmedStatus() = runBlocking {
+        server.enqueue(chatWebSocket())
+        val gateway = gateway()
+        gateway.connect()
+
+        val failure = runCatching {
+            gateway.detachImage("runtime-7", "/tmp/photo.jpg")
+        }.exceptionOrNull()
+
+        assertTrue(failure is IOException)
+        assertEquals("Hermes could not detach the staged image.", failure?.message)
+        gateway.close()
+    }
+
+    @Test
     fun resumedHistoryUsesDurableAndFallbackMessageIdentities() {
         val messages = decodeGatewayMessages(
             Json.parseToJsonElement(
@@ -728,6 +743,10 @@ One test failed
                         when (request["method"]?.jsonPrimitive?.content) {
                             "session.resume" -> webSocket.send(
                                 """{"jsonrpc":"2.0","id":$id,"result":{"session_id":"runtime-7","resumed":"stored-42","running":false,"status":"idle","inflight":null,"messages":[{"id":"u1","role":"user","text":"Earlier message"}]}}""",
+                            )
+
+                            "image.detach" -> webSocket.send(
+                                """{"jsonrpc":"2.0","id":$id,"result":{"detached":false,"count":1}}""",
                             )
 
                             "prompt.submit" -> {
