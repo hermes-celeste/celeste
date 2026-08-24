@@ -36,7 +36,6 @@ import dev.hazydreams.hermesceleste.network.settleClarificationLocally
 import dev.hazydreams.hermesceleste.network.stageAttachment
 import dev.hazydreams.hermesceleste.network.submitPrompt
 import dev.hazydreams.hermesceleste.network.string
-import java.io.IOException
 import kotlin.math.min
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineDispatcher
@@ -147,7 +146,9 @@ private data class UncertainDirectPrompt(
     val userMessageCountBeforeSubmit: Int,
 )
 
-private class SubmissionSupersededException : IOException("The attachment submission was cancelled.")
+private class SubmissionSupersededException : Exception("The attachment submission was cancelled.")
+private class AttachmentSessionChangedException :
+    Exception("The conversation changed while Hermes restored its attachment session.")
 
 private class SubmissionLease(
     val gateway: GatewayConnection,
@@ -158,6 +159,7 @@ private class SubmissionLease(
     var attachments: List<ComposerAttachment>,
     var promptSubmitAttempted: Boolean = false,
     var cancelled: Boolean = false,
+    var restoreAfterUserStop: Boolean = false,
 )
 
 /**
@@ -1081,7 +1083,9 @@ internal class CelesteController(
         val summary = snapshot.activeSummary
         if (activeGateway == null || runtimeId == null || storedSessionId == null || summary == null) {
             if (summary == null && activeGateway == null && runtimeId == null && storedSessionId == null) {
-                createDraftRuntimeForFirstPrompt(snapshot)
+                createDraftRuntimeForFirstPrompt(
+                    snapshot.copy(composerAttachmentGeneration = nextComposerAttachmentGeneration()),
+                )
             }
             return
         }
@@ -1132,6 +1136,7 @@ internal class CelesteController(
         mutableState.value = snapshot.copy(
             draft = "",
             composerAttachments = emptyList(),
+            composerAttachmentGeneration = nextComposerAttachmentGeneration(),
             queuedPrompts = queuedPromptsFor(sessionId),
             isQueuePaused = false,
             errorMessage = null,
@@ -1210,8 +1215,13 @@ internal class CelesteController(
                 attachments = attachments.map { it.conversationSummary() },
             ),
             streamingText = "",
-            draft = "",
-            composerAttachments = emptyList(),
+            draft = if (queuedPrompt == null) "" else snapshot.draft,
+            composerAttachments = if (queuedPrompt == null) emptyList() else snapshot.composerAttachments,
+            composerAttachmentGeneration = if (queuedPrompt == null) {
+                nextComposerAttachmentGeneration()
+            } else {
+                snapshot.composerAttachmentGeneration
+            },
             turnState = TurnState.Running,
             isCompacting = false,
             errorMessage = null,
@@ -1282,9 +1292,18 @@ internal class CelesteController(
                 }
                 if (queuedPrompt == null && attachments.isNotEmpty()) {
                     directAttachmentsInFlightBySession.remove(submittedStoredSessionId)
-                    if (definitiveRejection) {
+                    val shouldRestoreAttachments = definitiveRejection && when (failure) {
+                        is SubmissionSupersededException ->
+                            !submission.cancelled || submission.restoreAfterUserStop
+                        is GatewayRpcException ->
+                            !submission.cancelled &&
+                                gateway === activeGateway &&
+                                activeGateway.state.value == GatewayConnectionState.Connected
+                        else -> false
+                    }
+                    if (shouldRestoreAttachments) {
                         restoreComposerAttachmentsAfterFailure(submittedStoredSessionId, submission.attachments)
-                    } else {
+                    } else if (!definitiveRejection) {
                         uncertainDirectPromptsBySession[submittedStoredSessionId] = UncertainDirectPrompt(
                             text = text,
                             submittedDraft = submittedDraft.orEmpty(),
@@ -1525,6 +1544,7 @@ internal class CelesteController(
             ?.takeIf { !it.promptSubmitAttempted }
             ?.let { submission ->
                 submission.cancelled = true
+                submission.restoreAfterUserStop = true
                 mutableState.value = mutableState.value.copy(
                     isQueuePaused = sessionId in parkedQueueSessions,
                     turnState = TurnState.Synchronizing,
@@ -2072,7 +2092,7 @@ internal class CelesteController(
                     )
                     currentCoroutineContext().ensureActive()
                     if (gateway !== submission.gateway || currentStoredSessionId != previousStoredSessionId) {
-                        throw IOException("The conversation changed while Hermes restored its attachment session.")
+                        throw AttachmentSessionChangedException()
                     }
                     updateSubmissionIdentity(
                         submission = submission,
@@ -2086,7 +2106,7 @@ internal class CelesteController(
                         profile = submission.profile,
                         replacementTurnState = TurnState.Running,
                         drainQueue = false,
-                    ) ?: throw IOException("The conversation changed while Hermes restored its attachment session.")
+                    ) ?: throw AttachmentSessionChangedException()
                     updateSubmissionIdentity(
                         submission = submission,
                         storedSessionId = created.storedSessionId,

@@ -211,6 +211,31 @@ class CelesteViewModelTest {
     }
 
     @Test
+    fun sendingInvalidatesAnAttachmentImportThatHasNotFinished() = runTest {
+        val gateway = FakeGateway()
+        val viewModel = openConversation(gateway)
+        val pickerGeneration = viewModel.state.value.composerAttachmentGeneration
+
+        viewModel.updateDraft("Send without waiting")
+        viewModel.sendMessage()
+        viewModel.addPickedAttachments(
+            attachments = listOf(
+                pickedAttachment(
+                    kind = ComposerAttachmentKind.Image,
+                    name = "late.jpg",
+                    mimeType = "image/jpeg",
+                    contentBase64 = "bGF0ZQ==",
+                ),
+            ),
+            expectedGeneration = pickerGeneration,
+        )
+
+        assertTrue(viewModel.state.value.composerAttachments.isEmpty())
+        assertTrue(viewModel.state.value.composerAttachmentGeneration > pickerGeneration)
+        viewModel.controller.close()
+    }
+
+    @Test
     fun navigationDuringAttachmentStagingDoesNotSubmitToTheOldRuntime() = runTest {
         val firstGateway = FakeGateway().apply { attachmentGate = CompletableDeferred() }
         val secondGateway = FakeGateway("second-").apply {
@@ -266,6 +291,37 @@ class CelesteViewModelTest {
         viewModel.openSession(dashboard.session)
         advanceUntilIdle()
         assertEquals(listOf("origin.txt"), viewModel.state.value.composerAttachments.map { it.name })
+        viewModel.controller.close()
+    }
+
+    @Test
+    fun connectionTeardownDuringAttachmentStagingDiscardsThePayload() = runTest {
+        val attachmentGate = CompletableDeferred<Unit>()
+        val gateway = FakeGateway().apply { this.attachmentGate = attachmentGate }
+        val viewModel = openConversation(gateway)
+
+        viewModel.addPickedAttachments(
+            listOf(
+                pickedAttachment(
+                    kind = ComposerAttachmentKind.File,
+                    name = "private.txt",
+                    mimeType = "text/plain",
+                    contentBase64 = "cHJpdmF0ZQ==",
+                ),
+            ),
+        )
+        viewModel.updateDraft("Do not retain this upload")
+        viewModel.sendMessage()
+        runCurrent()
+
+        viewModel.useAnotherConnection()
+        attachmentGate.complete(Unit)
+        advanceUntilIdle()
+
+        assertEquals(ConnectionPhase.ManualSetup, viewModel.state.value.connectionPhase)
+        assertTrue(viewModel.state.value.composerAttachments.isEmpty())
+        assertEquals(0, viewModel.attachmentImportBudget().attachmentCount)
+        assertEquals(0, gateway.methods.count { it == "prompt.submit" })
         viewModel.controller.close()
     }
 
@@ -367,6 +423,37 @@ class CelesteViewModelTest {
                 .map { it.second["text"]?.jsonPrimitive?.content },
         )
         assertTrue(viewModel.state.value.queuedPrompts.isEmpty())
+        viewModel.controller.close()
+    }
+
+    @Test
+    fun queuedDrainPreservesTheNextComposerDraftAndPickerGeneration() = runTest {
+        val gateway = FakeGateway()
+        val viewModel = openConversation(gateway)
+
+        viewModel.updateDraft("First")
+        viewModel.sendMessage()
+        viewModel.updateDraft("Queued")
+        viewModel.sendMessage()
+        viewModel.updateDraft("Still composing")
+        viewModel.addPickedAttachments(
+            listOf(
+                pickedAttachment(
+                    kind = ComposerAttachmentKind.File,
+                    name = "third.txt",
+                    mimeType = "text/plain",
+                    contentBase64 = "dGhpcmQ=",
+                ),
+            ),
+        )
+        val composerGeneration = viewModel.state.value.composerAttachmentGeneration
+
+        gateway.emit("message.complete", """{"content":"First done","status":"complete"}""")
+        advanceUntilIdle()
+
+        assertEquals("Still composing", viewModel.state.value.draft)
+        assertEquals(listOf("third.txt"), viewModel.state.value.composerAttachments.map { it.name })
+        assertEquals(composerGeneration, viewModel.state.value.composerAttachmentGeneration)
         viewModel.controller.close()
     }
 
@@ -536,7 +623,7 @@ class CelesteViewModelTest {
     }
 
     @Test
-    fun attachmentStagingFailureRestoresSelectionWithoutSubmittingPrompt() = runTest {
+    fun attachmentStagingTransportFailureDropsSelectionWithoutSubmittingPrompt() = runTest {
         val gateway = FakeGateway().apply {
             attachmentFailure = IOException("Hermes could not stage that file.")
         }
@@ -557,7 +644,7 @@ class CelesteViewModelTest {
         advanceUntilIdle()
 
         assertEquals("Try this", viewModel.state.value.draft)
-        assertEquals(listOf("retry.txt"), viewModel.state.value.composerAttachments.map { it.name })
+        assertTrue(viewModel.state.value.composerAttachments.isEmpty())
         assertTrue(viewModel.state.value.messages.isEmpty())
         assertEquals(0, gateway.methods.count { it == "prompt.submit" })
         assertEquals(TurnState.Idle, viewModel.state.value.turnState)
@@ -786,10 +873,7 @@ class CelesteViewModelTest {
         advanceUntilIdle()
 
         assertEquals("stored-8", viewModel.state.value.activeSummary?.id)
-        assertEquals(
-            listOf("first.txt", "second.txt"),
-            viewModel.state.value.composerAttachments.map { it.name },
-        )
+        assertTrue(viewModel.state.value.composerAttachments.isEmpty())
         assertEquals(0, gateway.methods.count { it == "prompt.submit" })
         viewModel.controller.close()
     }
@@ -820,7 +904,18 @@ class CelesteViewModelTest {
         viewModel.sendMessage()
         advanceUntilIdle()
 
+        assertTrue(viewModel.state.value.composerAttachments.isEmpty())
         gateway.attachmentFailure = null
+        viewModel.addPickedAttachments(
+            listOf(
+                pickedAttachment(
+                    kind = ComposerAttachmentKind.Image,
+                    name = "uncertain.jpg",
+                    mimeType = "image/jpeg",
+                    contentBase64 = "aW1hZ2U=",
+                ),
+            ),
+        )
         viewModel.sendMessage()
         advanceUntilIdle()
 

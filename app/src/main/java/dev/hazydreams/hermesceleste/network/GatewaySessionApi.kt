@@ -272,7 +272,7 @@ private fun persistedUserPresentation(text: String): PersistedUserPresentation {
     }
     return PersistedUserPresentation(
         text = visibleText,
-        attachments = attachments.distinct(),
+        attachments = attachments,
     )
 }
 

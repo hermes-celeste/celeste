@@ -174,6 +174,18 @@ class HermesGatewayTest {
     }
 
     @Test
+    fun resumedHistoryPreservesDistinctAttachmentsWithTheSameName() {
+        val message = decodeGatewayMessages(
+            Json.parseToJsonElement(
+                """[{"row_id":5,"role":"user","text":"Compare these\n@image:/tmp/a/photo.jpg\n@image:/tmp/b/photo.jpg"}]""",
+            ).jsonArray,
+        ).single()
+
+        assertEquals("Compare these", message.text)
+        assertEquals(listOf("photo.jpg", "photo.jpg"), message.attachments.map { it.name })
+    }
+
+    @Test
     fun resumedHistoryRebuildsChangedFilesAndLatestTaskProgress() {
         val decoded = decodeGatewayConversation(
             Json.parseToJsonElement(

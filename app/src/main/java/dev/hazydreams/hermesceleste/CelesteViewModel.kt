@@ -77,7 +77,6 @@ internal class CelesteViewModel(
         viewModelScope.launch {
             attachmentImportMutex.withLock {
                 if (state.value.composerAttachmentGeneration != expectedGeneration) {
-                    reportAttachmentError("Attachments weren't added because the conversation changed.")
                     return@withLock
                 }
                 val budget = attachmentImportBudget()
@@ -90,7 +89,6 @@ internal class CelesteViewModel(
                     )
                 }
                 if (state.value.composerAttachmentGeneration != expectedGeneration) {
-                    reportAttachmentError("Attachments weren't added because the conversation changed.")
                     return@withLock
                 }
                 if (result.attachments.isNotEmpty()) {

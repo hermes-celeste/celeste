@@ -1,7 +1,10 @@
 package dev.hazydreams.hermesceleste.ui.conversation
 
-import android.graphics.BitmapFactory
+import android.graphics.ImageDecoder
 import androidx.compose.ui.graphics.asImageBitmap
+import java.nio.ByteBuffer
+import kotlin.math.max
+import kotlin.math.roundToInt
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
@@ -12,14 +15,20 @@ internal object AndroidAttachmentImageDecoder : AttachmentImageDecoder {
 }
 
 private fun decodePreviewBitmap(bytes: ByteArray): android.graphics.Bitmap? = runCatching {
-    val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-    BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
-    var sample = 1
-    while (bounds.outWidth / sample > 1_024 || bounds.outHeight / sample > 1_024) sample *= 2
-    BitmapFactory.decodeByteArray(
-        bytes,
-        0,
-        bytes.size,
-        BitmapFactory.Options().apply { inSampleSize = sample },
-    )
+    val source = ImageDecoder.createSource(ByteBuffer.wrap(bytes))
+    ImageDecoder.decodeBitmap(source) { decoder, info, _ ->
+        val width = info.size.width
+        val height = info.size.height
+        val longestEdge = max(width, height)
+        if (longestEdge > MAX_PREVIEW_EDGE_PX) {
+            val scale = MAX_PREVIEW_EDGE_PX.toFloat() / longestEdge
+            decoder.setTargetSize(
+                (width * scale).roundToInt().coerceAtLeast(1),
+                (height * scale).roundToInt().coerceAtLeast(1),
+            )
+        }
+        decoder.allocator = ImageDecoder.ALLOCATOR_SOFTWARE
+    }
 }.getOrNull()
+
+private const val MAX_PREVIEW_EDGE_PX = 1_024
