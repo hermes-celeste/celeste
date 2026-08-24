@@ -55,6 +55,7 @@ Persisted history loads with `order=latest` and `include_compacted=true`. The tr
 | `image.detach` | runtime session ID | Remove an image staged for the next prompt |
 | `prompt.submit` | runtime session ID | Persist and begin a user turn |
 | `session.interrupt` | runtime session ID | Stop work before reconciliation |
+| `session.close` | runtime session ID | Retire a runtime that cannot be safely reused |
 | `clarify.respond` | clarification request ID | Answer or skip a pending clarification |
 
 Creation and resume include `source: "android"` and terminal columns. Hermes creates the durable session row lazily on first prompt submission, so an untouched local draft stays out of the catalog.
