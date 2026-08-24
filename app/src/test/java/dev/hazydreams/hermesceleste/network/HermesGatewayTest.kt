@@ -127,6 +127,18 @@ class HermesGatewayTest {
     }
 
     @Test
+    fun attachmentOnlyPromptAllowsEmptyText() = runBlocking {
+        server.enqueue(chatWebSocket())
+        val gateway = gateway()
+        gateway.connect()
+
+        val accepted = gateway.submitPrompt("runtime-7", "")
+
+        assertEquals("streaming", accepted.string("status"))
+        gateway.close()
+    }
+
+    @Test
     fun imageDetachRequiresConfirmedStatus() = runBlocking {
         server.enqueue(chatWebSocket())
         val gateway = gateway()
@@ -166,7 +178,10 @@ class HermesGatewayTest {
             ).jsonArray,
         )
 
-        assertEquals(listOf("Summarize this", "Compare these", ""), messages.map { it.text })
+        assertEquals(
+            listOf("Summarize this", "Compare these", "What do you see in this image?"),
+            messages.map { it.text },
+        )
         assertEquals(
             listOf(ComposerAttachmentKind.File, ComposerAttachmentKind.Image, ComposerAttachmentKind.Image),
             messages.map { it.attachments.single().kind },

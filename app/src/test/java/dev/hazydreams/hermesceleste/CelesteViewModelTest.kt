@@ -326,7 +326,7 @@ class CelesteViewModelTest {
     }
 
     @Test
-    fun attachmentOnlyTurnUsesHermesImagePromptWithoutShowingSyntheticText() = runTest {
+    fun attachmentOnlyTurnLetsHermesBuildTheImagePrompt() = runTest {
         val gateway = FakeGateway()
         val viewModel = openConversation(gateway)
 
@@ -345,7 +345,7 @@ class CelesteViewModelTest {
 
         val submittedText = gateway.requests.single { it.first == "prompt.submit" }
             .second["text"]?.jsonPrimitive?.content
-        assertEquals("What do you see in this image?", submittedText)
+        assertEquals("", submittedText)
         val userMessage = viewModel.state.value.messages.single { it.role == "user" }
         assertEquals("", userMessage.text)
         assertEquals(listOf("photo.jpg"), userMessage.attachments.map { it.name })

@@ -115,7 +115,6 @@ suspend fun GatewayConnection.submitPrompt(
     queued: Boolean = false,
 ): JsonObject {
     require(runtimeSessionId.isNotBlank()) { "No Hermes conversation is open." }
-    require(text.isNotBlank()) { "Write a message first." }
     return request(
         method = "prompt.submit",
         params = buildJsonObject {
@@ -264,16 +263,7 @@ private fun persistedUserPresentation(text: String): PersistedUserPresentation {
     if (attachments.any { it.kind == ComposerAttachmentKind.Image }) {
         visibleLines.removeAll { line -> line.trim() == "[screenshot]" || line.trim() == "[image]" }
     }
-    val visibleText = visibleLines.joinToString("\n").trim().let { value ->
-        if (
-            attachments.any { it.kind == ComposerAttachmentKind.Image } &&
-            value == "What do you see in this image?"
-        ) {
-            ""
-        } else {
-            value
-        }
-    }
+    val visibleText = visibleLines.joinToString("\n").trim()
     return PersistedUserPresentation(
         text = visibleText,
         attachments = attachments,

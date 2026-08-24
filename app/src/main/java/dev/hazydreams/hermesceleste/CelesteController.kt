@@ -2355,13 +2355,6 @@ internal class CelesteController(
         return listOf(fileReferences, text)
             .filter(String::isNotBlank)
             .joinToString("\n\n")
-            .ifBlank {
-                if (attachments.any { it.kind == ComposerAttachmentKind.Image }) {
-                    "What do you see in this image?"
-                } else {
-                    ""
-                }
-            }
     }
 
     private fun migrateQueuedSessionState(fromSessionId: String, toSessionId: String) {
