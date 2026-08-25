@@ -339,6 +339,41 @@ class ConversationEventReducerTest {
     }
 
     @Test
+    fun queuedTurnCompletionStaysBeforeThePriorTurnsChangesCapsule() {
+        val initial = ConversationEventReduction(
+            projection = projection().copy(
+                messages = listOf(
+                    ConversationMessage(
+                        role = "user",
+                        text = "First",
+                        userPlacement = UserMessagePlacement.Prompt,
+                    ),
+                    ConversationMessage(role = "changes", text = "", id = "changes-1"),
+                    ConversationMessage(
+                        role = "user",
+                        text = "Run this next",
+                        id = "queued-1",
+                        userPlacement = UserMessagePlacement.NextTurn,
+                    ),
+                ),
+                turnState = TurnState.Running,
+            ),
+            localMessageCounter = 0L,
+        )
+
+        val result = initial.reduce(
+            event("message.complete", """{"content":"Finished.","status":"complete"}"""),
+        )
+
+        assertEquals(
+            listOf("user", "assistant", "changes", "user"),
+            result.projection.messages.map { it.role },
+        )
+        assertEquals("Finished.", result.projection.messages[1].text)
+        assertEquals(UserMessagePlacement.Prompt, result.projection.messages.last().userPlacement)
+    }
+
+    @Test
     fun redirectedToolCompletionUpdatesItsOriginalStableIdentity() {
         val initial = ConversationEventReduction(
             projection = projection().copy(
