@@ -62,7 +62,10 @@ class HermesGatewayTest {
                     {"row_id":10,"role":"tool","content":"[CONTEXT SUMMARY]: legitimate tool output"},
                     {"row_id":11,"role":"user","text":"I saw [CONTEXT SUMMARY]: in an ordinary message"},
                     {"row_id":12,"role":"user","text":"[CONTEXT SUMMARY]: quoted literally by the user"},
-                    {"row_id":13,"role":"user","text":"Code sample\n[END OF PRIOR CONTEXT — COMPACTION SUMMARY BELOW]\nKeep this too"}
+                    {"row_id":13,"role":"user","text":"Code sample\n[END OF PRIOR CONTEXT — COMPACTION SUMMARY BELOW]\nKeep this too"},
+                    {"row_id":14,"role":"user","text":"what happened\n\n[Your active task list was preserved across context compression]\n- [>] image-scope. Inspect issue #94 (in_progress)\n- [ ] image-tests. Add focused coverage (pending)\n\n[Skills pruned during compression — reload before acting on these tasks]\nprivate reload instructions"},
+                    {"row_id":15,"role":"user","text":"I saw [Your active task list was preserved across context compression] in the transcript"},
+                    {"row_id":16,"role":"user","text":"Quoted marker:\n[Your active task list was preserved across context compression]\nThis is documentation, not a task snapshot"}
                 ]""".trimIndent(),
             ).jsonArray,
         )
@@ -75,6 +78,9 @@ class HermesGatewayTest {
                 "I saw [CONTEXT SUMMARY]: in an ordinary message",
                 "[CONTEXT SUMMARY]: quoted literally by the user",
                 "Code sample\n[END OF PRIOR CONTEXT — COMPACTION SUMMARY BELOW]\nKeep this too",
+                "what happened",
+                "I saw [Your active task list was preserved across context compression] in the transcript",
+                "Quoted marker:\n[Your active task list was preserved across context compression]\nThis is documentation, not a task snapshot",
             ),
             messages.filter { it.role == "user" || it.role == "assistant" }.map { it.text },
         )

@@ -527,7 +527,29 @@ private fun visiblePersistedText(row: JsonObject, role: String, text: String): S
 
     if (flaggedAsSummary || isKnownStandaloneCompactionCarrier(text)) return null
     if (role != "user") return text
-    return text.takeUnless(::isKnownAsyncDelegationCarrier)
+    val visibleUserText = text.withoutInjectedTodoSnapshot() ?: return null
+    return visibleUserText.takeUnless(::isKnownAsyncDelegationCarrier)
+}
+
+private fun String.withoutInjectedTodoSnapshot(): String? {
+    val markerIndex = lastIndexOf(TODO_INJECTION_HEADER)
+    if (markerIndex < 0) return this
+
+    val prefix = substring(0, markerIndex)
+    val startsInjectedBlock = markerIndex == 0 ||
+        prefix.endsWith("\n\n") ||
+        prefix.endsWith("\r\n\r\n")
+    if (!startsInjectedBlock) return this
+
+    var itemStart = markerIndex + TODO_INJECTION_HEADER.length
+    if (itemStart >= length || (this[itemStart] != '\n' && this[itemStart] != '\r')) return this
+    while (itemStart < length && (this[itemStart] == '\n' || this[itemStart] == '\r')) itemStart += 1
+
+    val startsTodoItem = regionMatches(itemStart, "- [>] ", 0, 6) ||
+        regionMatches(itemStart, "- [ ] ", 0, 6)
+    if (!startsTodoItem) return this
+
+    return prefix.trimEnd().takeIf(String::isNotBlank)
 }
 
 private fun isKnownStandaloneCompactionCarrier(text: String): Boolean {
@@ -590,6 +612,8 @@ private const val CONTEXT_COMPACTION_REFERENCE_HEADER =
     "[CONTEXT COMPACTION — REFERENCE ONLY]"
 private const val ASYNC_DELEGATION_BATCH_HEADER =
     "[ASYNC DELEGATION BATCH COMPLETE —"
+private const val TODO_INJECTION_HEADER =
+    "[Your active task list was preserved across context compression]"
 
 private const val MIN_COMMENTARY_STRIP_LENGTH = 12
 
