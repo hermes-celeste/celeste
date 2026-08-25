@@ -10,6 +10,132 @@ import org.junit.Test
 
 class ConversationWorkSurfacesTest {
     @Test
+    fun delegateAgentStreamIsBoundedAndDropsOrphanProgress() {
+        val orphan = updateDelegateAgentActivity(
+            agents = emptyList(),
+            eventType = "subagent.progress",
+            payload = Json.parseToJsonElement(
+                """{"subagent_id":"agent-a","status":"running","text":"orphan"}""",
+            ).jsonObject,
+        )
+        assertEquals(emptyList<DelegateAgentActivity>(), orphan)
+
+        var agents = updateDelegateAgentActivity(
+            agents = emptyList(),
+            eventType = "subagent.start",
+            payload = Json.parseToJsonElement(
+                """{"subagent_id":"agent-a","goal":"Inspect events","status":"running"}""",
+            ).jsonObject,
+        )
+        repeat(30) { index ->
+            agents = updateDelegateAgentActivity(
+                agents = agents,
+                eventType = "subagent.progress",
+                payload = Json.parseToJsonElement(
+                    """{"subagent_id":"agent-a","status":"running","text":"line $index"}""",
+                ).jsonObject,
+            )
+        }
+
+        assertEquals(24, agents.single().stream.size)
+        assertEquals("line 6", agents.single().stream.first().text)
+        assertEquals("line 29", agents.single().stream.last().text)
+    }
+
+    @Test
+    fun delegateAgentRecordsAndRetainedTextAreBoundedAndRequireStableIds() {
+        val missingIdentity = updateDelegateAgentActivity(
+            agents = emptyList(),
+            eventType = "subagent.start",
+            payload = Json.parseToJsonElement(
+                """{"parent_id":"parent","task_index":0,"goal":"No stable identity"}""",
+            ).jsonObject,
+        )
+        assertEquals(emptyList<DelegateAgentActivity>(), missingIdentity)
+
+        var agents = emptyList<DelegateAgentActivity>()
+        repeat(30) { index ->
+            agents = updateDelegateAgentActivity(
+                agents = agents,
+                eventType = "subagent.start",
+                payload = Json.parseToJsonElement(
+                    """{"subagent_id":"agent-$index","goal":"${"g".repeat(260)}","model":"${"m".repeat(120)}"}""",
+                ).jsonObject,
+            )
+        }
+
+        assertEquals(24, agents.size)
+        assertEquals("agent-6", agents.first().id)
+        assertEquals("agent-29", agents.last().id)
+        assertEquals(220, agents.last().goal.length)
+        assertEquals(96, agents.last().model?.length)
+    }
+
+    @Test
+    fun interruptSettlesOnlyActiveDelegateAgents() {
+        var agents = updateDelegateAgentActivity(
+            agents = emptyList(),
+            eventType = "subagent.start",
+            payload = Json.parseToJsonElement(
+                """{"subagent_id":"running","goal":"Still working"}""",
+            ).jsonObject,
+        )
+        agents = updateDelegateAgentActivity(
+            agents = agents,
+            eventType = "subagent.start",
+            payload = Json.parseToJsonElement(
+                """{"subagent_id":"finished","goal":"Already done"}""",
+            ).jsonObject,
+        )
+        agents = updateDelegateAgentActivity(
+            agents = agents,
+            eventType = "subagent.complete",
+            payload = Json.parseToJsonElement(
+                """{"subagent_id":"finished","status":"completed","summary":"Done"}""",
+            ).jsonObject,
+        )
+
+        val interrupted = interruptActiveDelegateAgents(agents)
+
+        assertEquals(DelegateAgentStatus.Interrupted, interrupted.first().status)
+        assertEquals("Interrupted with the parent turn.", interrupted.first().stream.last().text)
+        assertEquals(DelegateAgentStatus.Completed, interrupted.last().status)
+        assertEquals("Done", interrupted.last().summary)
+    }
+
+    @Test
+    fun delegateAgentCompletionMapsFailureInterruptionAndInvalidTerminalStatus() {
+        fun completed(status: String, extra: String = ""): DelegateAgentActivity {
+            var agents = updateDelegateAgentActivity(
+                agents = emptyList(),
+                eventType = "subagent.start",
+                payload = Json.parseToJsonElement(
+                    """{"subagent_id":"agent-a","goal":"Inspect events","status":"running"}""",
+                ).jsonObject,
+            )
+            agents = updateDelegateAgentActivity(
+                agents = agents,
+                eventType = "subagent.complete",
+                payload = Json.parseToJsonElement(
+                    """{"subagent_id":"agent-a","status":"$status"$extra}""",
+                ).jsonObject,
+            )
+            return agents.single()
+        }
+
+        val timeout = completed("timeout", ",\"duration_seconds\":12")
+        val interrupted = completed("cancelled", ",\"summary\":\"Stopped by parent\"")
+        val invalid = completed("running")
+
+        assertEquals(DelegateAgentStatus.Failed, timeout.status)
+        assertEquals("Timed out after 12s", timeout.summary)
+        assertEquals(true, timeout.stream.last().isError)
+        assertEquals(DelegateAgentStatus.Interrupted, interrupted.status)
+        assertEquals("Stopped by parent", interrupted.summary)
+        assertEquals(DelegateAgentStatus.Failed, invalid.status)
+    }
+
+    @Test
     fun multiFileDiffKeepsStatsAndContentWithItsOwningPath() {
         val message = ConversationMessage(
             role = "changes",

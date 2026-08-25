@@ -14,6 +14,7 @@ import dev.hazydreams.hermesceleste.network.CreatedSession
 import dev.hazydreams.hermesceleste.network.DashboardProfile
 import dev.hazydreams.hermesceleste.network.DashboardProbeResult
 import dev.hazydreams.hermesceleste.network.DashboardService
+import dev.hazydreams.hermesceleste.network.DelegateAgentActivity
 import dev.hazydreams.hermesceleste.network.GatewayConnection
 import dev.hazydreams.hermesceleste.network.GatewayConnectionState
 import dev.hazydreams.hermesceleste.network.GatewayCredential
@@ -104,6 +105,7 @@ internal data class CelesteUiState(
     val activeSummary: StoredSession? = null,
     val messages: List<ConversationMessage> = emptyList(),
     val taskProgress: TaskProgress? = null,
+    val delegateAgents: List<DelegateAgentActivity> = emptyList(),
     val streamingText: String = "",
     val draft: String = "",
     val composerAttachmentGeneration: Long = 0L,
@@ -415,6 +417,7 @@ internal class CelesteController(
             activeSummary = null,
             messages = emptyList(),
             taskProgress = null,
+            delegateAgents = emptyList(),
             streamingText = "",
             draft = "",
             composerAttachmentGeneration = nextComposerAttachmentGeneration(),
@@ -574,6 +577,7 @@ internal class CelesteController(
             activeSummary = null,
             messages = emptyList(),
             taskProgress = null,
+            delegateAgents = emptyList(),
             streamingText = "",
             draft = "",
             composerAttachmentGeneration = nextComposerAttachmentGeneration(),
@@ -866,6 +870,7 @@ internal class CelesteController(
             activeSummary = visibleSummary,
             messages = emptyList(),
             taskProgress = null,
+            delegateAgents = emptyList(),
             streamingText = "",
             draft = "",
             composerAttachmentGeneration = nextComposerAttachmentGeneration(),
@@ -936,6 +941,7 @@ internal class CelesteController(
             activeSummary = null,
             messages = emptyList(),
             taskProgress = null,
+            delegateAgents = emptyList(),
             streamingText = "",
             draft = "",
             composerAttachmentGeneration = nextComposerAttachmentGeneration(),
@@ -963,6 +969,7 @@ internal class CelesteController(
             activeSummary = null,
             messages = emptyList(),
             taskProgress = null,
+            delegateAgents = emptyList(),
             streamingText = "",
             draft = if (clearDraft) "" else snapshot.draft,
             composerAttachmentGeneration = if (clearDraft) {
@@ -2014,6 +2021,7 @@ internal class CelesteController(
                     val wasRunning = mutableState.value.turnState == TurnState.Running
                     mutableState.value = mutableState.value.copy(
                         turnState = TurnState.Reconnecting,
+                        delegateAgents = emptyList(),
                         errorMessage = null,
                     )
                     scheduleReconnect(wasRunning)
@@ -2290,6 +2298,7 @@ internal class CelesteController(
 
     private fun applyEvent(event: GatewayEvent) {
         val runtimeId = currentRuntimeSessionId ?: return
+        if (event.type.startsWith("subagent.") && event.sessionId.isBlank()) return
         if (event.sessionId.isNotBlank() && event.sessionId != runtimeId) return
         val current = mutableState.value
         val storedSessionId = currentStoredSessionId
@@ -2309,6 +2318,7 @@ internal class CelesteController(
                 turnState = current.turnState,
                 isCompacting = current.isCompacting,
                 taskProgress = current.taskProgress,
+                delegateAgents = current.delegateAgents,
                 errorMessage = current.errorMessage,
             ),
             event = event,
@@ -2319,6 +2329,7 @@ internal class CelesteController(
         mutableState.value = current.copy(
             messages = reduction.projection.messages,
             taskProgress = nextTaskProgress,
+            delegateAgents = reduction.projection.delegateAgents,
             streamingText = reduction.projection.streamingText,
             turnState = reduction.projection.turnState,
             isCompacting = reduction.projection.isCompacting,

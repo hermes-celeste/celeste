@@ -2,6 +2,7 @@ package dev.hazydreams.hermesceleste
 
 import dev.hazydreams.hermesceleste.network.ConversationMessage
 import dev.hazydreams.hermesceleste.network.ConversationStepKind
+import dev.hazydreams.hermesceleste.network.DelegateAgentActivity
 import dev.hazydreams.hermesceleste.network.GatewayEvent
 import dev.hazydreams.hermesceleste.network.TaskProgress
 import dev.hazydreams.hermesceleste.network.UserMessagePlacement
@@ -18,7 +19,9 @@ import dev.hazydreams.hermesceleste.network.currentTurnContentTailIndex
 import dev.hazydreams.hermesceleste.network.fileEditDiff
 import dev.hazydreams.hermesceleste.network.fileEditPaths
 import dev.hazydreams.hermesceleste.network.isFileEditTool
+import dev.hazydreams.hermesceleste.network.interruptActiveDelegateAgents
 import dev.hazydreams.hermesceleste.network.parseBackgroundProcessResult
+import dev.hazydreams.hermesceleste.network.pruneFinishedDelegateAgents
 import dev.hazydreams.hermesceleste.network.settleCurrentReasoning
 import dev.hazydreams.hermesceleste.network.settleCurrentTurnSteps
 import dev.hazydreams.hermesceleste.network.startClarificationInCurrentTurn
@@ -29,6 +32,7 @@ import dev.hazydreams.hermesceleste.network.taskProgressSnapshotFromPayload
 import dev.hazydreams.hermesceleste.network.toolArguments
 import dev.hazydreams.hermesceleste.network.toolCompletionFailed
 import dev.hazydreams.hermesceleste.network.upsertBackgroundProcessResult
+import dev.hazydreams.hermesceleste.network.updateDelegateAgentActivity
 
 internal data class ConversationProjection(
     val messages: List<ConversationMessage>,
@@ -36,6 +40,7 @@ internal data class ConversationProjection(
     val turnState: TurnState,
     val isCompacting: Boolean,
     val taskProgress: TaskProgress?,
+    val delegateAgents: List<DelegateAgentActivity>,
     val errorMessage: String?,
 )
 
@@ -95,9 +100,23 @@ internal fun reduceConversationEvent(
             next.copy(
                 streamingText = "",
                 turnState = TurnState.Running,
+                delegateAgents = pruneFinishedDelegateAgents(next.delegateAgents),
                 errorMessage = null,
             )
         }
+
+        "subagent.spawn_requested",
+        "subagent.start",
+        "subagent.thinking",
+        "subagent.tool",
+        "subagent.progress",
+        "subagent.complete" -> next.copy(
+            delegateAgents = updateDelegateAgentActivity(
+                agents = next.delegateAgents,
+                eventType = event.type,
+                payload = event.payload,
+            ),
+        )
 
         "message.delta" -> {
             val delta = event.payload.string("text").orEmpty()
@@ -128,6 +147,8 @@ internal fun reduceConversationEvent(
         }
 
         "message.complete" -> {
+            // Background delegations can outlive the parent turn, so only explicit interruption
+            // or transport loss settles their volatile cards.
             val status = event.payload.string("status")
             val content = event.payload.string("text")
                 ?: event.payload.string("content")
@@ -167,6 +188,7 @@ internal fun reduceConversationEvent(
             next = next.finalizeAssistant(keepRunning = false)
             next.copy(
                 messages = clearUnansweredClarifications(settleCurrentTurnSteps(next.messages)),
+                delegateAgents = interruptActiveDelegateAgents(next.delegateAgents),
                 turnState = TurnState.Idle,
                 isCompacting = false,
             ).clearActiveTaskProgress()

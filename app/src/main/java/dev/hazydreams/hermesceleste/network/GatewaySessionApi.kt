@@ -331,10 +331,11 @@ internal fun decodeGatewayConversation(elements: List<JsonElement>): DecodedGate
         val sourceIdentity = row["row_id"].scalarIdentity()?.let { "row-$it" }
             ?: row["id"].scalarIdentity()
             ?: row["message_id"].scalarIdentity()
-        val text = row.string("text")
+        val persistedText = row.string("text")
             ?: row.string("content")
             ?: row.string("context")
             ?: ""
+        val text = visiblePersistedText(row, role, persistedText) ?: return@forEachIndexed
 
         if (role == "user") {
             parseBackgroundProcessResult(text)?.let { result ->
@@ -490,6 +491,90 @@ internal fun decodeGatewayConversation(elements: List<JsonElement>): DecodedGate
         taskProgressSnapshot = taskProgressSnapshot,
     )
 }
+
+private fun visiblePersistedText(row: JsonObject, role: String, text: String): String? {
+    val displayKind = row.string("display_kind")
+    if (displayKind == "hidden" || displayKind == "async_delegation_complete") return null
+    if (role == "tool") return text
+
+    val metadata = row["metadata"] as? JsonObject
+    val flaggedAsSummary = row.boolean("_compressed_summary") == true ||
+        metadata?.boolean("_compressed_summary") == true
+    val wrappedCarrier = startsWithAfterLeadingWhitespace(text, PRIOR_CONTEXT_WRAPPER_HEADER)
+    val delimiterIndex = text.indexOf(COMPACTION_SUMMARY_DELIMITER)
+    if (delimiterIndex >= 0 && (flaggedAsSummary || wrappedCarrier)) {
+        var visible = text.substring(0, delimiterIndex).trim()
+        if (visible.startsWith(PRIOR_CONTEXT_WRAPPER_HEADER)) {
+            visible = visible.removePrefix(PRIOR_CONTEXT_WRAPPER_HEADER).trim()
+        }
+        return visible.takeIf { it.isNotBlank() && !hasCompactionSummaryPrefix(it) }
+    }
+
+    if (flaggedAsSummary || isKnownStandaloneCompactionCarrier(text)) return null
+    if (role != "user") return text
+    return text.takeUnless(::isKnownAsyncDelegationCarrier)
+}
+
+private fun isKnownStandaloneCompactionCarrier(text: String): Boolean {
+    val headerEnd = leadingHeaderEnd(text, CONTEXT_COMPACTION_REFERENCE_HEADER) ?: return false
+    return startsWithAfterWhitespaceAt(
+        text = text,
+        start = headerEnd,
+        prefix = "Earlier turns were compacted into the summary below.",
+    )
+}
+
+private fun isKnownAsyncDelegationCarrier(text: String): Boolean {
+    val start = leadingContentStart(text)
+    if (!text.regionMatches(start, ASYNC_DELEGATION_BATCH_HEADER, 0, ASYNC_DELEGATION_BATCH_HEADER.length)) {
+        return false
+    }
+    val headerEnd = text.indexOf(']', startIndex = start).takeIf { it >= 0 } ?: return false
+    return startsWithAfterWhitespaceAt(
+        text = text,
+        start = headerEnd + 1,
+        prefix = "A background fan-out of",
+    )
+}
+
+private fun hasCompactionSummaryPrefix(text: String): Boolean =
+    startsWithAfterLeadingWhitespace(text, "[context compaction", ignoreCase = true) ||
+        startsWithAfterLeadingWhitespace(text, "[context summary]:", ignoreCase = true)
+
+private fun startsWithAfterLeadingWhitespace(
+    text: String,
+    prefix: String,
+    ignoreCase: Boolean = false,
+): Boolean {
+    val start = leadingContentStart(text)
+    return text.regionMatches(start, prefix, 0, prefix.length, ignoreCase = ignoreCase)
+}
+
+private fun leadingHeaderEnd(text: String, header: String): Int? {
+    val start = leadingContentStart(text)
+    return if (text.regionMatches(start, header, 0, header.length)) start + header.length else null
+}
+
+private fun startsWithAfterWhitespaceAt(text: String, start: Int, prefix: String): Boolean {
+    var contentStart = start
+    while (contentStart < text.length && text[contentStart].isWhitespace()) contentStart += 1
+    return text.regionMatches(contentStart, prefix, 0, prefix.length)
+}
+
+private fun leadingContentStart(text: String): Int {
+    var start = 0
+    while (start < text.length && text[start].isWhitespace()) start += 1
+    return start
+}
+
+private const val COMPACTION_SUMMARY_DELIMITER =
+    "[END OF PRIOR CONTEXT — COMPACTION SUMMARY BELOW]"
+private const val PRIOR_CONTEXT_WRAPPER_HEADER =
+    "[PRIOR CONTEXT — for reference only; not a new message]"
+private const val CONTEXT_COMPACTION_REFERENCE_HEADER =
+    "[CONTEXT COMPACTION — REFERENCE ONLY]"
+private const val ASYNC_DELEGATION_BATCH_HEADER =
+    "[ASYNC DELEGATION BATCH COMPLETE —"
 
 private const val MIN_COMMENTARY_STRIP_LENGTH = 12
 

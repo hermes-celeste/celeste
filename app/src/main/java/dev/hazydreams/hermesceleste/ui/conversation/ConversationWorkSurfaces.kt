@@ -51,9 +51,13 @@ import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import dev.hazydreams.hermesceleste.network.ChangedFile
 import dev.hazydreams.hermesceleste.network.ConversationMessage
+import dev.hazydreams.hermesceleste.network.DelegateAgentActivity
+import dev.hazydreams.hermesceleste.network.DelegateAgentLineKind
+import dev.hazydreams.hermesceleste.network.DelegateAgentStatus
 import dev.hazydreams.hermesceleste.network.FileEditState
 import dev.hazydreams.hermesceleste.network.TaskItemStatus
 import dev.hazydreams.hermesceleste.network.TaskProgress
@@ -66,6 +70,7 @@ import dev.hazydreams.hermesceleste.ui.CelesteSuccess
 import dev.hazydreams.hermesceleste.ui.CelesteSurfacePrimary
 import dev.hazydreams.hermesceleste.ui.CelesteTextMuted
 import dev.hazydreams.hermesceleste.ui.CelesteTextPrimary
+import dev.hazydreams.hermesceleste.ui.CelesteWarning
 
 @Composable
 internal fun ChangedFilesTranscriptEntry(
@@ -169,6 +174,51 @@ internal fun TaskProgressPill(
 }
 
 @Composable
+internal fun DelegateAgentsPill(
+    agents: List<DelegateAgentActivity>,
+    onOpen: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    if (agents.isEmpty()) return
+    val activeCount = agents.count(DelegateAgentActivity::isActive)
+    val stateLabel = if (activeCount > 0) "$activeCount working" else "${agents.size} finished"
+    Row(
+        modifier = modifier
+            .clip(RoundedCornerShape(18.dp))
+            .background(CelesteSurfacePrimary)
+            .clickable(role = Role.Button, onClick = onOpen)
+            .semantics {
+                contentDescription = "Open delegate agents. $stateLabel"
+                stateDescription = stateLabel
+                liveRegion = LiveRegionMode.Polite
+                role = Role.Button
+            }
+            .padding(horizontal = 10.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Box(
+            modifier = Modifier
+                .size(9.dp)
+                .background(delegateAgentsPillColor(agents), CircleShape),
+        )
+        Spacer(Modifier.width(8.dp))
+        Text(
+            text = "Agents",
+            color = CelesteTextPrimary,
+            style = MaterialTheme.typography.bodySmall,
+            fontWeight = FontWeight.SemiBold,
+        )
+        Spacer(Modifier.width(6.dp))
+        Text(
+            text = if (activeCount > 0) activeCount.toString() else agents.size.toString(),
+            color = CelesteTextMuted,
+            style = MaterialTheme.typography.labelSmall,
+            fontWeight = FontWeight.Medium,
+        )
+    }
+}
+
+@Composable
 private fun TaskProgressRing(progress: TaskProgress) {
     val fraction = if (progress.totalCount == 0) 0f else progress.completedCount.toFloat() / progress.totalCount
     Canvas(modifier = Modifier.size(17.dp)) {
@@ -261,6 +311,102 @@ internal fun TaskProgressSheetSurface(progress: TaskProgress) {
             }
             items(progress.items, key = TaskProgressItem::id) { item ->
                 TaskProgressRow(item)
+            }
+        }
+    }
+}
+
+@Composable
+internal fun DelegateAgentsSheetSurface(agents: List<DelegateAgentActivity>) {
+    val activeCount = agents.count(DelegateAgentActivity::isActive)
+    InspectionSheetSurface {
+        SheetTitle("Agents")
+        LazyColumn(
+            modifier = Modifier
+                .fillMaxWidth()
+                .heightIn(min = 280.dp, max = 680.dp),
+            contentPadding = PaddingValues(start = 20.dp, end = 20.dp, top = 14.dp, bottom = 32.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            item(key = "delegate-agents-summary") {
+                Text(
+                    text = if (activeCount > 0) "$activeCount working now" else "Latest delegation activity",
+                    color = CelesteTextMuted,
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
+            items(agents, key = DelegateAgentActivity::id) { agent ->
+                DelegateAgentCard(agent)
+            }
+        }
+    }
+}
+
+@Composable
+private fun DelegateAgentCard(agent: DelegateAgentActivity) {
+    val statusLabel = delegateAgentStatusLabel(agent.status)
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(18.dp))
+            .background(CelesteSurfacePrimary)
+            .semantics {
+                contentDescription = "${agent.goal}. $statusLabel"
+                stateDescription = statusLabel
+            }
+            .padding(horizontal = 14.dp, vertical = 13.dp),
+        verticalArrangement = Arrangement.spacedBy(9.dp),
+    ) {
+        Row(verticalAlignment = Alignment.Top) {
+            Box(
+                modifier = Modifier
+                    .padding(top = 5.dp)
+                    .size(9.dp)
+                    .background(delegateAgentStatusColor(agent.status), CircleShape),
+            )
+            Spacer(Modifier.width(10.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = agent.goal,
+                    color = CelesteTextPrimary,
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 2,
+                )
+                Text(
+                    text = listOfNotNull(agent.model, agent.currentTool, statusLabel)
+                        .joinToString(separator = " · "),
+                    color = CelesteTextMuted,
+                    style = MaterialTheme.typography.labelSmall,
+                    maxLines = 1,
+                )
+            }
+        }
+        val lines = agent.stream.takeLast(10)
+        if (lines.isEmpty()) {
+            Text(
+                text = agent.summary ?: if (agent.isActive) "Waiting for activity…" else "No activity details returned.",
+                color = CelesteTextMuted,
+                style = MaterialTheme.typography.bodySmall,
+                maxLines = 4,
+                overflow = TextOverflow.Ellipsis,
+            )
+        } else {
+            lines.forEach { line ->
+                Row(verticalAlignment = Alignment.Top) {
+                    Text(
+                        text = if (line.kind == DelegateAgentLineKind.Tool) "›" else "•",
+                        color = if (line.isError) CelesteError else CelesteAccent,
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    Text(
+                        text = line.text,
+                        color = if (line.isError) CelesteError else CelesteTextMuted,
+                        style = MaterialTheme.typography.bodySmall,
+                        modifier = Modifier.weight(1f),
+                    )
+                }
             }
         }
     }
@@ -499,6 +645,30 @@ private fun changedFilesState(files: List<ChangedFile>): String = when {
     files.any { it.state == FileEditState.Pending } -> "Changes in progress"
     files.any { it.state == FileEditState.Failed } -> "Some changes failed"
     else -> "Changes completed"
+}
+
+@Composable
+private fun delegateAgentsPillColor(agents: List<DelegateAgentActivity>): Color = when {
+    agents.any(DelegateAgentActivity::isActive) -> CelesteAccent
+    agents.any { it.status == DelegateAgentStatus.Failed } -> CelesteError
+    else -> CelesteSuccess
+}
+
+private fun delegateAgentStatusLabel(status: DelegateAgentStatus): String = when (status) {
+    DelegateAgentStatus.Queued -> "Queued"
+    DelegateAgentStatus.Running -> "Running"
+    DelegateAgentStatus.Completed -> "Completed"
+    DelegateAgentStatus.Failed -> "Failed"
+    DelegateAgentStatus.Interrupted -> "Interrupted"
+}
+
+@Composable
+private fun delegateAgentStatusColor(status: DelegateAgentStatus): Color = when (status) {
+    DelegateAgentStatus.Queued -> CelesteWarning
+    DelegateAgentStatus.Running -> CelesteAccent
+    DelegateAgentStatus.Completed -> CelesteSuccess
+    DelegateAgentStatus.Failed -> CelesteError
+    DelegateAgentStatus.Interrupted -> CelesteTextMuted
 }
 
 @Composable

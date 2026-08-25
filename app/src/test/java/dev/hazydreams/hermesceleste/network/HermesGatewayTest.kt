@@ -46,6 +46,45 @@ class HermesGatewayTest {
     }
 
     @Test
+    fun resumedHistorySuppressesInternalRuntimePayloadsWithoutHidingOrdinaryProse() {
+        val messages = decodeGatewayMessages(
+            Json.parseToJsonElement(
+                """[
+                    {"row_id":1,"role":"user","text":"Normal prompt"},
+                    {"row_id":2,"role":"user","text":"private handoff","display_kind":"hidden"},
+                    {"row_id":3,"role":"user","text":"[CONTEXT COMPACTION — REFERENCE ONLY] Earlier turns were compacted into the summary below. giant handoff"},
+                    {"row_id":4,"role":"user","text":"[CONTEXT SUMMARY]: legacy giant handoff","_compressed_summary":true},
+                    {"row_id":5,"role":"user","text":"[ASYNC DELEGATION BATCH COMPLETE — deleg_1] A background fan-out of 1 subagent has finished. giant result"},
+                    {"row_id":6,"role":"user","text":"giant result","display_kind":"async_delegation_complete"},
+                    {"row_id":7,"role":"assistant","text":"We should improve context compression and delegation presentation."},
+                    {"row_id":8,"role":"user","text":"[PRIOR CONTEXT — for reference only; not a new message]\nKeep this real prompt\n[END OF PRIOR CONTEXT — COMPACTION SUMMARY BELOW]\nprivate summary","_compressed_summary":true},
+                    {"row_id":9,"role":"assistant","text":"flagged bookkeeping","metadata":{"_compressed_summary":true}},
+                    {"row_id":10,"role":"tool","content":"[CONTEXT SUMMARY]: legitimate tool output"},
+                    {"row_id":11,"role":"user","text":"I saw [CONTEXT SUMMARY]: in an ordinary message"},
+                    {"row_id":12,"role":"user","text":"[CONTEXT SUMMARY]: quoted literally by the user"},
+                    {"row_id":13,"role":"user","text":"Code sample\n[END OF PRIOR CONTEXT — COMPACTION SUMMARY BELOW]\nKeep this too"}
+                ]""".trimIndent(),
+            ).jsonArray,
+        )
+
+        assertEquals(
+            listOf(
+                "Normal prompt",
+                "We should improve context compression and delegation presentation.",
+                "Keep this real prompt",
+                "I saw [CONTEXT SUMMARY]: in an ordinary message",
+                "[CONTEXT SUMMARY]: quoted literally by the user",
+                "Code sample\n[END OF PRIOR CONTEXT — COMPACTION SUMMARY BELOW]\nKeep this too",
+            ),
+            messages.filter { it.role == "user" || it.role == "assistant" }.map { it.text },
+        )
+        assertEquals(
+            "[CONTEXT SUMMARY]: legitimate tool output",
+            messages.single { it.role == "steps" }.steps.single().result,
+        )
+    }
+
+    @Test
     fun websocketOpenDoesNotReportConnectedUntilGatewayReady() = runBlocking {
         lateinit var serverSocket: WebSocket
         val upgraded = CompletableDeferred<Unit>()

@@ -3,6 +3,8 @@ package dev.hazydreams.hermesceleste
 import dev.hazydreams.hermesceleste.network.ConversationMessage
 import dev.hazydreams.hermesceleste.network.ConversationStep
 import dev.hazydreams.hermesceleste.network.ConversationStepKind
+import dev.hazydreams.hermesceleste.network.DelegateAgentLineKind
+import dev.hazydreams.hermesceleste.network.DelegateAgentStatus
 import dev.hazydreams.hermesceleste.network.GatewayEvent
 import dev.hazydreams.hermesceleste.network.TaskItemStatus
 import dev.hazydreams.hermesceleste.network.UserMessagePlacement
@@ -18,6 +20,81 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class ConversationEventReducerTest {
+    @Test
+    fun subagentEventsStayOutOfMessagesAndAggregateByStableAgentId() {
+        var result = reduceEvents(
+            event("message.start"),
+            event(
+                "subagent.spawn_requested",
+                """{"subagent_id":"agent-a","goal":"Check Android behavior","status":"queued","task_count":2,"task_index":0}""",
+            ),
+            event(
+                "subagent.start",
+                """{"subagent_id":"agent-a","goal":"Check Android behavior","model":"gpt","status":"running","task_count":2,"task_index":0}""",
+            ),
+            event(
+                "subagent.tool",
+                """{"subagent_id":"agent-a","status":"running","tool_name":"search_files","tool_preview":"pattern=subagent"}""",
+            ),
+            event(
+                "subagent.thinking",
+                """{"subagent_id":"agent-a","status":"running","text":"Compare the event streams."}""",
+            ),
+            event(
+                "subagent.progress",
+                """{"subagent_id":"agent-a","status":"running","text":"Found the mobile surface."}""",
+            ),
+            event(
+                "subagent.spawn_requested",
+                """{"subagent_id":"agent-b","goal":"Check Desktop behavior","status":"queued","task_count":2,"task_index":1}""",
+            ),
+            event(
+                "subagent.complete",
+                """{"subagent_id":"agent-a","status":"completed","summary":"Cross-check complete."}""",
+            ),
+        )
+
+        assertEquals(listOf("user"), result.projection.messages.map { it.role })
+        assertEquals(listOf("agent-a", "agent-b"), result.projection.delegateAgents.map { it.id })
+        val completed = result.projection.delegateAgents.first()
+        assertEquals(DelegateAgentStatus.Completed, completed.status)
+        assertEquals("Cross-check complete.", completed.summary)
+        assertNull(completed.currentTool)
+        assertEquals(
+            listOf(
+                DelegateAgentLineKind.Tool,
+                DelegateAgentLineKind.Thinking,
+                DelegateAgentLineKind.Progress,
+                DelegateAgentLineKind.Summary,
+            ),
+            completed.stream.map { it.kind },
+        )
+
+        result = result.reduce(
+            event(
+                "subagent.progress",
+                """{"subagent_id":"agent-a","status":"running","text":"late duplicate"}""",
+            ),
+        )
+        assertEquals(DelegateAgentStatus.Completed, result.projection.delegateAgents.first().status)
+        assertEquals("Cross-check complete.", result.projection.delegateAgents.first().stream.last().text)
+
+        val beforeChildMirror = result.projection
+        result = result.reduce(
+            event(
+                "subagent.text",
+                """{"subagent_id":"agent-a","text":"child watch output"}""",
+            ),
+        )
+        assertEquals(beforeChildMirror, result.projection)
+
+        result = result.reduce(event("message.interrupted"))
+        assertEquals(DelegateAgentStatus.Interrupted, result.projection.delegateAgents.last().status)
+
+        result = result.reduce(event("message.start"))
+        assertTrue(result.projection.delegateAgents.isEmpty())
+    }
+
     @Test
     fun reasoningAroundFileEditsKeepsOneThinkingRowAndOneTurnLevelChangesPill() {
         val result = reduceEvents(
@@ -766,6 +843,7 @@ BUILD SUCCESSFUL
         turnState = TurnState.Idle,
         isCompacting = false,
         taskProgress = null,
+        delegateAgents = emptyList(),
         errorMessage = null,
     )
 
