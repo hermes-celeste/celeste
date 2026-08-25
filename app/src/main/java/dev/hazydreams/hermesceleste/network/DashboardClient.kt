@@ -39,6 +39,7 @@ import okhttp3.Response
 import okhttp3.WebSocket
 import okhttp3.WebSocketListener
 import okhttp3.RequestBody.Companion.toRequestBody
+import okio.Buffer
 
 @Serializable
 data class AuthProvider(
@@ -816,7 +817,13 @@ class DashboardClient(
             if (response.body.contentLength() > maxBytes) {
                 throw InvalidDashboardResponse("$operation returned too much data.")
             }
-            val body = response.body.byteStream().readNBytes((maxBytes + 1).toInt())
+            val source = response.body.source()
+            val buffer = Buffer()
+            while (buffer.size <= maxBytes) {
+                val read = source.read(buffer, maxBytes + 1 - buffer.size)
+                if (read == -1L) break
+            }
+            val body = buffer.readByteArray()
             if (body.size > maxBytes) throw InvalidDashboardResponse("$operation returned too much data.")
             runCatching { json.parseToJsonElement(body.decodeToString()) }
                 .getOrElse { throw InvalidDashboardResponse("$operation returned an unreadable response.", it) }
