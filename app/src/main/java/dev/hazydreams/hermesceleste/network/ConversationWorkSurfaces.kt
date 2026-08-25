@@ -35,6 +35,218 @@ data class TaskProgressSnapshot(
     val progress: TaskProgress?,
 )
 
+enum class DelegateAgentStatus {
+    Queued,
+    Running,
+    Completed,
+    Failed,
+    Interrupted,
+}
+
+enum class DelegateAgentLineKind {
+    Progress,
+    Summary,
+    Thinking,
+    Tool,
+}
+
+data class DelegateAgentLine(
+    val kind: DelegateAgentLineKind,
+    val text: String,
+    val isError: Boolean = false,
+)
+
+data class DelegateAgentActivity(
+    val id: String,
+    val parentId: String? = null,
+    val childSessionId: String? = null,
+    val goal: String = "Subagent",
+    val model: String? = null,
+    val status: DelegateAgentStatus = DelegateAgentStatus.Running,
+    val taskCount: Int = 1,
+    val taskIndex: Int = 0,
+    val currentTool: String? = null,
+    val summary: String? = null,
+    val stream: List<DelegateAgentLine> = emptyList(),
+) {
+    val isActive: Boolean
+        get() = status == DelegateAgentStatus.Queued || status == DelegateAgentStatus.Running
+}
+
+internal fun updateDelegateAgentActivity(
+    agents: List<DelegateAgentActivity>,
+    eventType: String,
+    payload: JsonObject,
+): List<DelegateAgentActivity> {
+    if (eventType !in DELEGATE_AGENT_EVENT_TYPES) return agents
+    val id = delegateAgentId(payload) ?: return agents
+    val existingIndex = agents.indexOfFirst { it.id == id }
+    val canCreate = eventType == "subagent.spawn_requested" || eventType == "subagent.start"
+    if (existingIndex < 0 && !canCreate) return agents
+
+    val previous = agents.getOrNull(existingIndex)
+    if (previous?.status in TERMINAL_DELEGATE_AGENT_STATUSES) return agents
+    val status = delegateAgentStatus(payload.string("status"), eventType)
+    val toolName = payload.string("tool_name")?.takeIf(String::isNotBlank)
+    val stream = delegateAgentLines(payload, eventType, status)
+        .fold(previous?.stream.orEmpty()) { current, line ->
+            if (current.lastOrNull() == line) current else (current + line).takeLast(MAX_DELEGATE_AGENT_LINES)
+        }
+    val next = DelegateAgentActivity(
+        id = previous?.id ?: id,
+        parentId = payload.string("parent_id")?.takeIf(String::isNotBlank) ?: previous?.parentId,
+        childSessionId = payload.string("child_session_id")?.takeIf(String::isNotBlank)
+            ?: previous?.childSessionId,
+        goal = payload.string("goal")
+            ?.takeIf(String::isNotBlank)
+            ?.let { compactDelegateAgentText(it, MAX_DELEGATE_AGENT_TEXT) }
+            ?: previous?.goal
+            ?: "Subagent",
+        model = payload.string("model")
+            ?.takeIf(String::isNotBlank)
+            ?.let { compactDelegateAgentText(it, MAX_DELEGATE_AGENT_METADATA) }
+            ?: previous?.model,
+        status = status,
+        taskCount = payload.int("task_count") ?: previous?.taskCount ?: 1,
+        taskIndex = payload.int("task_index") ?: previous?.taskIndex ?: 0,
+        currentTool = if (status in TERMINAL_DELEGATE_AGENT_STATUSES) {
+            null
+        } else {
+            toolName?.let { compactDelegateAgentText(it, MAX_DELEGATE_AGENT_METADATA) }
+                ?: previous?.currentTool
+        },
+        summary = payload.string("summary")?.takeIf(String::isNotBlank)
+            ?.let { compactDelegateAgentText(it, MAX_DELEGATE_AGENT_TEXT) }
+            ?: delegateAgentTimeoutSummary(payload)
+            ?: previous?.summary,
+        stream = stream,
+    )
+    return if (existingIndex < 0) {
+        (agents + next).takeLast(MAX_DELEGATE_AGENTS)
+    } else {
+        agents.toMutableList().also { it[existingIndex] = next }
+    }
+}
+
+internal fun pruneFinishedDelegateAgents(agents: List<DelegateAgentActivity>): List<DelegateAgentActivity> =
+    agents.filter(DelegateAgentActivity::isActive)
+
+internal fun interruptActiveDelegateAgents(
+    agents: List<DelegateAgentActivity>,
+): List<DelegateAgentActivity> = agents.map { agent ->
+    if (!agent.isActive) {
+        agent
+    } else {
+        val summary = "Interrupted with the parent turn."
+        agent.copy(
+            status = DelegateAgentStatus.Interrupted,
+            currentTool = null,
+            summary = agent.summary ?: summary,
+            stream = (agent.stream + DelegateAgentLine(DelegateAgentLineKind.Summary, summary))
+                .takeLast(MAX_DELEGATE_AGENT_LINES),
+        )
+    }
+}
+
+private fun delegateAgentId(payload: JsonObject): String? =
+    payload.string("subagent_id")?.takeIf(String::isNotBlank)
+
+private fun delegateAgentStatus(raw: String?, eventType: String): DelegateAgentStatus = when (raw) {
+    "completed" -> DelegateAgentStatus.Completed
+    "failed", "error", "timeout" -> DelegateAgentStatus.Failed
+    "interrupted", "cancelled", "canceled" -> DelegateAgentStatus.Interrupted
+    "queued" -> if (eventType == "subagent.complete") DelegateAgentStatus.Failed else DelegateAgentStatus.Queued
+    "running" -> if (eventType == "subagent.complete") DelegateAgentStatus.Failed else DelegateAgentStatus.Running
+    else -> if (eventType == "subagent.complete") DelegateAgentStatus.Failed else DelegateAgentStatus.Running
+}
+
+private fun delegateAgentLines(
+    payload: JsonObject,
+    eventType: String,
+    status: DelegateAgentStatus,
+): List<DelegateAgentLine> = buildList {
+    val text = compactDelegateAgentText(
+        payload.string("text")
+            ?: payload.string("tool_preview")
+            ?: "",
+    )
+    val toolName = payload.string("tool_name")?.takeIf(String::isNotBlank)
+    if (toolName != null) {
+        val preview = compactDelegateAgentText(
+            payload.string("tool_preview") ?: payload.string("text") ?: "",
+            maxLength = 96,
+        )
+        val label = toolName.split('_').filter(String::isNotBlank).joinToString(" ") { word ->
+            word.replaceFirstChar { character -> character.uppercase() }
+        }
+        add(
+            DelegateAgentLine(
+                kind = DelegateAgentLineKind.Tool,
+                text = if (preview.isBlank()) label else "$label(\"$preview\")",
+                isError = payload.boolean("error") == true,
+            ),
+        )
+    }
+    if (eventType == "subagent.progress" && text.isNotBlank()) {
+        add(DelegateAgentLine(DelegateAgentLineKind.Progress, text, payload.boolean("error") == true))
+    }
+    if (eventType == "subagent.thinking" && text.isNotBlank()) {
+        add(DelegateAgentLine(DelegateAgentLineKind.Thinking, text))
+    }
+    if (status in TERMINAL_DELEGATE_AGENT_STATUSES) {
+        val summary = compactDelegateAgentText(
+            payload.string("summary")
+                ?: payload.string("text")
+                ?: delegateAgentTimeoutSummary(payload)
+                ?: "",
+        )
+        if (summary.isNotBlank()) {
+            add(
+                DelegateAgentLine(
+                    kind = DelegateAgentLineKind.Summary,
+                    text = summary,
+                    isError = status == DelegateAgentStatus.Failed,
+                ),
+            )
+        }
+    }
+}
+
+private fun delegateAgentTimeoutSummary(payload: JsonObject): String? =
+    if (payload.string("status") == "timeout") {
+        "Timed out after ${payload.string("duration_seconds") ?: "?"}s"
+    } else {
+        null
+    }
+
+private fun compactDelegateAgentText(text: String, maxLength: Int = 220): String {
+    val compact = text.replace(Regex("\\s+"), " ").trim()
+    return if (compact.length > maxLength) compact.take(maxLength - 1) + "…" else compact
+}
+
+private fun JsonObject.int(key: String): Int? =
+    (get(key) as? JsonPrimitive)?.contentOrNull?.toIntOrNull()
+
+private val TERMINAL_DELEGATE_AGENT_STATUSES = setOf(
+    DelegateAgentStatus.Completed,
+    DelegateAgentStatus.Failed,
+    DelegateAgentStatus.Interrupted,
+)
+
+private val DELEGATE_AGENT_EVENT_TYPES = setOf(
+    "subagent.spawn_requested",
+    "subagent.start",
+    "subagent.thinking",
+    "subagent.tool",
+    "subagent.progress",
+    "subagent.complete",
+)
+
+private const val MAX_DELEGATE_AGENT_LINES = 24
+private const val MAX_DELEGATE_AGENTS = 24
+private const val MAX_DELEGATE_AGENT_TEXT = 220
+private const val MAX_DELEGATE_AGENT_METADATA = 96
+
 enum class FileEditState {
     Pending,
     Completed,

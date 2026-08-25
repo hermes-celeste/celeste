@@ -13,6 +13,7 @@ import dev.hazydreams.hermesceleste.network.ConversationStepKind
 import dev.hazydreams.hermesceleste.network.DashboardProbeResult
 import dev.hazydreams.hermesceleste.network.DashboardProfile
 import dev.hazydreams.hermesceleste.network.DashboardService
+import dev.hazydreams.hermesceleste.network.DelegateAgentStatus
 import dev.hazydreams.hermesceleste.network.GatewayConnection
 import dev.hazydreams.hermesceleste.network.GatewayConnectionState
 import dev.hazydreams.hermesceleste.network.GatewayCredential
@@ -2024,7 +2025,7 @@ class CelesteViewModelTest {
     }
 
     @Test
-    fun taskProgressBelongsOnlyToTheSessionThatPublishedIt() = runTest {
+    fun workSurfacesBelongOnlyToTheSessionThatPublishedThem() = runTest {
         val gateway = FakeGateway().apply {
             resumePayload = Json.parseToJsonElement(
                 """{
@@ -2052,7 +2053,43 @@ class CelesteViewModelTest {
         viewModel.openSession(dashboard.session)
         advanceUntilIdle()
 
+        gateway.emit(
+            type = "subagent.start",
+            payload = """{"subagent_id":"unscoped","goal":"Must not leak","status":"running"}""",
+            sessionId = "",
+        )
+        gateway.emit(
+            type = "subagent.start",
+            payload = """{"subagent_id":"other-session","goal":"Must not leak","status":"running"}""",
+            sessionId = "runtime-other",
+        )
+        runCurrent()
+        assertTrue(viewModel.state.value.delegateAgents.isEmpty())
+
+        gateway.emit(
+            "subagent.start",
+            """{"subagent_id":"agent-a","goal":"Inspect this session","status":"running"}""",
+        )
+        runCurrent()
+
         assertEquals(listOf("build"), viewModel.state.value.taskProgress?.items?.map { it.id })
+        assertEquals(listOf("agent-a"), viewModel.state.value.delegateAgents.map { it.id })
+
+        gateway.disconnect("network changed")
+        runCurrent()
+        assertTrue(viewModel.state.value.delegateAgents.isEmpty())
+
+        gateway.emit(
+            "subagent.start",
+            """{"subagent_id":"agent-b","goal":"Inspect after reconnect","status":"running"}""",
+        )
+        runCurrent()
+        assertEquals(listOf("agent-b"), viewModel.state.value.delegateAgents.map { it.id })
+
+        viewModel.controller.reconnectNow()
+        runCurrent()
+        assertTrue(viewModel.state.value.delegateAgents.isEmpty())
+        advanceUntilIdle()
 
         val secondSession = dashboard.session.copy(id = "stored-43", title = "Another conversation")
         gateway.resumePayload = Json.parseToJsonElement(
@@ -2063,6 +2100,7 @@ class CelesteViewModelTest {
 
         assertEquals("stored-43", viewModel.state.value.activeSummary?.id)
         assertNull(viewModel.state.value.taskProgress)
+        assertTrue(viewModel.state.value.delegateAgents.isEmpty())
         viewModel.controller.close()
     }
 
@@ -2132,7 +2170,12 @@ class CelesteViewModelTest {
         viewModel.sendMessage()
         gateway.emit("message.start")
         gateway.emit("message.delta", """{"text":"Partial work"}""")
+        gateway.emit(
+            "subagent.start",
+            """{"subagent_id":"agent-a","goal":"Inspect the turn","status":"running"}""",
+        )
         advanceUntilIdle()
+        assertEquals(DelegateAgentStatus.Running, viewModel.state.value.delegateAgents.single().status)
 
         gateway.resumePayload = resumePayload(
             messages = listOf(
@@ -2147,6 +2190,7 @@ class CelesteViewModelTest {
         assertTrue(gateway.methods.contains("session.interrupt"))
         assertEquals(TurnState.Idle, viewModel.state.value.turnState)
         assertEquals("Partial work", viewModel.state.value.messages.last().text)
+        assertEquals(DelegateAgentStatus.Interrupted, viewModel.state.value.delegateAgents.single().status)
         viewModel.controller.close()
     }
 
@@ -3207,11 +3251,11 @@ class CelesteViewModelTest {
             mutableState.value = GatewayConnectionState.Closed
         }
 
-        fun emit(type: String, payload: String = "{}") {
+        fun emit(type: String, payload: String = "{}", sessionId: String = "runtime-7") {
             mutableEvents.tryEmit(
                 GatewayEvent(
                     type = type,
-                    sessionId = "runtime-7",
+                    sessionId = sessionId,
                     payload = Json.parseToJsonElement(payload) as JsonObject,
                 ),
             )

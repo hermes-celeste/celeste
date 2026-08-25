@@ -41,7 +41,7 @@ Session catalog pages use recent server ordering, 15-row windows, and response p
 
 Pin and read changes may update the projection optimistically, then accept Hermes as authoritative. Rename keeps the existing title until Hermes accepts a trimmed nonblank replacement.
 
-Persisted history loads with `order=latest` and `include_compacted=true`. The transcript decoder combines assistant prose, reasoning, tool calls/results, and structured process markers into the same projection used by live events.
+Persisted history loads with `order=latest` and `include_compacted=true`. The transcript decoder combines assistant prose, reasoning, tool calls/results, and structured process markers into the same projection used by live events. Gateway display metadata and reserved runtime markers keep hidden compaction handoffs and asynchronous delegation payloads outside the human transcript. Compatibility projection preserves genuine user content from older merged compaction carriers while removing only their internal summary suffix.
 
 ## JSON-RPC surface
 
@@ -65,7 +65,7 @@ Image and file bytes are staged into the current runtime before `prompt.submit`.
 
 ## Event projection
 
-Celeste recognizes message lifecycle, interim assistant prose, reasoning, tools, interruption, busy/session status, compaction, background-process completion, and top-level errors.
+Celeste recognizes message lifecycle, interim assistant prose, reasoning, tools, delegated-agent activity, interruption, busy/session status, compaction, background-process completion, and top-level errors.
 
 - Reasoning and tools form chronological Steps segments.
 - Interim assistant messages remain ordinary transcript prose and split adjacent Steps segments.
@@ -73,6 +73,7 @@ Celeste recognizes message lifecycle, interim assistant prose, reasoning, tools,
 - Tool start and completion correlate by stable tool-call identity.
 - File-edit calls aggregate by assistant turn and path into one Changes projection backed by structured diffs.
 - Todo lifecycle events replace the active session’s task projection from their ordered stable-ID snapshot; an empty snapshot or an ended turn clears active work.
+- Native parent-session `subagent.*` lifecycle events require the gateway's stable agent ID and aggregate into a bounded, inspectable Agents surface. Record count, retained text, and per-agent activity streams are capped. Unscoped events and child-watch `subagent.text` output are ignored; explicit interruption settles active cards, and reconnect drops volatile cards rather than leaking stale work. Queued, running, completed, failed, and interrupted work never becomes assistant or user transcript prose.
 - Clarification requests remain inline and actionable across resume, then settle into compact question-and-answer transcript content.
 - Compaction status begins and ends from structured lifecycle events.
 - Background-process completion produces one compact result row with details available on demand.

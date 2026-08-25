@@ -2,6 +2,7 @@ package dev.hazydreams.hermesceleste.ui.conversation
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.animateScrollBy
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.interaction.collectIsDraggedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -27,6 +28,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
@@ -78,6 +80,7 @@ import dev.hazydreams.hermesceleste.ComposerAttachment
 import dev.hazydreams.hermesceleste.QueuedPrompt
 import dev.hazydreams.hermesceleste.TurnState
 import dev.hazydreams.hermesceleste.network.ConversationMessage
+import dev.hazydreams.hermesceleste.network.DelegateAgentActivity
 import dev.hazydreams.hermesceleste.network.TaskProgress
 import dev.hazydreams.hermesceleste.ui.CelesteAccent
 import dev.hazydreams.hermesceleste.ui.CelesteAccentContent
@@ -98,6 +101,7 @@ internal fun ConversationScreen(
     title: String,
     messages: List<ConversationMessage>,
     taskProgress: TaskProgress?,
+    delegateAgents: List<DelegateAgentActivity> = emptyList(),
     streamingText: String,
     draft: String,
     composerAttachments: List<ComposerAttachment> = emptyList(),
@@ -136,9 +140,13 @@ internal fun ConversationScreen(
     var openedInspectionMessageId by remember(conversationKey) { mutableStateOf<String?>(null) }
     var openedComposerAttachment by remember(conversationKey) { mutableStateOf<ComposerAttachment?>(null) }
     var tasksSheetOpen by remember(conversationKey) { mutableStateOf(false) }
+    var agentsSheetOpen by remember(conversationKey) { mutableStateOf(false) }
     var queueSheetOpen by remember(conversationKey) { mutableStateOf(false) }
     LaunchedEffect(taskProgress) {
         if (taskProgress == null) tasksSheetOpen = false
+    }
+    LaunchedEffect(delegateAgents) {
+        if (delegateAgents.isEmpty()) agentsSheetOpen = false
     }
     LaunchedEffect(queuedPrompts) {
         if (queuedPrompts.isEmpty()) queueSheetOpen = false
@@ -322,6 +330,7 @@ internal fun ConversationScreen(
                 attachments = composerAttachments,
                 turnState = turnState,
                 taskProgress = taskProgress,
+                delegateAgents = delegateAgents,
                 queuedPrompts = queuedPrompts,
                 isQueuePaused = isQueuePaused,
                 onDraftChange = onDraftChange,
@@ -338,6 +347,10 @@ internal fun ConversationScreen(
                 onOpenTasks = {
                     focusManager.clearFocus()
                     tasksSheetOpen = true
+                },
+                onOpenAgents = {
+                    focusManager.clearFocus()
+                    agentsSheetOpen = true
                 },
                 onOpenQueue = {
                     focusManager.clearFocus()
@@ -365,6 +378,12 @@ internal fun ConversationScreen(
         TaskProgressInspectionSheet(
             progress = taskProgress,
             onDismiss = { tasksSheetOpen = false },
+        )
+    }
+    if (agentsSheetOpen && delegateAgents.isNotEmpty()) {
+        DelegateAgentsInspectionSheet(
+            agents = delegateAgents,
+            onDismiss = { agentsSheetOpen = false },
         )
     }
     if (queueSheetOpen && queuedPrompts.isNotEmpty()) {
@@ -562,6 +581,7 @@ private fun ConversationComposer(
     attachments: List<ComposerAttachment>,
     turnState: TurnState,
     taskProgress: TaskProgress?,
+    delegateAgents: List<DelegateAgentActivity>,
     queuedPrompts: List<QueuedPrompt>,
     isQueuePaused: Boolean,
     onDraftChange: (String) -> Unit,
@@ -572,6 +592,7 @@ private fun ConversationComposer(
     onOpenAttachment: (ComposerAttachment) -> Unit,
     onRemoveAttachment: (String) -> Unit,
     onOpenTasks: () -> Unit,
+    onOpenAgents: () -> Unit,
     onOpenQueue: () -> Unit,
     focusRequest: Long?,
     onFocusRequestHandled: (Long) -> Unit,
@@ -601,10 +622,12 @@ private fun ConversationComposer(
             .imePadding()
             .padding(horizontal = 16.dp, vertical = 8.dp),
     ) {
-        if (taskProgress != null || queuedPrompts.isNotEmpty()) {
+        if (taskProgress != null || delegateAgents.isNotEmpty() || queuedPrompts.isNotEmpty()) {
             Row(
                 modifier = Modifier
                     .align(Alignment.Start)
+                    .fillMaxWidth()
+                    .horizontalScroll(rememberScrollState())
                     .padding(bottom = 8.dp),
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                 verticalAlignment = Alignment.CenterVertically,
@@ -613,6 +636,12 @@ private fun ConversationComposer(
                     TaskProgressPill(
                         progress = progress,
                         onOpen = onOpenTasks,
+                    )
+                }
+                if (delegateAgents.isNotEmpty()) {
+                    DelegateAgentsPill(
+                        agents = delegateAgents,
+                        onOpen = onOpenAgents,
                     )
                 }
                 if (queuedPrompts.isNotEmpty()) {

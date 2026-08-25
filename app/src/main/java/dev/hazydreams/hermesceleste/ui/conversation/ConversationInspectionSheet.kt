@@ -21,6 +21,7 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.graphics.vector.path
 import androidx.compose.ui.unit.dp
 import dev.hazydreams.hermesceleste.network.ConversationMessage
+import dev.hazydreams.hermesceleste.network.DelegateAgentActivity
 import dev.hazydreams.hermesceleste.network.TaskProgress
 import dev.hazydreams.hermesceleste.ui.CelesteHairline
 import dev.hazydreams.hermesceleste.ui.CelesteSurfaceRaised
@@ -52,6 +53,16 @@ internal fun TaskProgressInspectionSheet(
 ) {
     InspectionModalSheet(onDismiss = onDismiss) {
         TaskProgressSheetSurface(progress)
+    }
+}
+
+@Composable
+internal fun DelegateAgentsInspectionSheet(
+    agents: List<DelegateAgentActivity>,
+    onDismiss: () -> Unit,
+) {
+    InspectionModalSheet(onDismiss = onDismiss) {
+        DelegateAgentsSheetSurface(agents)
     }
 }
 

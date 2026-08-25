@@ -139,6 +139,7 @@ internal fun CelesteRoutes(
                         title = activeSummary?.title ?: "New conversation",
                         messages = ui.messages,
                         taskProgress = ui.taskProgress,
+                        delegateAgents = ui.delegateAgents,
                         streamingText = ui.streamingText,
                         draft = ui.draft,
                         composerAttachments = ui.composerAttachments,

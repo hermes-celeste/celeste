@@ -28,6 +28,10 @@ import dev.hazydreams.hermesceleste.network.ConversationStep
 import dev.hazydreams.hermesceleste.network.ConversationStepKind
 import dev.hazydreams.hermesceleste.network.DashboardProbeResult
 import dev.hazydreams.hermesceleste.network.DashboardProfile
+import dev.hazydreams.hermesceleste.network.DelegateAgentActivity
+import dev.hazydreams.hermesceleste.network.DelegateAgentLine
+import dev.hazydreams.hermesceleste.network.DelegateAgentLineKind
+import dev.hazydreams.hermesceleste.network.DelegateAgentStatus
 import dev.hazydreams.hermesceleste.network.FileEditOperation
 import dev.hazydreams.hermesceleste.network.FileEditState
 import dev.hazydreams.hermesceleste.network.StoredSession
@@ -40,6 +44,7 @@ import dev.hazydreams.hermesceleste.ui.CelesteScreen
 import dev.hazydreams.hermesceleste.ui.CelesteSurfaceRaised
 import dev.hazydreams.hermesceleste.ui.conversation.ConversationScreen
 import dev.hazydreams.hermesceleste.ui.conversation.ChangesSheetSurface
+import dev.hazydreams.hermesceleste.ui.conversation.DelegateAgentsSheetSurface
 import dev.hazydreams.hermesceleste.ui.conversation.ProcessResultSheetSurface
 import dev.hazydreams.hermesceleste.ui.conversation.QueuedPromptsSheetSurface
 import dev.hazydreams.hermesceleste.ui.conversation.StepsSheetSurface
@@ -205,6 +210,36 @@ private val previewTaskProgress = TaskProgress(
 
 private val previewCompletedTaskProgress = TaskProgress(
     items = previewTaskProgress.items.map { it.copy(status = TaskItemStatus.Completed) },
+)
+
+private val previewDelegateAgents = listOf(
+    DelegateAgentActivity(
+        id = "agent-desktop",
+        goal = "Compare Hermes Desktop activity handling",
+        model = "gpt-5.6-luna",
+        status = DelegateAgentStatus.Completed,
+        taskCount = 2,
+        taskIndex = 0,
+        summary = "Desktop keeps native subagent events outside transcript prose.",
+        stream = listOf(
+            DelegateAgentLine(DelegateAgentLineKind.Tool, "Search files(\"subagent event types\")"),
+            DelegateAgentLine(DelegateAgentLineKind.Progress, "Mapped the dedicated activity store."),
+            DelegateAgentLine(DelegateAgentLineKind.Summary, "Desktop comparison complete."),
+        ),
+    ),
+    DelegateAgentActivity(
+        id = "agent-conduit",
+        goal = "Check Conduit’s mobile presentation",
+        model = "gpt-5.6-luna",
+        status = DelegateAgentStatus.Running,
+        taskCount = 2,
+        taskIndex = 1,
+        currentTool = "read_file",
+        stream = listOf(
+            DelegateAgentLine(DelegateAgentLineKind.Thinking, "Review the compact agent sheet."),
+            DelegateAgentLine(DelegateAgentLineKind.Tool, "Read file(\"ChatSupportSheets.swift\")"),
+        ),
+    ),
 )
 
 private val previewQueuedPrompts = listOf(
@@ -1179,11 +1214,40 @@ fun LongUserMessageExpandedPreviewScreenshot() {
     }
 }
 
+@PreviewTest
+@Preview(name = "43 · Delegate agents activity", widthDp = 390, heightDp = 844, showBackground = true)
+@Composable
+fun DelegateAgentsActivityPreviewScreenshot() {
+    HermesCelesteTheme {
+        PreviewConversation(
+            messages = listOf(
+                ConversationMessage(
+                    role = "assistant",
+                    text = "I’m comparing both clients while keeping the transcript readable.",
+                    id = "preview-agent-assistant",
+                ),
+            ),
+            delegateAgents = previewDelegateAgents,
+            turnState = TurnState.Running,
+        )
+    }
+}
+
+@PreviewTest
+@Preview(name = "44 · Delegate agents sheet", widthDp = 390, heightDp = 844, showBackground = true)
+@Composable
+fun DelegateAgentsSheetPreviewScreenshot() {
+    PreviewWorkInspectionSheet {
+        DelegateAgentsSheetSurface(previewDelegateAgents)
+    }
+}
+
 @Composable
 private fun PreviewConversation(
     summary: StoredSession? = previewSessions[1],
     messages: List<ConversationMessage> = previewMessages,
     taskProgress: TaskProgress? = null,
+    delegateAgents: List<DelegateAgentActivity> = emptyList(),
     streamingText: String = "",
     draft: String = "",
     composerAttachments: List<ComposerAttachment> = emptyList(),
@@ -1202,6 +1266,7 @@ private fun PreviewConversation(
         title = summary?.title ?: "New conversation",
         messages = messages,
         taskProgress = taskProgress,
+        delegateAgents = delegateAgents,
         streamingText = streamingText,
         draft = draft,
         composerAttachments = composerAttachments,
