@@ -7,6 +7,8 @@ import dev.hazydreams.hermesceleste.ui.conversation.STREAMING_TRANSCRIPT_KEY
 import dev.hazydreams.hermesceleste.ui.conversation.latestTranscriptIndex
 import dev.hazydreams.hermesceleste.ui.conversation.pendingClarificationFollowKey
 import dev.hazydreams.hermesceleste.ui.conversation.remainingScrollToLatest
+import dev.hazydreams.hermesceleste.ui.conversation.shouldCollapseUserMessage
+import dev.hazydreams.hermesceleste.ui.conversation.shouldRequestViewportRefollow
 import dev.hazydreams.hermesceleste.ui.conversation.shouldShowJumpToLatest
 import dev.hazydreams.hermesceleste.ui.conversation.streamingTranscriptInsertionIndex
 import dev.hazydreams.hermesceleste.ui.conversation.streamingTranscriptKey
@@ -164,6 +166,34 @@ class TranscriptItemKeysTest {
         assertEquals(false, updatedFollowLatest(current = false, observation = streamingContinues))
         assertEquals(true, updatedFollowLatest(current = true, observation = nonReaderScroll))
         assertEquals(true, updatedFollowLatest(current = false, observation = returnedToBottom))
+    }
+
+    @Test
+    fun keyboardViewportChangesRefollowOnlyWhenAlreadyFollowingLatest() {
+        assertEquals(
+            false,
+            shouldRequestViewportRefollow(followLatest = true, previousHeight = 0, newHeight = 520),
+        )
+        assertEquals(
+            false,
+            shouldRequestViewportRefollow(followLatest = true, previousHeight = 520, newHeight = 520),
+        )
+        assertEquals(
+            true,
+            shouldRequestViewportRefollow(followLatest = true, previousHeight = 520, newHeight = 310),
+        )
+        assertEquals(
+            false,
+            shouldRequestViewportRefollow(followLatest = false, previousHeight = 520, newHeight = 310),
+        )
+    }
+
+    @Test
+    fun onlyLongUserMessagesDefaultToCollapsed() {
+        assertEquals(false, shouldCollapseUserMessage("Short follow-up."))
+        assertEquals(false, shouldCollapseUserMessage("One\nTwo\nThree"))
+        assertEquals(true, shouldCollapseUserMessage("One\nTwo\nThree\nFour"))
+        assertEquals(true, shouldCollapseUserMessage("x".repeat(121)))
     }
 
     private fun message(id: String?): ConversationMessage =

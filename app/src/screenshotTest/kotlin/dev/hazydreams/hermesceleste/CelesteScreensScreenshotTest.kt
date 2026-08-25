@@ -212,6 +212,12 @@ private val previewQueuedPrompts = listOf(
     QueuedPrompt("queued-preview-2", "Then summarize the behavior for the pull request."),
 )
 
+private val previewLongUserMessage = ConversationMessage(
+    role = "user",
+    id = "preview-long-user",
+    text = "I want the mobile transcript to stay easy to scan even when I send a long, detailed correction with several constraints, examples, and bits of context that are useful to the agent but should not take over most of the screen after the message has been sent.",
+)
+
 private val previewPendingClarification = ConversationMessage(
     role = "clarification",
     text = "",
@@ -1116,6 +1122,63 @@ fun ComposerAttachmentsPreviewScreenshot() {
     }
 }
 
+@PreviewTest
+@Preview(name = "40 · Compact mobile transcript", widthDp = 390, heightDp = 560, showBackground = true)
+@Composable
+fun CompactMobileTranscriptPreviewScreenshot() {
+    HermesCelesteTheme {
+        PreviewConversation(
+            messages = listOf(
+                ConversationMessage(
+                    role = "user",
+                    text = "Keep the latest work visible while I type.",
+                    id = "preview-compact-user",
+                ),
+                previewStepsMessage.copy(id = "preview-compact-steps-1"),
+                ConversationMessage(
+                    role = "assistant",
+                    text = "The transcript follows the resized viewport.",
+                    id = "preview-compact-assistant-1",
+                ),
+                previewStepsMessage.copy(id = "preview-compact-steps-2"),
+                ConversationMessage(
+                    role = "assistant",
+                    text = "Repeated Thinking rows stay compact and tappable.",
+                    id = "preview-compact-assistant-2",
+                ),
+                previewPendingStepsMessage.copy(id = "preview-compact-steps-active"),
+            ),
+            draft = "Typing with the keyboard open",
+            turnState = TurnState.Running,
+        )
+    }
+}
+
+@PreviewTest
+@Preview(name = "41 · Long user message collapsed", widthDp = 390, heightDp = 844, showBackground = true)
+@Composable
+fun LongUserMessageCollapsedPreviewScreenshot() {
+    HermesCelesteTheme {
+        PreviewConversation(
+            messages = listOf(previewLongUserMessage),
+            turnState = TurnState.Idle,
+        )
+    }
+}
+
+@PreviewTest
+@Preview(name = "42 · Long user message expanded", widthDp = 390, heightDp = 844, showBackground = true)
+@Composable
+fun LongUserMessageExpandedPreviewScreenshot() {
+    HermesCelesteTheme {
+        PreviewConversation(
+            messages = listOf(previewLongUserMessage),
+            turnState = TurnState.Idle,
+            initiallyExpandedUserMessageIds = setOf("preview-long-user"),
+        )
+    }
+}
+
 @Composable
 private fun PreviewConversation(
     summary: StoredSession? = previewSessions[1],
@@ -1131,6 +1194,7 @@ private fun PreviewConversation(
     resumeExhausted: Boolean = false,
     errorMessage: String? = null,
     initiallyFollowLatest: Boolean = true,
+    initiallyExpandedUserMessageIds: Set<String> = emptySet(),
     jumpToLatestVisible: Boolean? = null,
 ) {
     ConversationScreen(
@@ -1154,6 +1218,7 @@ private fun PreviewConversation(
         onRetryResume = {},
         onOpenDrawer = {},
         initiallyFollowLatest = initiallyFollowLatest,
+        initiallyExpandedUserMessageIds = initiallyExpandedUserMessageIds,
         jumpToLatestVisibleOverride = jumpToLatestVisible,
     )
 }

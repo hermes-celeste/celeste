@@ -44,6 +44,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -60,6 +61,7 @@ import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.graphics.vector.path
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.semantics.LiveRegionMode
@@ -119,6 +121,7 @@ internal fun ConversationScreen(
     composerFocusRequest: Long? = null,
     onComposerFocusRequestHandled: (Long) -> Unit = {},
     initiallyFollowLatest: Boolean = true,
+    initiallyExpandedUserMessageIds: Set<String> = emptySet(),
     jumpToLatestVisibleOverride: Boolean? = null,
     onClarificationRespond: (messageId: String, requestId: String, answer: String) -> Unit = { _, _, _ -> },
 ) {
@@ -128,6 +131,8 @@ internal fun ConversationScreen(
     var followLatest by remember(conversationKey, initiallyFollowLatest) {
         mutableStateOf(initiallyFollowLatest)
     }
+    var transcriptViewportHeight by remember(conversationKey) { mutableIntStateOf(0) }
+    var viewportRefollowRequest by remember(conversationKey) { mutableIntStateOf(0) }
     var openedInspectionMessageId by remember(conversationKey) { mutableStateOf<String?>(null) }
     var openedComposerAttachment by remember(conversationKey) { mutableStateOf<ComposerAttachment?>(null) }
     var tasksSheetOpen by remember(conversationKey) { mutableStateOf(false) }
@@ -184,7 +189,12 @@ internal fun ConversationScreen(
         }
     }
 
-    LaunchedEffect(visibleMessageCount, streamingText.length, pendingClarificationFollowKey) {
+    LaunchedEffect(
+        visibleMessageCount,
+        streamingText.length,
+        pendingClarificationFollowKey,
+        viewportRefollowRequest,
+    ) {
         latestTranscriptIndex(visibleMessageCount)?.let { latestIndex ->
             if (followLatest) listState.animateScrollToLatest(latestIndex)
         }
@@ -218,13 +228,26 @@ internal fun ConversationScreen(
             Box(
                 modifier = Modifier
                     .weight(1f)
-                    .fillMaxWidth(),
+                    .fillMaxWidth()
+                    .onSizeChanged { size ->
+                        val previousHeight = transcriptViewportHeight
+                        transcriptViewportHeight = size.height
+                        if (
+                            shouldRequestViewportRefollow(
+                                followLatest = followLatest,
+                                previousHeight = previousHeight,
+                                newHeight = size.height,
+                            )
+                        ) {
+                            viewportRefollowRequest += 1
+                        }
+                    },
             ) {
                 LazyColumn(
                     state = listState,
                     modifier = Modifier.fillMaxSize(),
-                    contentPadding = PaddingValues(horizontal = 20.dp, vertical = 20.dp),
-                    verticalArrangement = Arrangement.spacedBy(20.dp),
+                    contentPadding = PaddingValues(horizontal = 20.dp, vertical = 16.dp),
+                    verticalArrangement = Arrangement.spacedBy(14.dp),
                 ) {
                     itemsIndexed(
                         items = messagesBeforeStreaming,
@@ -232,6 +255,7 @@ internal fun ConversationScreen(
                     ) { _, message ->
                         MessageBubble(
                             message = message,
+                            initiallyExpandedUserMessage = message.id in initiallyExpandedUserMessageIds,
                             onOpenInspection = { openedInspectionMessageId = message.id },
                             onClarificationRespond = onClarificationRespond,
                         )
@@ -250,6 +274,7 @@ internal fun ConversationScreen(
                     ) { _, message ->
                         MessageBubble(
                             message = message,
+                            initiallyExpandedUserMessage = message.id in initiallyExpandedUserMessageIds,
                             onOpenInspection = { openedInspectionMessageId = message.id },
                             onClarificationRespond = onClarificationRespond,
                         )
@@ -421,6 +446,12 @@ internal fun updatedFollowLatest(
     !observation.canScrollForward -> true
     else -> current
 }
+
+internal fun shouldRequestViewportRefollow(
+    followLatest: Boolean,
+    previousHeight: Int,
+    newHeight: Int,
+): Boolean = followLatest && previousHeight > 0 && newHeight > 0 && previousHeight != newHeight
 
 internal fun remainingScrollToLatest(
     itemOffset: Int,
