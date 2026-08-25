@@ -301,6 +301,44 @@ class ConversationEventReducerTest {
     }
 
     @Test
+    fun queuedTurnPreservesDistinctInterimAndFinalAssistantSegments() {
+        val initial = ConversationEventReduction(
+            projection = projection().copy(
+                messages = listOf(
+                    ConversationMessage(
+                        role = "user",
+                        text = "First",
+                        userPlacement = UserMessagePlacement.Prompt,
+                    ),
+                    ConversationMessage(
+                        role = "assistant",
+                        text = "I checked the first part.",
+                        interim = true,
+                    ),
+                    ConversationMessage(
+                        role = "user",
+                        text = "Run this next",
+                        id = "queued-1",
+                        userPlacement = UserMessagePlacement.NextTurn,
+                    ),
+                ),
+                turnState = TurnState.Running,
+            ),
+            localMessageCounter = 0L,
+        )
+
+        val result = initial.reduce(
+            event("message.complete", """{"content":"Finished.","status":"complete"}"""),
+        )
+
+        assertEquals(
+            listOf("First", "I checked the first part.", "Finished.", "Run this next"),
+            result.projection.messages.map { it.text },
+        )
+        assertEquals(UserMessagePlacement.Prompt, result.projection.messages.last().userPlacement)
+    }
+
+    @Test
     fun redirectedToolCompletionUpdatesItsOriginalStableIdentity() {
         val initial = ConversationEventReduction(
             projection = projection().copy(

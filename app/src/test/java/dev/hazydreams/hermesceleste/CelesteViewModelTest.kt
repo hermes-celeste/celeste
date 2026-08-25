@@ -1097,6 +1097,33 @@ class CelesteViewModelTest {
     }
 
     @Test
+    fun successiveRedirectsPreserveAssistantWhitespaceBoundaries() = runTest {
+        val gateway = FakeGateway().apply { redirectStatus = "redirected" }
+        val viewModel = openConversation(gateway)
+        advanceUntilIdle()
+
+        viewModel.updateDraft("First")
+        viewModel.sendMessage()
+        gateway.emit("message.delta", """{"text":"First. "}""")
+        viewModel.updateDraft("First correction")
+        viewModel.sendMessage()
+        advanceUntilIdle()
+        gateway.emit("message.delta", """{"text":"Second. "}""")
+        viewModel.updateDraft("Second correction")
+        viewModel.sendMessage()
+        advanceUntilIdle()
+        gateway.emit("message.delta", """{"text":"Final."}""")
+        gateway.emit("message.complete", """{"content":"First. Second. Final.","status":"complete"}""")
+        advanceUntilIdle()
+
+        assertEquals(
+            listOf("First", "First. ", "First correction", "Second. ", "Second correction", "Final."),
+            viewModel.state.value.messages.map { it.text },
+        )
+        viewModel.controller.close()
+    }
+
+    @Test
     fun gatewayQueuedRedirectKeepsTheCurrentReplyBeforeTheNextTurn() = runTest {
         val gateway = FakeGateway().apply { redirectStatus = "queued" }
         val viewModel = openConversation(gateway)

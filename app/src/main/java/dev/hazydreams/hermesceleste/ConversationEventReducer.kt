@@ -439,15 +439,16 @@ private fun finalizeAssistantBeforeNextTurn(
     val previousAssistantIndex = (nextTurnUserIndex - 1 downTo previousUserIndex + 1)
         .firstOrNull { messages[it].role == "assistant" }
     val previous = previousAssistantIndex?.let(messages::get)
+    val finalContinuesInterim = previous?.takeIf { it.interim }?.text?.let { interimText ->
+        finalText == interimText ||
+            finalText.startsWith(interimText) ||
+            interimText.startsWith(finalText)
+    } == true
     val nextMessages = when {
         finalText.isBlank() -> messages
-        previous?.interim == true -> messages.toMutableList().also { next ->
+        finalContinuesInterim -> messages.toMutableList().also { next ->
             next[previousAssistantIndex] = previous.copy(
-                text = when {
-                    finalText.startsWith(previous.text) -> finalText
-                    previous.text.startsWith(finalText) -> previous.text
-                    else -> finalText
-                },
+                text = if (finalText.length >= previous.text.length) finalText else previous.text,
                 interim = false,
             )
         }

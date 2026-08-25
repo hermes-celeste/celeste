@@ -1144,7 +1144,7 @@ internal class CelesteController(
                 messages = settledMessages,
                 message = ConversationMessage(
                     role = "assistant",
-                    text = snapshot.streamingText.trimEnd(),
+                    text = snapshot.streamingText,
                     interim = true,
                 ),
             )
@@ -1256,7 +1256,7 @@ internal class CelesteController(
         }
 
         val withoutMarker = snapshot.messages.filterNot { it.id == redirectMessageId }
-        val withCurrentStream = snapshot.streamingText.trimEnd().takeIf(String::isNotBlank)?.let { text ->
+        val withCurrentStream = snapshot.streamingText.takeIf(String::isNotBlank)?.let { text ->
             appendCurrentTurnMessage(
                 messages = withoutMarker,
                 message = ConversationMessage(role = "assistant", text = text, interim = true),
@@ -1354,7 +1354,7 @@ internal class CelesteController(
                 messages = settledMessages,
                 message = ConversationMessage(
                     role = "assistant",
-                    text = snapshot.streamingText.trimEnd(),
+                    text = snapshot.streamingText,
                     interim = true,
                 ),
             )
