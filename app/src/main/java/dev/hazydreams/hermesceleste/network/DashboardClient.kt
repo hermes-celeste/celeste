@@ -99,8 +99,20 @@ data class ResumedSession(
     val inflightUserText: String = "",
     val queuedUserText: String = "",
     val inflightAssistantText: String = "",
+    val inflightCorrections: List<InflightCorrection> = emptyList(),
     val hasLiveProjection: Boolean = false,
 )
+
+data class InflightCorrection(
+    val text: String,
+    val assistantOffset: Int? = null,
+)
+
+enum class SessionRedirectStatus {
+    Redirected,
+    Queued,
+    Rejected,
+}
 
 data class ConversationHistory(
     val messages: List<ConversationMessage>,

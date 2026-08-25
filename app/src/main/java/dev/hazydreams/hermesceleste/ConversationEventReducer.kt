@@ -1,8 +1,10 @@
 package dev.hazydreams.hermesceleste
 
 import dev.hazydreams.hermesceleste.network.ConversationMessage
+import dev.hazydreams.hermesceleste.network.ConversationStepKind
 import dev.hazydreams.hermesceleste.network.GatewayEvent
 import dev.hazydreams.hermesceleste.network.TaskProgress
+import dev.hazydreams.hermesceleste.network.UserMessagePlacement
 import dev.hazydreams.hermesceleste.network.appendCurrentTurnMessage
 import dev.hazydreams.hermesceleste.network.appendReasoningToCurrentTurn
 import dev.hazydreams.hermesceleste.network.bindClarificationRequest
@@ -103,7 +105,7 @@ internal fun reduceConversationEvent(
                 next
             } else {
                 next.copy(
-                    messages = settleCurrentReasoning(next.messages),
+                    messages = settleCurrentTurnSteps(next.messages),
                     streamingText = next.streamingText + delta,
                     turnState = TurnState.Running,
                 )
@@ -131,7 +133,14 @@ internal fun reduceConversationEvent(
                 ?: event.payload.string("content")
                 ?: event.payload.string("rendered")
                 ?: ""
+            val echoedStreamingAnswer = next.streamingText.trimEnd().let { streamed ->
+                streamed.isNotBlank() && streamed == content.trimEnd()
+            } || next.hasInterimAssistantEcho(content)
+            if (echoedStreamingAnswer) {
+                next = next.removeTrailingReasoningEcho(content)
+            }
             next = next.finalizeAssistant(content, keepRunning = false)
+            next = next.removeReasoningEchoOfFinalAnswer(echoedStreamingAnswer)
             next.copy(
                 messages = clearUnansweredClarifications(settleCurrentTurnSteps(next.messages)),
                 turnState = TurnState.Idle,
@@ -331,46 +340,216 @@ internal fun reduceConversationEvent(
 private fun ConversationProjection.clearActiveTaskProgress(): ConversationProjection =
     if (taskProgress?.isActive == true) copy(taskProgress = null) else this
 
+private fun ConversationProjection.hasInterimAssistantEcho(content: String): Boolean {
+    val finalText = content.trimEnd()
+    if (finalText.isBlank()) return false
+    val turnStart = messages.indexOfLast { it.role == "user" }
+    return messages.indices.any { index ->
+        index > turnStart &&
+            messages[index].role == "assistant" &&
+            messages[index].interim &&
+            messages[index].text.trimEnd() == finalText
+    }
+}
+
 private fun ConversationProjection.finalizeAssistant(
     suppliedContent: String = "",
     keepRunning: Boolean = turnState == TurnState.Running,
     interim: Boolean = false,
 ): ConversationProjection {
-    val finalText = when {
-        suppliedContent.isBlank() -> streamingText
-        streamingText.isBlank() -> suppliedContent
-        suppliedContent.startsWith(streamingText) -> suppliedContent
-        streamingText.startsWith(suppliedContent) -> streamingText
-        else -> suppliedContent
-    }.trimEnd()
-    val previousIndex = currentTurnContentTailIndex(messages)
-    val previous = messages.getOrNull(previousIndex)
-    val continuesInterim = !interim &&
-        previous?.role == "assistant" &&
-        previous.interim &&
-        finalText.isNotBlank() &&
-        (finalText.startsWith(previous.text) || previous.text.startsWith(finalText))
-    val nextMessages = when {
-        continuesInterim -> messages.toMutableList().also { next ->
-            next[previousIndex] = previous.copy(
-                text = if (finalText.length >= previous.text.length) finalText else previous.text,
-                interim = false,
-            )
+    val latestUserIndex = messages.indexOfLast { it.role == "user" }
+    val latestUserPlacement = messages.getOrNull(latestUserIndex)?.userPlacement
+    val correctionIndex = when (latestUserPlacement) {
+        UserMessagePlacement.MidTurnCorrection -> latestUserIndex
+        UserMessagePlacement.NextTurn -> latestMidTurnCorrectionIndex(messages, latestUserIndex)
+        else -> -1
+    }
+    val adjustedSupplied = if (correctionIndex >= 0) {
+        redirectedAssistantSuffix(suppliedContent, messages, correctionIndex)
+    } else {
+        suppliedContent
+    }
+    val finalText = mergedFinalText(adjustedSupplied, streamingText)
+    val nextMessages = if (latestUserPlacement == UserMessagePlacement.NextTurn) {
+        finalizeAssistantBeforeNextTurn(messages, latestUserIndex, finalText)
+    } else {
+        val previousIndex = currentTurnLastAssistantIndex(messages)
+        val previous = messages.getOrNull(previousIndex)
+        val continuesInterim = !interim &&
+            previous?.role == "assistant" &&
+            previous.interim &&
+            finalText.isNotBlank() &&
+            (finalText.startsWith(previous.text) || previous.text.startsWith(finalText))
+        when {
+            continuesInterim -> messages.toMutableList().also { next ->
+                next[previousIndex] = previous.copy(
+                    text = if (finalText.length >= previous.text.length) finalText else previous.text,
+                    interim = false,
+                )
+            }
+            finalText.isNotBlank() && previous?.let { it.role == "assistant" && it.text == finalText } != true ->
+                appendCurrentTurnMessage(
+                    messages = messages,
+                    message = ConversationMessage(
+                        role = "assistant",
+                        text = finalText,
+                        interim = interim,
+                    ),
+                )
+            else -> messages
         }
-        finalText.isNotBlank() && previous?.let { it.role == "assistant" && it.text == finalText } != true ->
-            appendCurrentTurnMessage(
-                messages = messages,
-                message = ConversationMessage(
-                    role = "assistant",
-                    text = finalText,
-                    interim = interim,
-                ),
-            )
-        else -> messages
     }
     return copy(
         messages = nextMessages,
         streamingText = "",
         turnState = if (keepRunning) TurnState.Running else TurnState.Idle,
+    )
+}
+
+private fun mergedFinalText(suppliedContent: String, streamingText: String): String = when {
+    suppliedContent.isBlank() -> streamingText
+    streamingText.isBlank() -> suppliedContent
+    suppliedContent.startsWith(streamingText) -> suppliedContent
+    streamingText.startsWith(suppliedContent) -> streamingText
+    else -> suppliedContent
+}.trimEnd()
+
+private fun latestMidTurnCorrectionIndex(
+    messages: List<ConversationMessage>,
+    beforeUserIndex: Int,
+): Int {
+    if (beforeUserIndex <= 0) return -1
+    val turnStart = messages.subList(0, beforeUserIndex).indexOfLast { message ->
+        message.role == "user" && message.userPlacement == UserMessagePlacement.Prompt
+    }
+    return (beforeUserIndex - 1 downTo turnStart + 1).firstOrNull { index ->
+        messages[index].role == "user" &&
+            messages[index].userPlacement == UserMessagePlacement.MidTurnCorrection
+    } ?: -1
+}
+
+private fun redirectedAssistantSuffix(
+    suppliedContent: String,
+    messages: List<ConversationMessage>,
+    correctionIndex: Int,
+): String {
+    if (suppliedContent.isBlank() || correctionIndex < 0) return suppliedContent
+    val turnStart = messages.subList(0, correctionIndex).indexOfLast { message ->
+        message.role == "user" && message.userPlacement == UserMessagePlacement.Prompt
+    }
+    val sealedPrefix = messages.subList(turnStart + 1, correctionIndex)
+        .filter { it.role == "assistant" }
+        .joinToString(separator = "", transform = ConversationMessage::text)
+    return if (sealedPrefix.isNotBlank() && suppliedContent.startsWith(sealedPrefix)) {
+        suppliedContent.removePrefix(sealedPrefix).trimStart()
+    } else {
+        suppliedContent
+    }
+}
+
+private fun finalizeAssistantBeforeNextTurn(
+    messages: List<ConversationMessage>,
+    nextTurnUserIndex: Int,
+    finalText: String,
+): List<ConversationMessage> {
+    if (nextTurnUserIndex < 0) return messages
+    val markerId = messages[nextTurnUserIndex].id
+    val previousUserIndex = messages.subList(0, nextTurnUserIndex).indexOfLast { it.role == "user" }
+    val previousAssistantIndex = (nextTurnUserIndex - 1 downTo previousUserIndex + 1)
+        .firstOrNull { messages[it].role == "assistant" }
+    val previous = previousAssistantIndex?.let(messages::get)
+    val completionInsertionIndex = currentTurnContentTailIndex(messages.subList(0, nextTurnUserIndex)) + 1
+    val finalContinuesInterim = previous?.takeIf { it.interim }?.text?.let { interimText ->
+        finalText == interimText ||
+            finalText.startsWith(interimText) ||
+            interimText.startsWith(finalText)
+    } == true
+    val nextMessages = when {
+        finalText.isBlank() -> messages
+        finalContinuesInterim -> messages.toMutableList().also { next ->
+            next[previousAssistantIndex] = previous.copy(
+                text = if (finalText.length >= previous.text.length) finalText else previous.text,
+                interim = false,
+            )
+        }
+        previous?.text == finalText -> messages
+        else -> messages.toMutableList().also { next ->
+            next.add(
+                completionInsertionIndex,
+                ConversationMessage(role = "assistant", text = finalText),
+            )
+        }
+    }
+    val markerIndex = nextMessages.indexOfFirst { message ->
+        markerId != null && message.id == markerId
+    }.takeIf { it >= 0 } ?: nextMessages.indexOfLast { message ->
+        message.role == "user" && message.userPlacement == UserMessagePlacement.NextTurn
+    }
+    if (markerIndex < 0) return nextMessages
+    return nextMessages.toMutableList().also { next ->
+        next[markerIndex] = next[markerIndex].copy(userPlacement = UserMessagePlacement.Prompt)
+    }
+}
+
+private fun currentTurnLastAssistantIndex(messages: List<ConversationMessage>): Int {
+    val userIndex = messages.indexOfLast { it.role == "user" }
+    val contentTail = currentTurnContentTailIndex(messages)
+    return contentTail.takeIf { index ->
+        index > userIndex && messages[index].role == "assistant"
+    } ?: -1
+}
+
+private fun ConversationProjection.removeReasoningEchoOfFinalAnswer(
+    echoedStreamingAnswer: Boolean,
+): ConversationProjection {
+    if (!echoedStreamingAnswer) return this
+    val finalIndex = currentTurnLastAssistantIndex(messages)
+    val finalText = messages.getOrNull(finalIndex)
+        ?.takeIf { it.role == "assistant" }
+        ?.text
+        ?.trimEnd()
+        .orEmpty()
+    if (finalText.isBlank()) return this
+    val userIndex = messages.indexOfLast { it.role == "user" }
+    val stepsIndex = (messages.lastIndex downTo userIndex + 1)
+        .firstOrNull { messages[it].role == "steps" }
+        ?: return this
+    val stepsMessage = messages[stepsIndex]
+    val hasEcho = stepsMessage.steps.lastOrNull()?.let { step ->
+        step.kind == ConversationStepKind.Reasoning && step.detail.trimEnd() == finalText
+    } == true
+    if (!hasEcho) return this
+    val nextSteps = stepsMessage.steps.dropLast(1)
+    val nextMessages = messages.toMutableList().also { next ->
+        if (nextSteps.isEmpty()) {
+            next.removeAt(stepsIndex)
+        } else {
+            next[stepsIndex] = stepsMessage.copy(steps = nextSteps)
+        }
+    }
+    return copy(messages = nextMessages)
+}
+
+private fun ConversationProjection.removeTrailingReasoningEcho(finalAnswer: String): ConversationProjection {
+    val finalText = finalAnswer.trimEnd()
+    if (finalText.isBlank()) return this
+    val userIndex = messages.indexOfLast { it.role == "user" }
+    val stepsIndex = currentTurnContentTailIndex(messages)
+        .takeIf { index -> index > userIndex && messages[index].role == "steps" }
+        ?: return this
+    val stepsMessage = messages[stepsIndex]
+    val hasEcho = stepsMessage.steps.lastOrNull()?.let { step ->
+        step.kind == ConversationStepKind.Reasoning && step.detail.trimEnd() == finalText
+    } == true
+    if (!hasEcho) return this
+    val nextSteps = stepsMessage.steps.dropLast(1)
+    return copy(
+        messages = messages.toMutableList().also { next ->
+            if (nextSteps.isEmpty()) {
+                next.removeAt(stepsIndex)
+            } else {
+                next[stepsIndex] = stepsMessage.copy(steps = nextSteps)
+            }
+        },
     )
 }

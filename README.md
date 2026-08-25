@@ -43,7 +43,7 @@ Install the APK, open **Hermes Celeste**, and connect to a Hermes dashboard that
 - Read rich Markdown, code, links, checklists, quotes, and tables in the transcript
 - Answer agent clarification questions inline
 - Send selected images and files through Android’s system pickers
-- Queue follow-up prompts during active turns and send them automatically in order
+- Redirect text follow-ups into active turns and queue payloads that need the next turn
 - Stop active work and recover the current conversation after connection changes
 
 ## One Hermes, another surface

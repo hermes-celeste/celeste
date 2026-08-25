@@ -112,6 +112,7 @@ class HermesGatewayTest {
         val resumed = gateway.resumeStoredSession("stored-42", "work", "android")
         assertEquals("runtime-7", resumed.runtimeSessionId)
         assertTrue(resumed.running == false)
+        assertEquals(listOf(InflightCorrection("Change direction", 7)), resumed.inflightCorrections)
 
         val eventCollector = async(start = CoroutineStart.UNDISPATCHED) {
             withTimeout(5_000) { gateway.events.take(3).toList() }
@@ -135,6 +136,18 @@ class HermesGatewayTest {
         val accepted = gateway.submitPrompt("runtime-7", "")
 
         assertEquals("streaming", accepted.string("status"))
+        gateway.close()
+    }
+
+    @Test
+    fun redirectsAConversationThatIsAlreadyRunning() = runBlocking {
+        server.enqueue(chatWebSocket())
+        val gateway = gateway()
+        gateway.connect()
+
+        val accepted = gateway.redirectSession("runtime-7", "Use the simpler path")
+
+        assertEquals(SessionRedirectStatus.Redirected, accepted)
         gateway.close()
     }
 
@@ -757,11 +770,15 @@ One test failed
                         val id = request["id"].toString()
                         when (request["method"]?.jsonPrimitive?.content) {
                             "session.resume" -> webSocket.send(
-                                """{"jsonrpc":"2.0","id":$id,"result":{"session_id":"runtime-7","resumed":"stored-42","running":false,"status":"idle","inflight":null,"messages":[{"id":"u1","role":"user","text":"Earlier message"}]}}""",
+                                """{"jsonrpc":"2.0","id":$id,"result":{"session_id":"runtime-7","resumed":"stored-42","running":false,"status":"idle","inflight":{"user":"Earlier message","assistant":"Before.After.","streaming":true,"corrections":["Change direction"],"correction_offsets":[7]},"messages":[{"id":"u1","role":"user","text":"Earlier message"}]}}""",
                             )
 
                             "image.detach" -> webSocket.send(
                                 """{"jsonrpc":"2.0","id":$id,"result":{"detached":false,"count":1}}""",
+                            )
+
+                            "session.redirect" -> webSocket.send(
+                                """{"jsonrpc":"2.0","id":$id,"result":{"status":"redirected"}}""",
                             )
 
                             "prompt.submit" -> {
