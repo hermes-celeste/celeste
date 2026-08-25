@@ -419,7 +419,7 @@ private fun redirectedAssistantSuffix(
         message.role == "user" && message.userPlacement == UserMessagePlacement.Prompt
     }
     val sealedPrefix = messages.subList(turnStart + 1, correctionIndex)
-        .filter { it.role == "assistant" && it.interim }
+        .filter { it.role == "assistant" }
         .joinToString(separator = "", transform = ConversationMessage::text)
     return if (sealedPrefix.isNotBlank() && suppliedContent.startsWith(sealedPrefix)) {
         suppliedContent.removePrefix(sealedPrefix).trimStart()

@@ -1129,6 +1129,63 @@ class CelesteViewModelTest {
     }
 
     @Test
+    fun queuedRedirectResponseMovesAnAlreadyCompletedReplyBeforeTheCorrection() = runTest {
+        val redirectGate = CompletableDeferred<Unit>()
+        val gateway = FakeGateway().apply {
+            redirectStatus = "queued"
+            this.redirectGate = redirectGate
+        }
+        val viewModel = openConversation(gateway)
+        advanceUntilIdle()
+
+        viewModel.updateDraft("First")
+        viewModel.sendMessage()
+        viewModel.updateDraft("Run this next")
+        viewModel.sendMessage()
+        runCurrent()
+        gateway.emit("message.complete", """{"content":"First answer","status":"complete"}""")
+        runCurrent()
+        redirectGate.complete(Unit)
+        advanceUntilIdle()
+
+        assertEquals(
+            listOf("First", "First answer", "Run this next"),
+            viewModel.state.value.messages.map { it.text },
+        )
+        assertEquals(UserMessagePlacement.Prompt, viewModel.state.value.messages.last().userPlacement)
+        viewModel.controller.close()
+    }
+
+    @Test
+    fun queuedRedirectResponseSealsCurrentStreamingTextBeforeTheCorrection() = runTest {
+        val redirectGate = CompletableDeferred<Unit>()
+        val gateway = FakeGateway().apply {
+            redirectStatus = "queued"
+            this.redirectGate = redirectGate
+        }
+        val viewModel = openConversation(gateway)
+        advanceUntilIdle()
+
+        viewModel.updateDraft("First")
+        viewModel.sendMessage()
+        viewModel.updateDraft("Run this next")
+        viewModel.sendMessage()
+        runCurrent()
+        gateway.emit("message.delta", """{"text":"Still finishing the first answer"}""")
+        runCurrent()
+        redirectGate.complete(Unit)
+        advanceUntilIdle()
+
+        assertEquals(
+            listOf("First", "Still finishing the first answer", "Run this next"),
+            viewModel.state.value.messages.map { it.text },
+        )
+        assertEquals("", viewModel.state.value.streamingText)
+        assertEquals(UserMessagePlacement.NextTurn, viewModel.state.value.messages.last().userPlacement)
+        viewModel.controller.close()
+    }
+
+    @Test
     fun resumeRestoresAcceptedRedirectAtItsAssistantOffset() = runTest {
         val gateway = FakeGateway().apply {
             resumePayload = resumePayload(
@@ -1149,6 +1206,48 @@ class CelesteViewModelTest {
             UserMessagePlacement.MidTurnCorrection,
             viewModel.state.value.messages.last().userPlacement,
         )
+        viewModel.controller.close()
+    }
+
+    @Test
+    fun resumeRestoresServerQueuedCorrectionAfterTheInflightReply() = runTest {
+        val gateway = FakeGateway().apply {
+            resumePayload = resumePayload(
+                messages = listOf(ConversationMessage(role = "user", text = "First", id = "server-user")),
+                running = true,
+                inflightJson = """{"user":"First","assistant":"Before.","streaming":true}""",
+                queuedJson = """{"user":"Run this next"}""",
+            )
+        }
+        val viewModel = openConversation(gateway)
+        advanceUntilIdle()
+
+        assertEquals(
+            listOf("First", "Before.", "Run this next"),
+            viewModel.state.value.messages.map { it.text },
+        )
+        assertEquals("", viewModel.state.value.streamingText)
+        assertEquals(UserMessagePlacement.NextTurn, viewModel.state.value.messages.last().userPlacement)
+        viewModel.controller.close()
+    }
+
+    @Test
+    fun resumePreservesRepeatedAssistantSegmentsBetweenCorrections() = runTest {
+        val gateway = FakeGateway().apply {
+            resumePayload = resumePayload(
+                messages = listOf(ConversationMessage(role = "user", text = "First", id = "server-user")),
+                running = true,
+                inflightJson = """{"user":"First","assistant":"OkayOkayTail","streaming":true,"corrections":["First change","Second change"],"correction_offsets":[4,8]}""",
+            )
+        }
+        val viewModel = openConversation(gateway)
+        advanceUntilIdle()
+
+        assertEquals(
+            listOf("First", "Okay", "First change", "Okay", "Second change"),
+            viewModel.state.value.messages.map { it.text },
+        )
+        assertEquals("Tail", viewModel.state.value.streamingText)
         viewModel.controller.close()
     }
 
@@ -3068,12 +3167,13 @@ class CelesteViewModelTest {
             runtimeSessionId: String = "runtime-7",
             storedSessionId: String = "stored-42",
             inflightJson: String = "null",
+            queuedJson: String = "null",
         ): JsonObject {
             val encodedMessages = messages.joinToString(",") { message ->
                 """{"id":${Json.encodeToString(message.id ?: "")},"role":${Json.encodeToString(message.role)},"text":${Json.encodeToString(message.text)}}"""
             }
             return Json.parseToJsonElement(
-                """{"session_id":"$runtimeSessionId","resumed":"$storedSessionId","running":$running,"status":"${if (running) "streaming" else "idle"}","inflight":$inflightJson,"messages":[$encodedMessages]}""",
+                """{"session_id":"$runtimeSessionId","resumed":"$storedSessionId","running":$running,"status":"${if (running) "streaming" else "idle"}","inflight":$inflightJson,"queued":$queuedJson,"messages":[$encodedMessages]}""",
             ) as JsonObject
         }
     }

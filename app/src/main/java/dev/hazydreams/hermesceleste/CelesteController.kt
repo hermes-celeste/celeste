@@ -216,6 +216,7 @@ internal class CelesteController(
     )
 
     private var localMessageCounter = 0L
+    private var turnSettlementGeneration = 0L
     private var composerAttachmentGenerationCounter = 0L
     private var credential: GatewayCredential? = null
     private var gateway: GatewayConnection? = null
@@ -1166,6 +1167,7 @@ internal class CelesteController(
         )
         val redirectConnectionAttempt = connectionAttempt
         val redirectStopGeneration = redirectStopGenerationBySession.getOrDefault(storedSessionId, 0L)
+        val redirectTurnSettlementGeneration = turnSettlementGeneration
         val userMessageCountBeforeRedirect = snapshot.messages.count { it.role == "user" }
         controllerScope.launch {
             val attempt = try {
@@ -1211,21 +1213,11 @@ internal class CelesteController(
             }
 
             if (accepted) {
-                mutableState.value = mutableState.value.copy(
-                    messages = mutableState.value.messages.map { message ->
-                        if (message.id == redirectMessageId) {
-                            message.copy(
-                                pending = false,
-                                userPlacement = when (attempt.status) {
-                                    SessionRedirectStatus.Redirected -> UserMessagePlacement.MidTurnCorrection
-                                    SessionRedirectStatus.Queued -> UserMessagePlacement.NextTurn
-                                    SessionRedirectStatus.Rejected -> message.userPlacement
-                                },
-                            )
-                        } else {
-                            message
-                        }
-                    },
+                mutableState.value = projectAcceptedRedirect(
+                    snapshot = mutableState.value,
+                    redirectMessageId = redirectMessageId,
+                    status = attempt.status,
+                    crossedTurnBoundary = turnSettlementGeneration != redirectTurnSettlementGeneration,
                 )
             } else {
                 mutableState.value = mutableState.value.copy(
@@ -1238,6 +1230,49 @@ internal class CelesteController(
                 )
             }
         }
+    }
+
+    private fun projectAcceptedRedirect(
+        snapshot: CelesteUiState,
+        redirectMessageId: String,
+        status: SessionRedirectStatus,
+        crossedTurnBoundary: Boolean,
+    ): CelesteUiState {
+        val markerIndex = snapshot.messages.indexOfFirst { it.id == redirectMessageId }
+        val marker = snapshot.messages.getOrNull(markerIndex) ?: return snapshot
+        if (status != SessionRedirectStatus.Queued) {
+            return snapshot.copy(
+                messages = snapshot.messages.map { message ->
+                    if (message.id == redirectMessageId) {
+                        message.copy(
+                            pending = false,
+                            userPlacement = UserMessagePlacement.MidTurnCorrection,
+                        )
+                    } else {
+                        message
+                    }
+                },
+            )
+        }
+
+        val withoutMarker = snapshot.messages.filterNot { it.id == redirectMessageId }
+        val withCurrentStream = snapshot.streamingText.trimEnd().takeIf(String::isNotBlank)?.let { text ->
+            appendCurrentTurnMessage(
+                messages = withoutMarker,
+                message = ConversationMessage(role = "assistant", text = text, interim = true),
+            )
+        } ?: withoutMarker
+        return snapshot.copy(
+            messages = withCurrentStream + marker.copy(
+                pending = false,
+                userPlacement = if (crossedTurnBoundary) {
+                    UserMessagePlacement.Prompt
+                } else {
+                    UserMessagePlacement.NextTurn
+                },
+            ),
+            streamingText = "",
+        )
     }
 
     private suspend fun redirectWithSessionRecovery(
@@ -2103,66 +2138,93 @@ internal class CelesteController(
     }
 
     private fun resumedLiveProjection(resumed: ResumedSession): ResumedLiveProjection {
-        if (resumed.inflightCorrections.isEmpty()) {
-            return ResumedLiveProjection(
+        val inflightProjection = if (resumed.inflightCorrections.isEmpty()) {
+            ResumedLiveProjection(
                 messages = resumed.messages,
                 streamingText = unpersistedInflightText(
                     inflight = resumed.inflightAssistantText,
                     messages = resumed.messages,
                 ),
             )
-        }
-
-        var messages = resumed.messages
-        val assistant = resumed.inflightAssistantText
-        val offsetsUsable = resumed.inflightCorrections.all { correction ->
-            correction.assistantOffset?.let { it in 0..assistant.length } == true
-        }
-        var cursor = 0
-        resumed.inflightCorrections.forEachIndexed { index, correction ->
-            if (offsetsUsable) {
-                val boundary = correction.assistantOffset!!.coerceIn(cursor, assistant.length)
-                val segment = assistant.substring(cursor, boundary)
-                val missingSegment = unpersistedInflightText(segment, messages)
-                if (missingSegment.isNotBlank()) {
-                    messages = appendCurrentTurnMessage(
-                        messages = messages,
-                        message = ConversationMessage(
-                            role = "assistant",
-                            text = missingSegment,
-                            id = "inflight-assistant-segment-$index-${resumed.runtimeSessionId}",
-                            interim = true,
-                        ),
-                    )
-                }
-                cursor = boundary
-            } else if (index == 0) {
-                val missingAssistant = unpersistedInflightText(assistant, messages)
-                if (missingAssistant.isNotBlank()) {
-                    messages = appendCurrentTurnMessage(
-                        messages = messages,
-                        message = ConversationMessage(
-                            role = "assistant",
-                            text = missingAssistant,
-                            id = "inflight-assistant-${resumed.runtimeSessionId}",
-                            interim = true,
-                        ),
-                    )
-                }
+        } else {
+            var messages = resumed.messages
+            val assistant = resumed.inflightAssistantText
+            val offsetsUsable = resumed.inflightCorrections.all { correction ->
+                correction.assistantOffset?.let { it in 0..assistant.length } == true
             }
-            messages = appendCurrentTurnMessage(
+            var persistedPrefixAvailable = true
+            fun missingSegment(segment: String): String {
+                val text = segment.trim()
+                if (text.isEmpty() || !persistedPrefixAvailable) return text
+                persistedPrefixAvailable = false
+                return unpersistedInflightText(segment, resumed.messages)
+            }
+            var cursor = 0
+            resumed.inflightCorrections.forEachIndexed { index, correction ->
+                if (offsetsUsable) {
+                    val boundary = correction.assistantOffset!!.coerceIn(cursor, assistant.length)
+                    val segment = missingSegment(assistant.substring(cursor, boundary))
+                    if (segment.isNotBlank()) {
+                        messages = appendCurrentTurnMessage(
+                            messages = messages,
+                            message = ConversationMessage(
+                                role = "assistant",
+                                text = segment,
+                                id = "inflight-assistant-segment-$index-${resumed.runtimeSessionId}",
+                                interim = true,
+                            ),
+                        )
+                    }
+                    cursor = boundary
+                } else if (index == 0) {
+                    val missingAssistant = missingSegment(assistant)
+                    if (missingAssistant.isNotBlank()) {
+                        messages = appendCurrentTurnMessage(
+                            messages = messages,
+                            message = ConversationMessage(
+                                role = "assistant",
+                                text = missingAssistant,
+                                id = "inflight-assistant-${resumed.runtimeSessionId}",
+                                interim = true,
+                            ),
+                        )
+                    }
+                }
+                messages = appendCurrentTurnMessage(
+                    messages = messages,
+                    message = ConversationMessage(
+                        role = "user",
+                        text = correction.text,
+                        id = "inflight-correction-$index-${resumed.runtimeSessionId}",
+                        userPlacement = UserMessagePlacement.MidTurnCorrection,
+                    ),
+                )
+            }
+            ResumedLiveProjection(
                 messages = messages,
-                message = ConversationMessage(
-                    role = "user",
-                    text = correction.text,
-                    id = "inflight-correction-$index-${resumed.runtimeSessionId}",
-                    userPlacement = UserMessagePlacement.MidTurnCorrection,
-                ),
+                streamingText = if (offsetsUsable) assistant.substring(cursor).trimStart() else "",
             )
         }
+
+        val queuedText = resumed.queuedUserText.trim()
+        if (queuedText.isEmpty()) return inflightProjection
+        val messagesWithInflightTail = inflightProjection.streamingText.trimEnd()
+            .takeIf(String::isNotBlank)
+            ?.let { text ->
+                appendCurrentTurnMessage(
+                    messages = inflightProjection.messages,
+                    message = ConversationMessage(role = "assistant", text = text, interim = true),
+                )
+            }
+            ?: inflightProjection.messages
         return ResumedLiveProjection(
-            messages = messages,
-            streamingText = if (offsetsUsable) assistant.substring(cursor).trimStart() else "",
+            messages = messagesWithInflightTail + ConversationMessage(
+                role = "user",
+                text = queuedText,
+                id = "queued-user-${resumed.runtimeSessionId}",
+                userPlacement = UserMessagePlacement.NextTurn,
+            ),
+            streamingText = "",
         )
     }
 
@@ -2239,6 +2301,7 @@ internal class CelesteController(
         if (awaitingQueuedActivity && !startsQueuedTurn && event.settlesTurn()) {
             queuedTurnAwaitingActivitySessionId = null
         }
+        if (event.settlesTurn()) turnSettlementGeneration += 1
         val reduction = reduceConversationEvent(
             projection = ConversationProjection(
                 messages = current.messages,

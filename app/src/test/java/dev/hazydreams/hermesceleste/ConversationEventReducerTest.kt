@@ -348,6 +348,48 @@ class ConversationEventReducerTest {
     }
 
     @Test
+    fun redirectedCompletionDoesNotRepeatToolSeparatedProse() {
+        val initial = ConversationEventReduction(
+            projection = projection().copy(
+                messages = listOf(
+                    ConversationMessage(role = "user", text = "Prompt", id = "user-1"),
+                    ConversationMessage(role = "assistant", text = "Before.", interim = false),
+                    ConversationMessage(
+                        role = "steps",
+                        text = "",
+                        id = "steps-1",
+                        steps = listOf(
+                            ConversationStep(
+                                id = "tool-1",
+                                kind = ConversationStepKind.Tool,
+                                toolName = "terminal",
+                                pending = false,
+                            ),
+                        ),
+                    ),
+                    ConversationMessage(
+                        role = "user",
+                        text = "Change direction",
+                        id = "redirect-1",
+                        userPlacement = UserMessagePlacement.MidTurnCorrection,
+                    ),
+                ),
+                turnState = TurnState.Running,
+            ),
+            localMessageCounter = 0L,
+        )
+
+        val result = initial.reduce(
+            event("message.complete", """{"content":"Before.After.","status":"complete"}"""),
+        )
+
+        assertEquals(
+            listOf("Prompt", "Before.", "", "Change direction", "After."),
+            result.projection.messages.map { it.text },
+        )
+    }
+
+    @Test
     fun changedFilesStayAtTheEndWithoutReorderingCommentaryAndLaterActivity() {
         val result = reduceEvents(
             event("message.start"),
