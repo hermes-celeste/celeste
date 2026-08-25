@@ -143,6 +143,48 @@ class RichMarkdownContractTest {
     }
 
     @Test
+    fun mediaInsideCodeBlocksRemainsReadableText() {
+        val content = """
+            ```text
+            MEDIA:/home/juno/output/fenced.png
+            ```
+                MEDIA:/home/juno/output/indented.png
+            `MEDIA:/home/juno/output/rendered.png`
+        """.trimIndent()
+
+        assertEquals(
+            listOf(
+                AssistantContentBlock.Text(
+                    """
+                        ```text
+                        MEDIA:/home/juno/output/fenced.png
+                        ```
+                            MEDIA:/home/juno/output/indented.png
+                    """.trimIndent(),
+                ),
+                AssistantContentBlock.GatewayImage(
+                    path = "/home/juno/output/rendered.png",
+                    alt = "rendered.png",
+                ),
+            ),
+            assistantContentBlocks(content),
+        )
+    }
+
+    @Test
+    fun boundsGatewayImagesPerAssistantMessage() {
+        val content = (1..6).joinToString("\n") { "MEDIA:/home/juno/output/render-$it.png" }
+
+        val blocks = assistantContentBlocks(content)
+
+        assertEquals(4, blocks.count { it is AssistantContentBlock.GatewayImage })
+        assertEquals(
+            "MEDIA:/home/juno/output/render-5.png\nMEDIA:/home/juno/output/render-6.png",
+            (blocks.last() as AssistantContentBlock.Text).content,
+        )
+    }
+
+    @Test
     fun streamingMediaOutputStaysTextUntilThePathSettles() {
         val content = "MEDIA:/home/juno/output/rendered"
 

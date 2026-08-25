@@ -61,6 +61,8 @@ internal fun assistantContentBlocks(
     if (!allowGatewayImages) return listOf(AssistantContentBlock.Text(content))
     val blocks = mutableListOf<AssistantContentBlock>()
     val textLines = mutableListOf<String>()
+    var activeFence: Pair<Char, Int>? = null
+    var gatewayImageCount = 0
 
     fun flushText() {
         val text = textLines.joinToString("\n").trim('\n')
@@ -69,11 +71,32 @@ internal fun assistantContentBlocks(
     }
 
     content.lineSequence().forEach { line ->
-        val path = gatewayMediaPath(line)
+        val trimmed = line.trimStart()
+        val fence = fenceMarker(trimmed)
+        val currentFence = activeFence
+        if (currentFence != null) {
+            textLines += line
+            if (fence?.first == currentFence.first && fence.second >= currentFence.second) {
+                activeFence = null
+            }
+            return@forEach
+        }
+        if (!line.isIndentedCodeLine() && fence != null) {
+            activeFence = fence
+            textLines += line
+            return@forEach
+        }
+
+        val path = if (!line.isIndentedCodeLine() && gatewayImageCount < MAX_GATEWAY_IMAGES_PER_MESSAGE) {
+            gatewayMediaPath(line)
+        } else {
+            null
+        }
         if (path == null) {
             textLines += line
         } else {
             flushText()
+            gatewayImageCount += 1
             blocks += AssistantContentBlock.GatewayImage(
                 path = path,
                 alt = path.substringAfterLast('/').substringAfterLast('\\').ifBlank { "Image" },
@@ -83,6 +106,14 @@ internal fun assistantContentBlocks(
     flushText()
     return blocks.ifEmpty { listOf(AssistantContentBlock.Text(content)) }
 }
+
+private fun fenceMarker(line: String): Pair<Char, Int>? {
+    val marker = line.firstOrNull()?.takeIf { it == '`' || it == '~' } ?: return null
+    val length = line.takeWhile { it == marker }.length
+    return (marker to length).takeIf { length >= 3 }
+}
+
+private fun String.isIndentedCodeLine(): Boolean = startsWith('\t') || takeWhile { it == ' ' }.length >= 4
 
 private fun gatewayMediaPath(line: String): String? {
     val unwrapped = line.trim().removeMatchingQuotes()
@@ -98,6 +129,8 @@ private fun String.removeMatchingQuotes(): String {
     if (length < 2 || first() != last() || first() !in charArrayOf('`', '"', '\'')) return this
     return substring(1, lastIndex).trim()
 }
+
+private const val MAX_GATEWAY_IMAGES_PER_MESSAGE = 4
 
 /** Returns the append-only suffix, or null when a recovered stream replaced prior text. */
 internal fun markdownStreamDelta(rendered: String, incoming: String): String? =

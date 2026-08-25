@@ -362,13 +362,16 @@ internal class CelesteController(
         val snapshot = mutableState.value
         val activeCredential = credential ?: return null
         val baseUrl = snapshot.probe?.baseUrl ?: return null
-        return runCatching {
+        return try {
             dashboard.loadGatewayImage(
                 baseUrl = baseUrl,
                 credential = activeCredential,
                 path = path,
             )
-        }.getOrNull()
+        } catch (failure: Throwable) {
+            if (failure is CancellationException) throw failure
+            null
+        }
     }
 
     fun updateSessionSearchQuery(value: String) {
