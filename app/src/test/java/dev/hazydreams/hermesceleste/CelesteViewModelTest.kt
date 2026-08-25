@@ -13,6 +13,7 @@ import dev.hazydreams.hermesceleste.network.ConversationStepKind
 import dev.hazydreams.hermesceleste.network.DashboardProbeResult
 import dev.hazydreams.hermesceleste.network.DashboardProfile
 import dev.hazydreams.hermesceleste.network.DashboardService
+import dev.hazydreams.hermesceleste.network.DelegateAgentStatus
 import dev.hazydreams.hermesceleste.network.GatewayConnection
 import dev.hazydreams.hermesceleste.network.GatewayConnectionState
 import dev.hazydreams.hermesceleste.network.GatewayCredential
@@ -2078,6 +2079,18 @@ class CelesteViewModelTest {
         runCurrent()
         assertTrue(viewModel.state.value.delegateAgents.isEmpty())
 
+        gateway.emit(
+            "subagent.start",
+            """{"subagent_id":"agent-b","goal":"Inspect after reconnect","status":"running"}""",
+        )
+        runCurrent()
+        assertEquals(listOf("agent-b"), viewModel.state.value.delegateAgents.map { it.id })
+
+        viewModel.controller.reconnectNow()
+        runCurrent()
+        assertTrue(viewModel.state.value.delegateAgents.isEmpty())
+        advanceUntilIdle()
+
         val secondSession = dashboard.session.copy(id = "stored-43", title = "Another conversation")
         gateway.resumePayload = Json.parseToJsonElement(
             """{"session_id":"runtime-8","resumed":"stored-43","running":false,"status":"idle","inflight":null,"messages":[{"role":"user","text":"Another prompt"}]}""",
@@ -2157,7 +2170,12 @@ class CelesteViewModelTest {
         viewModel.sendMessage()
         gateway.emit("message.start")
         gateway.emit("message.delta", """{"text":"Partial work"}""")
+        gateway.emit(
+            "subagent.start",
+            """{"subagent_id":"agent-a","goal":"Inspect the turn","status":"running"}""",
+        )
         advanceUntilIdle()
+        assertEquals(DelegateAgentStatus.Running, viewModel.state.value.delegateAgents.single().status)
 
         gateway.resumePayload = resumePayload(
             messages = listOf(
@@ -2172,6 +2190,7 @@ class CelesteViewModelTest {
         assertTrue(gateway.methods.contains("session.interrupt"))
         assertEquals(TurnState.Idle, viewModel.state.value.turnState)
         assertEquals("Partial work", viewModel.state.value.messages.last().text)
+        assertEquals(DelegateAgentStatus.Interrupted, viewModel.state.value.delegateAgents.single().status)
         viewModel.controller.close()
     }
 

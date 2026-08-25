@@ -31,6 +31,7 @@ import dev.hazydreams.hermesceleste.network.boolean
 import dev.hazydreams.hermesceleste.network.closeRuntimeSession
 import dev.hazydreams.hermesceleste.network.createSession
 import dev.hazydreams.hermesceleste.network.detachImage
+import dev.hazydreams.hermesceleste.network.interruptActiveDelegateAgents
 import dev.hazydreams.hermesceleste.network.interruptSession
 import dev.hazydreams.hermesceleste.network.markClarificationSubmitting
 import dev.hazydreams.hermesceleste.network.resetClarificationSubmission
@@ -1910,7 +1911,11 @@ internal class CelesteController(
         controllerScope.launch {
             val result = runCatching {
                 activeGateway.interruptSession(runtimeId)
-                reconcile(activeGateway, currentStoredSessionId ?: return@launch)
+                if (gateway !== activeGateway || currentStoredSessionId != sessionId) return@runCatching
+                mutableState.value = mutableState.value.copy(
+                    delegateAgents = interruptActiveDelegateAgents(mutableState.value.delegateAgents),
+                )
+                reconcile(activeGateway, sessionId)
             }
             if (result.isFailure) {
                 recoverGatewayRequestFailure(
@@ -2021,7 +2026,6 @@ internal class CelesteController(
                     val wasRunning = mutableState.value.turnState == TurnState.Running
                     mutableState.value = mutableState.value.copy(
                         turnState = TurnState.Reconnecting,
-                        delegateAgents = emptyList(),
                         errorMessage = null,
                     )
                     scheduleReconnect(wasRunning)
@@ -2407,6 +2411,9 @@ internal class CelesteController(
     ) {
         val activeGateway = gateway ?: return
         val storedSessionId = currentStoredSessionId ?: mutableState.value.activeSummary?.id ?: return
+        if (mutableState.value.delegateAgents.isNotEmpty()) {
+            mutableState.value = mutableState.value.copy(delegateAgents = emptyList())
+        }
         if (mutableState.value.resumeExhausted) return
         if (reconnectJob?.isActive == true) return
         mutableState.value = mutableState.value.copy(
