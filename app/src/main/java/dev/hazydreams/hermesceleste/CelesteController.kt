@@ -2154,8 +2154,8 @@ internal class CelesteController(
             }
             var persistedPrefixAvailable = true
             fun missingSegment(segment: String): String {
-                val text = segment.trim()
-                if (text.isEmpty() || !persistedPrefixAvailable) return text
+                if (segment.isBlank()) return ""
+                if (!persistedPrefixAvailable) return segment
                 persistedPrefixAvailable = false
                 return unpersistedInflightText(segment, resumed.messages)
             }
@@ -2202,13 +2202,13 @@ internal class CelesteController(
             }
             ResumedLiveProjection(
                 messages = messages,
-                streamingText = if (offsetsUsable) assistant.substring(cursor).trimStart() else "",
+                streamingText = if (offsetsUsable) assistant.substring(cursor) else "",
             )
         }
 
         val queuedText = resumed.queuedUserText.trim()
         if (queuedText.isEmpty()) return inflightProjection
-        val messagesWithInflightTail = inflightProjection.streamingText.trimEnd()
+        val messagesWithInflightTail = inflightProjection.streamingText
             .takeIf(String::isNotBlank)
             ?.let { text ->
                 appendCurrentTurnMessage(
@@ -3053,15 +3053,15 @@ internal class CelesteController(
             inflight: String,
             messages: List<ConversationMessage>,
         ): String {
-            val recovered = inflight.trim()
-            if (recovered.isEmpty()) return ""
+            if (inflight.isBlank()) return ""
             val persisted = messages.lastOrNull {
                 it.role == "assistant" && it.text.isNotBlank()
             }?.text?.trim().orEmpty()
+            val recovered = inflight.trimStart()
             return if (persisted.isNotEmpty() && recovered.startsWith(persisted)) {
-                recovered.removePrefix(persisted).trimStart()
+                recovered.removePrefix(persisted)
             } else {
-                recovered
+                inflight
             }
         }
     }

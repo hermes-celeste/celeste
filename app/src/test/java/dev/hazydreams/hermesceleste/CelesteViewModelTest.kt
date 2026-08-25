@@ -1237,6 +1237,41 @@ class CelesteViewModelTest {
     }
 
     @Test
+    fun resumePreservesWhitespaceBetweenPersistedAndInflightRedirectSegments() = runTest {
+        val preCorrection = "Before. More. "
+        val gateway = FakeGateway().apply {
+            resumePayload = resumePayload(
+                messages = listOf(
+                    ConversationMessage(role = "user", text = "First", id = "server-user"),
+                    ConversationMessage(role = "assistant", text = "Before.", id = "server-assistant"),
+                ),
+                running = true,
+                inflightJson = """{"user":"First","assistant":"${preCorrection}After.","streaming":true,"corrections":["Change direction"],"correction_offsets":[${preCorrection.length}]}""",
+            )
+        }
+        val viewModel = openConversation(gateway)
+        advanceUntilIdle()
+
+        assertEquals(
+            listOf("First", "Before.", " More. ", "Change direction"),
+            viewModel.state.value.messages.map { it.text },
+        )
+        assertEquals("After.", viewModel.state.value.streamingText)
+
+        gateway.emit(
+            "message.complete",
+            """{"content":"${preCorrection}After.","status":"complete"}""",
+        )
+        advanceUntilIdle()
+
+        assertEquals(
+            listOf("First", "Before.", " More. ", "Change direction", "After."),
+            viewModel.state.value.messages.map { it.text },
+        )
+        viewModel.controller.close()
+    }
+
+    @Test
     fun resumeRestoresServerQueuedCorrectionAfterTheInflightReply() = runTest {
         val gateway = FakeGateway().apply {
             resumePayload = resumePayload(
@@ -2834,7 +2869,7 @@ class CelesteViewModelTest {
             messages = listOf(ConversationMessage(role = "assistant", text = "Already stored")),
         )
 
-        assertEquals("and still arriving", suffix)
+        assertEquals(" and still arriving", suffix)
     }
 
     private fun pickedAttachment(
