@@ -17,6 +17,7 @@ import okhttp3.Response
 import okhttp3.WebSocket
 import okhttp3.WebSocketListener
 import org.junit.After
+import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertThrows
@@ -62,6 +63,49 @@ class DashboardClientTest {
         assertTrue(result.supportsPassword)
         assertEquals("/api/status", server.takeRequest().url.encodedPath)
         assertEquals("/api/auth/providers", server.takeRequest().url.encodedPath)
+    }
+
+    @Test
+    fun loadsGatewayImageBytesWithAuthentication() = runTest {
+        server.enqueue(
+            MockResponse.Builder()
+                .code(200)
+                .body("""{"dataUrl":"data:image/png;base64,c3ludGhldGljLWltYWdl"}""")
+                .build(),
+        )
+        val baseUrl = server.url("/").toString().trimEnd('/')
+
+        val bytes = DashboardClient().loadGatewayImage(
+            baseUrl = baseUrl,
+            credential = GatewayCredential.StaticToken("private-token"),
+            path = "/home/juno/output/rendered image.png",
+        )
+
+        assertArrayEquals("synthetic-image".encodeToByteArray(), bytes)
+        val request = server.takeRequest()
+        assertEquals("/api/fs/read-data-url", request.url.encodedPath)
+        assertEquals("/home/juno/output/rendered image.png", request.url.queryParameter("path"))
+        assertEquals("private-token", request.headers["X-Hermes-Session-Token"])
+    }
+
+    @Test
+    fun rejectsNonImageGatewayDataUrls() = runTest {
+        server.enqueue(
+            MockResponse.Builder()
+                .code(200)
+                .body("""{"dataUrl":"data:text/plain;base64,cHJpdmF0ZQ=="}""")
+                .build(),
+        )
+
+        val failure = runCatching {
+            DashboardClient().loadGatewayImage(
+                baseUrl = server.url("/").toString().trimEnd('/'),
+                credential = GatewayCredential.None,
+                path = "/home/juno/output/not-an-image.txt",
+            )
+        }.exceptionOrNull()
+
+        assertTrue(failure is InvalidDashboardResponse)
     }
 
     @Test

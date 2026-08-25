@@ -358,6 +358,19 @@ internal class CelesteController(
         mutableState.value = mutableState.value.copy(selectedProfile = name)
     }
 
+    suspend fun loadConversationImage(path: String): ByteArray? {
+        val snapshot = mutableState.value
+        val activeCredential = credential ?: return null
+        val baseUrl = snapshot.probe?.baseUrl ?: return null
+        return runCatching {
+            dashboard.loadGatewayImage(
+                baseUrl = baseUrl,
+                credential = activeCredential,
+                path = path,
+            )
+        }.getOrNull()
+    }
+
     fun updateSessionSearchQuery(value: String) {
         val defaultProfile = mutableState.value.profiles
             .firstOrNull(DashboardProfile::isDefault)

@@ -1,7 +1,11 @@
 package dev.hazydreams.hermesceleste
 
+import dev.hazydreams.hermesceleste.ui.conversation.AssistantContentBlock
+import dev.hazydreams.hermesceleste.ui.conversation.allowedConversationImageUri
 import dev.hazydreams.hermesceleste.ui.conversation.allowedMarkdownUri
+import dev.hazydreams.hermesceleste.ui.conversation.assistantContentBlocks
 import dev.hazydreams.hermesceleste.ui.conversation.containsRichMarkdown
+import dev.hazydreams.hermesceleste.ui.conversation.markdownImageTarget
 import dev.hazydreams.hermesceleste.ui.conversation.markdownStreamDelta
 import org.intellij.markdown.MarkdownElementTypes
 import org.intellij.markdown.MarkdownTokenTypes
@@ -71,6 +75,81 @@ class RichMarkdownContractTest {
         assertFalse(allowedMarkdownUri("file:///data/private"))
         assertFalse(allowedMarkdownUri("mailto:person@example.com"))
         assertFalse(allowedMarkdownUri("/relative/path"))
+    }
+
+    @Test
+    fun loadsOnlyExplicitHttpsConversationImages() {
+        assertTrue(allowedConversationImageUri("https://images.example.com/render.png"))
+        assertTrue(allowedConversationImageUri("HTTPS://images.example.com/render.webp?size=large"))
+        assertFalse(allowedConversationImageUri("http://images.example.com/render.png"))
+        assertFalse(allowedConversationImageUri("file:///data/private.png"))
+        assertFalse(allowedConversationImageUri("data:image/png;base64,AAAA"))
+        assertFalse(allowedConversationImageUri("javascript:alert(1)"))
+        assertFalse(allowedConversationImageUri("/relative/render.png"))
+    }
+
+    @Test
+    fun readsDirectMarkdownImageDestinations() {
+        assertEquals(
+            "https://images.example.com/architecture.png",
+            markdownImageTarget("![Architecture](https://images.example.com/architecture.png)")?.url,
+        )
+        assertEquals(
+            "https://images.example.com/render wide.png",
+            markdownImageTarget(
+                "![Rendered comparison](<https://images.example.com/render wide.png> \"Preview\")",
+            )?.url,
+        )
+        assertEquals(
+            "Rendered comparison",
+            markdownImageTarget(
+                "![Rendered comparison](https://images.example.com/render.png \"Preview\")",
+            )?.alt,
+        )
+        assertNull(markdownImageTarget("[Ordinary link](https://images.example.com/render.png)"))
+    }
+
+    @Test
+    fun separatesStandaloneHermesMediaFromAssistantProse() {
+        assertEquals(
+            listOf(
+                AssistantContentBlock.Text("Here is the rendered comparison."),
+                AssistantContentBlock.GatewayImage(
+                    path = "/home/juno/output/rendered comparison.png",
+                    alt = "rendered comparison.png",
+                ),
+                AssistantContentBlock.Text("The narrow version follows."),
+                AssistantContentBlock.GatewayImage(
+                    path = "/home/juno/output/narrow.png",
+                    alt = "narrow.png",
+                ),
+            ),
+            assistantContentBlocks(
+                """
+                    Here is the rendered comparison.
+                    MEDIA:"/home/juno/output/rendered comparison.png"
+                    The narrow version follows.
+                    `MEDIA:/home/juno/output/narrow.png`
+                """.trimIndent(),
+            ),
+        )
+    }
+
+    @Test
+    fun ordinaryMediaMentionsRemainReadableAssistantText() {
+        val content = "The protocol label MEDIA: is documented here."
+
+        assertEquals(listOf(AssistantContentBlock.Text(content)), assistantContentBlocks(content))
+    }
+
+    @Test
+    fun streamingMediaOutputStaysTextUntilThePathSettles() {
+        val content = "MEDIA:/home/juno/output/rendered"
+
+        assertEquals(
+            listOf(AssistantContentBlock.Text(content)),
+            assistantContentBlocks(content, allowGatewayImages = false),
+        )
     }
 
     @Test

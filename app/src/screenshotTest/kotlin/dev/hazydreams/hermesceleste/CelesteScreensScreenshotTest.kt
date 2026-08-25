@@ -1,3 +1,5 @@
+@file:OptIn(coil3.annotation.ExperimentalCoilApi::class)
+
 package dev.hazydreams.hermesceleste
 
 import androidx.compose.foundation.background
@@ -12,12 +14,16 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import com.android.tools.screenshot.PreviewTest
+import coil3.ColorImage
+import coil3.compose.AsyncImagePreviewHandler
+import coil3.compose.LocalAsyncImagePreviewHandler
 import dev.hazydreams.hermesceleste.connection.SavedAuthMode
 import dev.hazydreams.hermesceleste.network.AuthProvider
 import dev.hazydreams.hermesceleste.network.BackgroundProcessResult
@@ -1242,6 +1248,43 @@ fun DelegateAgentsSheetPreviewScreenshot() {
     }
 }
 
+private val previewConversationImageBytes = java.util.Base64.getDecoder().decode(
+    "iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAYAAADED76LAAAAO0lEQVR4nH3GMRGAMAAEwZNzcqIhGtCAhmhInRINWIJX8MXOLI7zNTiTAq+kwDspcCUF7qTAJynwTYofTpyagRFf4HcAAAAASUVORK5CYII=",
+)
+private val previewConversationImageHandler = AsyncImagePreviewHandler {
+    ColorImage(0xFF477DCC.toInt())
+}
+
+@Preview(name = "45 · Conversation image", widthDp = 390, heightDp = 844, showBackground = true)
+@Composable
+fun ConversationImagePreviewScreenshot() {
+    CompositionLocalProvider(LocalAsyncImagePreviewHandler provides previewConversationImageHandler) {
+        HermesCelesteTheme {
+            PreviewConversation(
+                messages = listOf(
+                    ConversationMessage(
+                        role = "assistant",
+                        text = """
+                            Here is the visual comparison.
+                            MEDIA:/home/juno/output/aurora-preview.png
+                            Tap the image for a larger preview.
+                        """.trimIndent(),
+                        id = "preview-conversation-image",
+                    ),
+                ),
+                gatewayImageLoader = { previewConversationImageBytes },
+                turnState = TurnState.Idle,
+            )
+        }
+    }
+}
+
+@Preview(name = "46 · Conversation image · narrow large text", widthDp = 320, heightDp = 700, fontScale = 1.3f, showBackground = true)
+@Composable
+fun ConversationImageNarrowPreviewScreenshot() {
+    ConversationImagePreviewScreenshot()
+}
+
 @Composable
 private fun PreviewConversation(
     summary: StoredSession? = previewSessions[1],
@@ -1260,6 +1303,7 @@ private fun PreviewConversation(
     initiallyFollowLatest: Boolean = true,
     initiallyExpandedUserMessageIds: Set<String> = emptySet(),
     jumpToLatestVisible: Boolean? = null,
+    gatewayImageLoader: (suspend (String) -> ByteArray?)? = null,
 ) {
     ConversationScreen(
         conversationKey = summary?.id ?: "local-draft",
@@ -1285,5 +1329,6 @@ private fun PreviewConversation(
         initiallyFollowLatest = initiallyFollowLatest,
         initiallyExpandedUserMessageIds = initiallyExpandedUserMessageIds,
         jumpToLatestVisibleOverride = jumpToLatestVisible,
+        gatewayImageLoader = gatewayImageLoader,
     )
 }

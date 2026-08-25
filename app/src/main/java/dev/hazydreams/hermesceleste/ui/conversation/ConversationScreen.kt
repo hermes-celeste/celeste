@@ -128,6 +128,7 @@ internal fun ConversationScreen(
     initiallyExpandedUserMessageIds: Set<String> = emptySet(),
     jumpToLatestVisibleOverride: Boolean? = null,
     onClarificationRespond: (messageId: String, requestId: String, answer: String) -> Unit = { _, _, _ -> },
+    gatewayImageLoader: (suspend (String) -> ByteArray?)? = null,
 ) {
     val listState = rememberLazyListState()
     val coroutineScope = rememberCoroutineScope()
@@ -266,6 +267,8 @@ internal fun ConversationScreen(
                             initiallyExpandedUserMessage = message.id in initiallyExpandedUserMessageIds,
                             onOpenInspection = { openedInspectionMessageId = message.id },
                             onClarificationRespond = onClarificationRespond,
+                            gatewayImageLoader = gatewayImageLoader,
+                            gatewayImageScope = conversationKey,
                         )
                     }
                     if (streamingText.isNotBlank()) {
@@ -273,6 +276,8 @@ internal fun ConversationScreen(
                             MessageBubble(
                                 ConversationMessage(role = "assistant", text = streamingText, pending = true),
                                 streaming = true,
+                                gatewayImageLoader = gatewayImageLoader,
+                                gatewayImageScope = conversationKey,
                             )
                         }
                     }
@@ -285,6 +290,8 @@ internal fun ConversationScreen(
                             initiallyExpandedUserMessage = message.id in initiallyExpandedUserMessageIds,
                             onOpenInspection = { openedInspectionMessageId = message.id },
                             onClarificationRespond = onClarificationRespond,
+                            gatewayImageLoader = gatewayImageLoader,
+                            gatewayImageScope = conversationKey,
                         )
                     }
                     if (isCompacting) {

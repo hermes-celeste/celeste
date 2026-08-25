@@ -33,6 +33,7 @@ A successful WebSocket upgrade is not readiness. Wait for `gateway.ready` before
 | `GET /api/sessions` | Page stored-conversation metadata |
 | `GET /api/sessions/search` | Search durable history |
 | `GET /api/sessions/{id}/messages` | Read persisted transcript history |
+| `GET /api/fs/read-data-url` | Read a Hermes-generated conversation image through the authenticated dashboard |
 | `PATCH /api/sessions/{id}` | Update title, pin, and read state |
 
 Static-token requests use `X-Hermes-Session-Token`; cookie sessions use the private client cookie jar. The shared HTTP client does not follow redirects.
@@ -42,6 +43,8 @@ Session catalog pages use recent server ordering, 15-row windows, and response p
 Pin and read changes may update the projection optimistically, then accept Hermes as authoritative. Rename keeps the existing title until Hermes accepts a trimmed nonblank replacement.
 
 Persisted history loads with `order=latest` and `include_compacted=true`. The transcript decoder combines assistant prose, reasoning, tool calls/results, and structured process markers into the same projection used by live events. Structured user content arrays contribute their text parts to transcript prose while image parts remain attachment data. Gateway display metadata and reserved runtime markers keep hidden compaction handoffs and asynchronous delegation payloads outside the human transcript. Compatibility projection preserves genuine user content from merged compaction carriers while removing their internal summary and injected task-snapshot suffixes.
+
+Assistant `MEDIA:` lines with absolute paths resolve through `/api/fs/read-data-url` using the active dashboard credential. Explicit HTTPS Markdown images use the native conversation image surface. Both paths preserve surrounding prose order and open into the same full-screen preview.
 
 ## JSON-RPC surface
 

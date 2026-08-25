@@ -80,6 +80,7 @@ import com.mikepenz.markdown.model.markdownAnimations
 import com.mikepenz.markdown.model.markdownDimens
 import com.mikepenz.markdown.model.markdownPadding
 import com.mikepenz.markdown.model.rememberMarkdownState
+
 import dev.hazydreams.hermesceleste.ui.CelesteAccent
 import dev.hazydreams.hermesceleste.ui.CelesteHairline
 import dev.hazydreams.hermesceleste.ui.CelesteTextPrimary
@@ -292,7 +293,16 @@ private val CelesteMarkdownComponents = markdownComponents(
         CelesteMarkdownTable(model.content, model.node, model.typography.table)
     },
     image = { model ->
-        RawMarkdownNodeFallback(model.content, model.node)
+        val target = markdownImageTarget(model.node.getTextInNode(model.content).toString())
+        if (target != null && allowedConversationImageUri(target.url)) {
+            ConversationImage(
+                source = ConversationImageSource.Https(target.url),
+                alt = target.alt,
+                modifier = Modifier.padding(vertical = 7.dp),
+            )
+        } else {
+            RawMarkdownNodeFallback(model.content, model.node)
+        }
     },
     checkbox = { model ->
         CelesteTaskCheckbox(model.content, model.node)

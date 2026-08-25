@@ -1,6 +1,7 @@
 package dev.hazydreams.hermesceleste.network
 
 import java.io.IOException
+import java.util.Base64
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.coroutines.resume
@@ -169,6 +170,12 @@ interface DashboardService {
         profile: String,
         limit: Int = 500,
     ): ConversationHistory
+
+    suspend fun loadGatewayImage(
+        baseUrl: String,
+        credential: GatewayCredential,
+        path: String,
+    ): ByteArray = throw UnsupportedOperationException("Gateway images are not available.")
 
     suspend fun markSessionRead(
         baseUrl: String,
@@ -483,6 +490,38 @@ class DashboardClient(
         }
     }
 
+    override suspend fun loadGatewayImage(
+        baseUrl: String,
+        credential: GatewayCredential,
+        path: String,
+    ): ByteArray {
+        require(path.isNotBlank()) { "An image path is required." }
+        return withContext(Dispatchers.IO) {
+            val url = "$baseUrl/api/fs/read-data-url".toHttpUrl().newBuilder()
+                .addQueryParameter("path", path)
+                .build()
+            val request = Request.Builder()
+                .url(url)
+                .header("Accept", "application/json")
+                .apply {
+                    if (credential is GatewayCredential.StaticToken) {
+                        header("X-Hermes-Session-Token", credential.value.trim())
+                    }
+                }
+                .get()
+                .build()
+            val root = executeBoundedJson(
+                request = request,
+                operation = "Hermes image",
+                maxBytes = MAX_GATEWAY_IMAGE_RESPONSE_BYTES,
+            ) as? JsonObject ?: throw InvalidDashboardResponse("Hermes returned no image.")
+            decodeGatewayImageDataUrl(
+                root["dataUrl"]?.jsonPrimitive?.contentOrNull
+                    ?: throw InvalidDashboardResponse("Hermes returned no image."),
+            )
+        }
+    }
+
     private fun requestRestSessionList(
         baseUrl: String,
         credential: GatewayCredential,
@@ -771,6 +810,38 @@ class DashboardClient(
         throw TransportUnavailable("Could not reach Hermes for $operation.", error)
     }
 
+    private fun executeBoundedJson(request: Request, operation: String, maxBytes: Long): JsonElement = try {
+        httpClient.newCall(request).execute().use { response ->
+            if (!response.isSuccessful) throw failureFor(response.code, operation)
+            if (response.body.contentLength() > maxBytes) {
+                throw InvalidDashboardResponse("$operation returned too much data.")
+            }
+            val body = response.body.byteStream().readNBytes((maxBytes + 1).toInt())
+            if (body.size > maxBytes) throw InvalidDashboardResponse("$operation returned too much data.")
+            runCatching { json.parseToJsonElement(body.decodeToString()) }
+                .getOrElse { throw InvalidDashboardResponse("$operation returned an unreadable response.", it) }
+        }
+    } catch (error: DashboardFailure) {
+        throw error
+    } catch (error: IOException) {
+        throw TransportUnavailable("Could not reach Hermes for $operation.", error)
+    }
+
+    private fun decodeGatewayImageDataUrl(dataUrl: String): ByteArray {
+        val marker = ";base64,"
+        val markerIndex = dataUrl.indexOf(marker)
+        if (markerIndex <= "data:image/".length || !dataUrl.startsWith("data:image/")) {
+            throw InvalidDashboardResponse("Hermes returned an invalid image.")
+        }
+        val encoded = dataUrl.substring(markerIndex + marker.length)
+        val decoded = runCatching { Base64.getDecoder().decode(encoded) }
+            .getOrElse { throw InvalidDashboardResponse("Hermes returned an invalid image.", it) }
+        if (decoded.isEmpty() || decoded.size > MAX_GATEWAY_IMAGE_BYTES) {
+            throw InvalidDashboardResponse("Hermes returned an invalid image.")
+        }
+        return decoded
+    }
+
     private fun failureFor(code: Int, operation: String): DashboardFailure = when (code) {
         401, 403 -> AuthenticationRejected("$operation needs sign-in.")
         429 -> RateLimited("$operation was rate-limited. Try again shortly.")
@@ -991,6 +1062,8 @@ class DashboardClient(
     )
 
     private companion object {
+        const val MAX_GATEWAY_IMAGE_BYTES = 16 * 1024 * 1024
+        const val MAX_GATEWAY_IMAGE_RESPONSE_BYTES = 24L * 1024 * 1024
         const val SESSION_RESUME_REQUEST_ID = "session-resume"
         val JSON_MEDIA_TYPE = "application/json; charset=utf-8".toMediaType()
     }
