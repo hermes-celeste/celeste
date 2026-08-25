@@ -34,9 +34,10 @@ Other conversational products are composition references, not identities to copy
 
 - Use bundled Inter typography.
 - Use flat tonal surfaces without blur, gradients, glow, or heavy shadows.
-- Render user messages on a quiet rounded surface and assistant prose directly on the transcript canvas.
+- Render user messages on a quiet rounded surface and assistant prose directly on the transcript canvas. Collapse long user messages to a three-line preview with an accessible expand/collapse action.
 - Render canonical Markdown natively. Code and tables use raised surfaces and scroll internally within message width.
-- Pause automatic transcript following when the reader scrolls up; resume at the bottom or through the jump-to-latest control.
+- Pause automatic transcript following when the reader scrolls up; resume at the bottom or through the jump-to-latest control. Viewport changes such as the IME opening keep the latest content visible only when following is already active.
+- Keep Thinking entries compact in the transcript while preserving the full-width touch target and chronological Steps sheet.
 - Keep tool and system activity labeled and contained; keep ordinary assistant prose conversational.
 - Represent a turn’s file edits once at the end with a compact filled Changes pill that opens bounded per-file detail while preserving transcript activity order.
 - Keep active task progress in one compact filled pill, left-aligned immediately above the composer; acknowledge completion briefly, then clear it.

@@ -67,31 +67,33 @@ internal fun StepsTranscriptEntry(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(12.dp))
+            .heightIn(min = 36.dp)
+            .clip(RoundedCornerShape(10.dp))
             .clickable(role = Role.Button, onClick = onOpen)
             .semantics {
                 contentDescription = "Open Thinking, $countLabel"
                 role = Role.Button
                 stateDescription = if (message.pending) "In progress" else "Complete"
             }
-            .padding(horizontal = 8.dp, vertical = 10.dp),
+            .padding(horizontal = 6.dp, vertical = 2.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         ThinkingPulse(pending = message.pending)
-        Spacer(Modifier.width(11.dp))
+        Spacer(Modifier.width(9.dp))
         Text(
             text = "Thinking",
-            modifier = Modifier.weight(1f),
             color = CelesteTextPrimary,
-            style = MaterialTheme.typography.bodyMedium,
+            style = MaterialTheme.typography.bodySmall,
             fontWeight = FontWeight.SemiBold,
         )
+        Spacer(Modifier.width(4.dp))
         Icon(
             imageVector = InspectionChevronIcon,
             contentDescription = null,
-            modifier = Modifier.size(18.dp),
+            modifier = Modifier.size(16.dp),
             tint = CelesteTextMuted,
         )
+        Spacer(Modifier.weight(1f))
     }
 }
 
