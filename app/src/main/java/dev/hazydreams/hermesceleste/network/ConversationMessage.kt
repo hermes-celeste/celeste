@@ -110,33 +110,68 @@ internal fun completeToolInCurrentTurn(
     result: String,
     fallbackStepId: String,
     stepsMessageId: String,
-): List<ConversationMessage> = updateCurrentTurnSteps(messages, stepsMessageId) { current ->
-    val existingIndex = current.indexOfFirst { step ->
-        step.kind == ConversationStepKind.Tool && when {
-            !id.isNullOrBlank() -> step.id == id
-            else -> step.toolName == name && step.pending
+): List<ConversationMessage> {
+    if (!id.isNullOrBlank()) {
+        val promptStart = messages.indexOfLast { message ->
+            message.role == "user" && message.userPlacement == UserMessagePlacement.Prompt
         }
-    }
-    if (existingIndex < 0) {
-        current + ConversationStep(
-            id = id?.takeIf(String::isNotBlank) ?: fallbackStepId,
-            kind = ConversationStepKind.Tool,
-            toolName = name,
-            context = context,
-            summary = summary,
-            result = result,
-            pending = false,
-        )
-    } else {
-        current.toMutableList().also { steps ->
-            val previous = steps[existingIndex]
-            steps[existingIndex] = previous.copy(
+        val stepsMessageIndex = (messages.lastIndex downTo (promptStart + 1)).firstOrNull { messageIndex ->
+            messages[messageIndex].steps.any { step ->
+                step.kind == ConversationStepKind.Tool && step.id == id
+            }
+        }
+        if (stepsMessageIndex != null) {
+            val previousMessage = messages[stepsMessageIndex]
+            val steps = previousMessage.steps.toMutableList()
+            val stepIndex = steps.indexOfFirst { step ->
+                step.kind == ConversationStepKind.Tool && step.id == id
+            }
+            val previous = steps[stepIndex]
+            steps[stepIndex] = previous.copy(
                 toolName = name,
                 context = previous.context.ifBlank { context },
                 summary = summary,
                 result = result,
                 pending = false,
             )
+            return messages.toMutableList().also { next ->
+                val latestUserIndex = messages.indexOfLast { it.role == "user" }
+                next[stepsMessageIndex] = previousMessage.copy(
+                    steps = steps,
+                    pending = stepsMessageIndex > latestUserIndex || steps.any(ConversationStep::pending),
+                )
+            }
+        }
+    }
+
+    return updateCurrentTurnSteps(messages, stepsMessageId) { current ->
+        val existingIndex = current.indexOfFirst { step ->
+            step.kind == ConversationStepKind.Tool && when {
+                !id.isNullOrBlank() -> step.id == id
+                else -> step.toolName == name && step.pending
+            }
+        }
+        if (existingIndex < 0) {
+            current + ConversationStep(
+                id = id?.takeIf(String::isNotBlank) ?: fallbackStepId,
+                kind = ConversationStepKind.Tool,
+                toolName = name,
+                context = context,
+                summary = summary,
+                result = result,
+                pending = false,
+            )
+        } else {
+            current.toMutableList().also { steps ->
+                val previous = steps[existingIndex]
+                steps[existingIndex] = previous.copy(
+                    toolName = name,
+                    context = previous.context.ifBlank { context },
+                    summary = summary,
+                    result = result,
+                    pending = false,
+                )
+            }
         }
     }
 }

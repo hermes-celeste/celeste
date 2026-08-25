@@ -1,9 +1,11 @@
 package dev.hazydreams.hermesceleste
 
 import dev.hazydreams.hermesceleste.network.ConversationMessage
+import dev.hazydreams.hermesceleste.network.ConversationStep
 import dev.hazydreams.hermesceleste.network.ConversationStepKind
 import dev.hazydreams.hermesceleste.network.GatewayEvent
 import dev.hazydreams.hermesceleste.network.TaskItemStatus
+import dev.hazydreams.hermesceleste.network.UserMessagePlacement
 import dev.hazydreams.hermesceleste.network.changedFiles
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
@@ -278,6 +280,71 @@ class ConversationEventReducerTest {
         val thinkingCapsules = messages.filter { it.role == "steps" }
         assertTrue(thinkingCapsules.none { it.pending })
         assertTrue(thinkingCapsules.flatMap { it.steps }.none { it.pending })
+    }
+
+    @Test
+    fun finalCompletionExtendingInterimStaysAfterInterveningThinking() {
+        val interim = "I checked the first part."
+        val result = reduceEvents(
+            event("message.start"),
+            event("message.interim", """{"text":"$interim"}"""),
+            event("reasoning.delta", """{"text":"Verify the remaining details."}"""),
+            event("message.complete", """{"content":"$interim Everything is ready.","status":"complete"}"""),
+        )
+
+        assertEquals(
+            listOf("user", "assistant", "steps", "assistant"),
+            result.projection.messages.map { it.role },
+        )
+        assertEquals(interim, result.projection.messages[1].text)
+        assertEquals("$interim Everything is ready.", result.projection.messages.last().text)
+    }
+
+    @Test
+    fun redirectedToolCompletionUpdatesItsOriginalStableIdentity() {
+        val initial = ConversationEventReduction(
+            projection = projection().copy(
+                messages = listOf(
+                    ConversationMessage(role = "user", text = "Prompt", id = "user-1"),
+                    ConversationMessage(
+                        role = "steps",
+                        text = "",
+                        id = "steps-1",
+                        steps = listOf(
+                            ConversationStep(
+                                id = "tool-1",
+                                kind = ConversationStepKind.Tool,
+                                toolName = "terminal",
+                                context = "./gradlew focusedTest",
+                                pending = false,
+                            ),
+                        ),
+                    ),
+                    ConversationMessage(
+                        role = "user",
+                        text = "Use the focused suite",
+                        id = "redirect-1",
+                        userPlacement = UserMessagePlacement.MidTurnCorrection,
+                    ),
+                ),
+                turnState = TurnState.Running,
+            ),
+            localMessageCounter = 0L,
+        )
+
+        val result = initial.reduce(
+            event(
+                "tool.complete",
+                """{"tool_id":"tool-1","name":"terminal","summary":"Tests passed","result":"ok"}""",
+            ),
+        )
+
+        val toolSteps = result.projection.messages.flatMap { it.steps }
+            .filter { it.kind == ConversationStepKind.Tool && it.id == "tool-1" }
+        assertEquals(1, toolSteps.size)
+        assertEquals("Tests passed", toolSteps.single().summary)
+        assertEquals("ok", toolSteps.single().result)
+        assertEquals(listOf("user", "steps", "user"), result.projection.messages.map { it.role })
     }
 
     @Test

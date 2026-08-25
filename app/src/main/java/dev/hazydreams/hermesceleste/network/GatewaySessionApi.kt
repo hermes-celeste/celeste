@@ -94,6 +94,7 @@ suspend fun GatewayConnection.resumeStoredSession(
         ?.let { bindClarificationRequest(decoded.messages, it) }
         ?: decoded.messages
     val inflightObject = inflight as? JsonObject
+    val inflightAssistant = inflightAssistantText(inflight)
     val correctionOffsets = (inflightObject?.get("correction_offsets") as? JsonArray)
         ?.map { it.jsonPrimitive.intOrNull }
         .orEmpty()
@@ -102,7 +103,13 @@ suspend fun GatewayConnection.resumeStoredSession(
             correction.jsonPrimitive.contentOrNull
                 ?.trim()
                 ?.takeIf(String::isNotEmpty)
-                ?.let { text -> InflightCorrection(text, correctionOffsets.getOrNull(index)) }
+                ?.let { text ->
+                    InflightCorrection(
+                        text = text,
+                        assistantOffset = correctionOffsets.getOrNull(index)
+                            ?.let { offset -> codePointOffsetToUtf16Index(inflightAssistant, offset) },
+                    )
+                }
         }
         .orEmpty()
     return ResumedSession(
@@ -117,7 +124,7 @@ suspend fun GatewayConnection.resumeStoredSession(
         status = status,
         inflightUserText = (inflight as? JsonObject)?.string("user").orEmpty(),
         queuedUserText = (queued as? JsonObject)?.string("user").orEmpty(),
-        inflightAssistantText = inflightAssistantText(inflight),
+        inflightAssistantText = inflightAssistant,
         inflightCorrections = inflightCorrections,
         hasLiveProjection = inflight.isTruthy() || queued.isTruthy() || pendingClarification != null,
     )
@@ -584,6 +591,22 @@ private fun cleanedRestoredReasoning(reasoning: String): String = reasoning
 
 private fun JsonElement?.scalarIdentity(): String? =
     (this as? JsonPrimitive)?.contentOrNull?.takeIf(String::isNotBlank)
+
+internal fun codePointOffsetToUtf16Index(text: String, codePointOffset: Int): Int? {
+    if (codePointOffset < 0) return null
+    var codePoints = 0
+    var utf16Index = 0
+    while (codePoints < codePointOffset) {
+        if (utf16Index >= text.length) return null
+        val current = text[utf16Index].code
+        val hasLowSurrogate = current in 0xD800..0xDBFF &&
+            utf16Index + 1 < text.length &&
+            text[utf16Index + 1].code in 0xDC00..0xDFFF
+        utf16Index += if (hasLowSurrogate) 2 else 1
+        codePoints += 1
+    }
+    return utf16Index
+}
 
 private fun inflightAssistantText(element: JsonElement?): String {
     val row = element as? JsonObject ?: return ""

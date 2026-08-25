@@ -136,6 +136,9 @@ internal fun reduceConversationEvent(
             val echoedStreamingAnswer = next.streamingText.trimEnd().let { streamed ->
                 streamed.isNotBlank() && streamed == content.trimEnd()
             } || next.hasInterimAssistantEcho(content)
+            if (echoedStreamingAnswer) {
+                next = next.removeTrailingReasoningEcho(content)
+            }
             next = next.finalizeAssistant(content, keepRunning = false)
             next = next.removeReasoningEchoOfFinalAnswer(echoedStreamingAnswer)
             next.copy(
@@ -430,12 +433,14 @@ private fun finalizeAssistantBeforeNextTurn(
     nextTurnUserIndex: Int,
     finalText: String,
 ): List<ConversationMessage> {
-    if (nextTurnUserIndex < 0 || finalText.isBlank()) return messages
+    if (nextTurnUserIndex < 0) return messages
+    val markerId = messages[nextTurnUserIndex].id
     val previousUserIndex = messages.subList(0, nextTurnUserIndex).indexOfLast { it.role == "user" }
     val previousAssistantIndex = (nextTurnUserIndex - 1 downTo previousUserIndex + 1)
         .firstOrNull { messages[it].role == "assistant" }
     val previous = previousAssistantIndex?.let(messages::get)
-    return when {
+    val nextMessages = when {
+        finalText.isBlank() -> messages
         previous?.interim == true -> messages.toMutableList().also { next ->
             next[previousAssistantIndex] = previous.copy(
                 text = when {
@@ -454,13 +459,23 @@ private fun finalizeAssistantBeforeNextTurn(
             )
         }
     }
+    val markerIndex = nextMessages.indexOfFirst { message ->
+        markerId != null && message.id == markerId
+    }.takeIf { it >= 0 } ?: nextMessages.indexOfLast { message ->
+        message.role == "user" && message.userPlacement == UserMessagePlacement.NextTurn
+    }
+    if (markerIndex < 0) return nextMessages
+    return nextMessages.toMutableList().also { next ->
+        next[markerIndex] = next[markerIndex].copy(userPlacement = UserMessagePlacement.Prompt)
+    }
 }
 
 private fun currentTurnLastAssistantIndex(messages: List<ConversationMessage>): Int {
     val userIndex = messages.indexOfLast { it.role == "user" }
-    return messages.indices.reversed().firstOrNull { index ->
+    val contentTail = currentTurnContentTailIndex(messages)
+    return contentTail.takeIf { index ->
         index > userIndex && messages[index].role == "assistant"
-    } ?: currentTurnContentTailIndex(messages)
+    } ?: -1
 }
 
 private fun ConversationProjection.removeReasoningEchoOfFinalAnswer(
@@ -479,11 +494,10 @@ private fun ConversationProjection.removeReasoningEchoOfFinalAnswer(
         .firstOrNull { messages[it].role == "steps" }
         ?: return this
     val stepsMessage = messages[stepsIndex]
-    val echoedStep = stepsMessage.steps.lastOrNull()
-        ?.takeIf { step ->
-            step.kind == ConversationStepKind.Reasoning && step.detail.trimEnd() == finalText
-        }
-        ?: return this
+    val hasEcho = stepsMessage.steps.lastOrNull()?.let { step ->
+        step.kind == ConversationStepKind.Reasoning && step.detail.trimEnd() == finalText
+    } == true
+    if (!hasEcho) return this
     val nextSteps = stepsMessage.steps.dropLast(1)
     val nextMessages = messages.toMutableList().also { next ->
         if (nextSteps.isEmpty()) {
@@ -493,4 +507,28 @@ private fun ConversationProjection.removeReasoningEchoOfFinalAnswer(
         }
     }
     return copy(messages = nextMessages)
+}
+
+private fun ConversationProjection.removeTrailingReasoningEcho(finalAnswer: String): ConversationProjection {
+    val finalText = finalAnswer.trimEnd()
+    if (finalText.isBlank()) return this
+    val userIndex = messages.indexOfLast { it.role == "user" }
+    val stepsIndex = currentTurnContentTailIndex(messages)
+        .takeIf { index -> index > userIndex && messages[index].role == "steps" }
+        ?: return this
+    val stepsMessage = messages[stepsIndex]
+    val hasEcho = stepsMessage.steps.lastOrNull()?.let { step ->
+        step.kind == ConversationStepKind.Reasoning && step.detail.trimEnd() == finalText
+    } == true
+    if (!hasEcho) return this
+    val nextSteps = stepsMessage.steps.dropLast(1)
+    return copy(
+        messages = messages.toMutableList().also { next ->
+            if (nextSteps.isEmpty()) {
+                next.removeAt(stepsIndex)
+            } else {
+                next[stepsIndex] = stepsMessage.copy(steps = nextSteps)
+            }
+        },
+    )
 }

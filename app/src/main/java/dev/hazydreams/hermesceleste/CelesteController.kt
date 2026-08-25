@@ -157,6 +157,11 @@ private class AttachmentSessionChangedException :
 private class RedirectSessionChangedException :
     Exception("The conversation changed while Hermes restored its redirect session.")
 
+private data class RedirectAttempt(
+    val status: SessionRedirectStatus,
+    val fallbackCanDrain: Boolean = true,
+)
+
 private data class ResumedLiveProjection(
     val messages: List<ConversationMessage>,
     val streamingText: String,
@@ -237,6 +242,7 @@ internal class CelesteController(
     private val runtimeRetirementBySession = mutableMapOf<String, String>()
     private val migratedSessionIds = mutableMapOf<String, String>()
     private val parkedQueueSessions = mutableSetOf<String>()
+    private val redirectStopGenerationBySession = mutableMapOf<String, Long>()
     private val queueDrainsInFlight = mutableSetOf<String>()
     private var queuedTurnAwaitingActivitySessionId: String? = null
     private var resourcesReleased = false
@@ -1159,34 +1165,58 @@ internal class CelesteController(
             errorMessage = null,
         )
         val redirectConnectionAttempt = connectionAttempt
+        val redirectStopGeneration = redirectStopGenerationBySession.getOrDefault(storedSessionId, 0L)
+        val userMessageCountBeforeRedirect = snapshot.messages.count { it.role == "user" }
         controllerScope.launch {
-            val status = runCatching {
+            val attempt = try {
                 redirectWithSessionRecovery(
                     activeGateway = activeGateway,
                     runtimeSessionId = runtimeSessionId,
                     storedSessionId = storedSessionId,
-                    profile = snapshot.selectedProfile,
                     expectedConnectionAttempt = redirectConnectionAttempt,
+                    redirectMessageId = redirectMessageId,
                     text = text,
                 )
-            }.getOrDefault(SessionRedirectStatus.Rejected)
-            val accepted = status != SessionRedirectStatus.Rejected
+            } catch (error: CancellationException) {
+                throw error
+            } catch (_: Throwable) {
+                preserveUncertainRedirect(
+                    activeGateway = activeGateway,
+                    storedSessionId = storedSessionId,
+                    expectedConnectionAttempt = redirectConnectionAttempt,
+                    redirectMessageId = redirectMessageId,
+                    text = text,
+                    userMessageCountBeforeRedirect = userMessageCountBeforeRedirect,
+                )
+                return@launch
+            }
+            val accepted = attempt.status != SessionRedirectStatus.Rejected
+            val resolvedSessionId = canonicalSessionId(storedSessionId)
+            val stopped = resolvedSessionId?.let { sessionId ->
+                redirectStopGenerationBySession.getOrDefault(sessionId, 0L) != redirectStopGeneration
+            } == true
             if (
                 gateway !== activeGateway ||
                 connectionAttempt != redirectConnectionAttempt ||
-                canonicalSessionId(currentStoredSessionId) != canonicalSessionId(storedSessionId)
+                canonicalSessionId(currentStoredSessionId) != resolvedSessionId
             ) {
-                if (!accepted) enqueueRedirectFallback(canonicalSessionId(storedSessionId), text)
+                if (!accepted) {
+                    enqueueRedirectFallback(
+                        sessionId = resolvedSessionId,
+                        text = text,
+                        paused = stopped || !attempt.fallbackCanDrain,
+                    )
+                }
                 return@launch
             }
 
-            mutableState.value = if (accepted) {
-                mutableState.value.copy(
+            if (accepted) {
+                mutableState.value = mutableState.value.copy(
                     messages = mutableState.value.messages.map { message ->
                         if (message.id == redirectMessageId) {
                             message.copy(
                                 pending = false,
-                                userPlacement = when (status) {
+                                userPlacement = when (attempt.status) {
                                     SessionRedirectStatus.Redirected -> UserMessagePlacement.MidTurnCorrection
                                     SessionRedirectStatus.Queued -> UserMessagePlacement.NextTurn
                                     SessionRedirectStatus.Rejected -> message.userPlacement
@@ -1198,11 +1228,15 @@ internal class CelesteController(
                     },
                 )
             } else {
-                mutableState.value.copy(
+                mutableState.value = mutableState.value.copy(
                     messages = mutableState.value.messages.filterNot { it.id == redirectMessageId },
                 )
+                enqueueRedirectFallback(
+                    sessionId = resolvedSessionId,
+                    text = text,
+                    paused = stopped || !attempt.fallbackCanDrain,
+                )
             }
-            if (!accepted) enqueueRedirectFallback(canonicalSessionId(storedSessionId), text)
         }
     }
 
@@ -1210,50 +1244,164 @@ internal class CelesteController(
         activeGateway: GatewayConnection,
         runtimeSessionId: String,
         storedSessionId: String,
-        profile: String,
         expectedConnectionAttempt: Long,
+        redirectMessageId: String,
         text: String,
-    ): SessionRedirectStatus {
+    ): RedirectAttempt {
         var runtimeId = runtimeSessionId
         var recovered = false
         while (true) {
             try {
-                return activeGateway.redirectSession(runtimeId, text)
+                val status = activeGateway.redirectSession(runtimeId, text)
+                if (status != SessionRedirectStatus.Rejected) return RedirectAttempt(status)
+                if (!hasPostRedirectProjection(redirectMessageId)) return RedirectAttempt(status)
+                val canonicalStoredId = canonicalSessionId(storedSessionId)
+                val reconciled = if (
+                    canonicalStoredId != null &&
+                    gateway === activeGateway &&
+                    connectionAttempt == expectedConnectionAttempt
+                ) {
+                    try {
+                        reconcile(activeGateway, canonicalStoredId)
+                    } catch (error: CancellationException) {
+                        throw error
+                    } catch (_: Throwable) {
+                        null
+                    }
+                } else {
+                    null
+                }
+                return RedirectAttempt(
+                    status = status,
+                    fallbackCanDrain = reconciled != null,
+                )
             } catch (failure: Throwable) {
+                if (failure is CancellationException) throw failure
                 if (recovered || !failure.isSessionNotFoundFailure()) throw failure
                 val canonicalStoredId = canonicalSessionId(storedSessionId)
                     ?: throw RedirectSessionChangedException()
-                val resumed = activeGateway.resumeStoredSession(canonicalStoredId, profile, clientSource)
+                val resumed = reconcile(activeGateway, canonicalStoredId)
+                    ?: throw RedirectSessionChangedException()
                 currentCoroutineContext().ensureActive()
                 if (
                     gateway !== activeGateway ||
                     connectionAttempt != expectedConnectionAttempt ||
-                    canonicalSessionId(currentStoredSessionId) != canonicalStoredId
+                    canonicalSessionId(currentStoredSessionId) != canonicalSessionId(resumed.storedSessionId)
                 ) {
                     throw RedirectSessionChangedException()
                 }
-                if (canonicalStoredId != resumed.storedSessionId) {
-                    migrateSessionBoundState(canonicalStoredId, resumed.storedSessionId)
+                if (mutableState.value.turnState != TurnState.Running) {
+                    return RedirectAttempt(SessionRedirectStatus.Rejected)
                 }
-                currentRuntimeSessionId = resumed.runtimeSessionId
-                currentStoredSessionId = resumed.storedSessionId
-                currentSessionCanResume = true
+                ensurePendingRedirectMarker(redirectMessageId, text)
                 runtimeId = resumed.runtimeSessionId
                 recovered = true
             }
         }
     }
 
-    private fun enqueueRedirectFallback(sessionId: String?, text: String) {
+    private fun hasPostRedirectProjection(redirectMessageId: String): Boolean {
+        val snapshot = mutableState.value
+        val markerIndex = snapshot.messages.indexOfFirst { it.id == redirectMessageId }
+        return markerIndex >= 0 && (
+            snapshot.streamingText.isNotBlank() || markerIndex < snapshot.messages.lastIndex
+        )
+    }
+
+    private fun ensurePendingRedirectMarker(redirectMessageId: String, text: String) {
+        val snapshot = mutableState.value
+        if (snapshot.messages.any { it.id == redirectMessageId }) return
+        val settledMessages = settleCurrentTurnSteps(snapshot.messages)
+        val messagesWithStream = if (snapshot.streamingText.isBlank()) {
+            settledMessages
+        } else {
+            appendCurrentTurnMessage(
+                messages = settledMessages,
+                message = ConversationMessage(
+                    role = "assistant",
+                    text = snapshot.streamingText.trimEnd(),
+                    interim = true,
+                ),
+            )
+        }
+        mutableState.value = snapshot.copy(
+            messages = appendCurrentTurnMessage(
+                messages = messagesWithStream,
+                message = ConversationMessage(
+                    role = "user",
+                    text = text,
+                    id = redirectMessageId,
+                    pending = true,
+                    userPlacement = UserMessagePlacement.MidTurnCorrection,
+                ),
+            ),
+            streamingText = "",
+        )
+    }
+
+    private suspend fun preserveUncertainRedirect(
+        activeGateway: GatewayConnection,
+        storedSessionId: String,
+        expectedConnectionAttempt: Long,
+        redirectMessageId: String,
+        text: String,
+        userMessageCountBeforeRedirect: Int,
+    ) {
+        val resolvedSessionId = canonicalSessionId(storedSessionId) ?: return
+        queuedPromptsBySession.getOrPut(resolvedSessionId) { mutableListOf() } += QueuedPrompt(
+            id = nextLocalMessageId("queued"),
+            text = text,
+            deliveryUncertain = true,
+            userMessageCountBeforeSubmit = userMessageCountBeforeRedirect,
+        )
+        parkedQueueSessions += resolvedSessionId
+        if (canonicalSessionId(currentStoredSessionId) == resolvedSessionId) {
+            mutableState.value = mutableState.value.copy(
+                messages = mutableState.value.messages.filterNot { it.id == redirectMessageId },
+            )
+            refreshActiveQueueProjection(resolvedSessionId)
+        }
+        val reconciled = if (
+            gateway === activeGateway &&
+            connectionAttempt == expectedConnectionAttempt &&
+            canonicalSessionId(currentStoredSessionId) == resolvedSessionId
+        ) {
+            try {
+                reconcile(activeGateway, resolvedSessionId)
+            } catch (error: CancellationException) {
+                throw error
+            } catch (_: Throwable) {
+                null
+            }
+        } else {
+            null
+        }
+        val currentSessionId = canonicalSessionId(resolvedSessionId) ?: resolvedSessionId
+        if (
+            reconciled == null &&
+            canonicalSessionId(currentStoredSessionId) == currentSessionId &&
+            queuedPromptsFor(currentSessionId).any { it.deliveryUncertain }
+        ) {
+            mutableState.value = mutableState.value.copy(
+                errorMessage = "Delivery could not be confirmed. Review the paused message before retrying.",
+            )
+        }
+    }
+
+    private fun enqueueRedirectFallback(sessionId: String?, text: String, paused: Boolean = false) {
         val resolvedSessionId = canonicalSessionId(sessionId) ?: return
         queuedPromptsBySession.getOrPut(resolvedSessionId) { mutableListOf() } += QueuedPrompt(
             id = nextLocalMessageId("queued"),
             text = text,
         )
-        parkedQueueSessions.remove(resolvedSessionId)
+        if (paused) {
+            parkedQueueSessions += resolvedSessionId
+        } else {
+            parkedQueueSessions.remove(resolvedSessionId)
+        }
         if (canonicalSessionId(currentStoredSessionId) == resolvedSessionId) {
             refreshActiveQueueProjection(resolvedSessionId)
-            drainQueuedPromptIfPossible()
+            if (!paused) drainQueuedPromptIfPossible()
         }
     }
 
@@ -1697,6 +1845,8 @@ internal class CelesteController(
         val runtimeId = currentRuntimeSessionId ?: return
         val sessionId = currentStoredSessionId ?: return
         if (mutableState.value.turnState != TurnState.Running) return
+        redirectStopGenerationBySession[sessionId] =
+            redirectStopGenerationBySession.getOrDefault(sessionId, 0L) + 1L
         if (queuedPromptsFor(sessionId).isNotEmpty()) parkedQueueSessions += sessionId
         submissionsBySession[sessionId]
             ?.takeIf { !it.promptSubmitAttempted }
@@ -1837,7 +1987,7 @@ internal class CelesteController(
         }
     }
 
-    private suspend fun reconcile(activeGateway: GatewayConnection, storedSessionId: String) {
+    private suspend fun reconcile(activeGateway: GatewayConnection, storedSessionId: String): ResumedSession? {
         reconciling = true
         bufferedEvents.clear()
         try {
@@ -1870,7 +2020,7 @@ internal class CelesteController(
                 }
                 runtime to persisted?.await()
             }
-            if (gateway !== activeGateway) return
+            if (gateway !== activeGateway) return null
             if (resumedResult.isFailure && persistedHistory?.messages?.isNotEmpty() == true) {
                 mutableState.value = mutableState.value.copy(
                     messages = preserveLocalAttachmentPresentation(
@@ -1894,21 +2044,21 @@ internal class CelesteController(
             if (storedSessionId != resumed.storedSessionId) {
                 migrateSessionBoundState(storedSessionId, resumed.storedSessionId)
             }
-            applyResumedSession(
-                resumed.copy(
-                    messages = reconciledMessages,
-                    taskProgress = when {
-                        !running -> null
-                        persistedTaskSnapshot != null -> persistedTaskSnapshot.progress
-                        else -> resumed.taskProgress
-                    },
-                ),
+            val reconciled = resumed.copy(
+                messages = reconciledMessages,
+                taskProgress = when {
+                    !running -> null
+                    persistedTaskSnapshot != null -> persistedTaskSnapshot.progress
+                    else -> resumed.taskProgress
+                },
             )
+            applyResumedSession(reconciled)
             val events = bufferedEvents.toList()
             bufferedEvents.clear()
             reconciling = false
             events.forEach(::applyEvent)
             drainQueuedPromptIfPossible()
+            return reconciled
         } catch (error: Throwable) {
             bufferedEvents.clear()
             reconciling = false
@@ -2586,6 +2736,12 @@ internal class CelesteController(
                 .toMutableList()
         }
         if (parkedQueueSessions.remove(fromSessionId)) parkedQueueSessions += toSessionId
+        redirectStopGenerationBySession.remove(fromSessionId)?.let { generation ->
+            redirectStopGenerationBySession[toSessionId] = maxOf(
+                generation,
+                redirectStopGenerationBySession.getOrDefault(toSessionId, 0L),
+            )
+        }
         if (queueDrainsInFlight.remove(fromSessionId)) queueDrainsInFlight += toSessionId
         if (queuedTurnAwaitingActivitySessionId == fromSessionId) {
             queuedTurnAwaitingActivitySessionId = toSessionId
@@ -2669,9 +2825,9 @@ internal class CelesteController(
                 prompt
             }
         }
-        val representedLiveUserText = sequenceOf(
-            resumed.inflightUserText,
-            resumed.queuedUserText,
+        val representedLiveUserText = (
+            sequenceOf(resumed.inflightUserText, resumed.queuedUserText) +
+                resumed.inflightCorrections.asSequence().map { it.text }
         ).map(::normalizedPromptText).filter(String::isNotEmpty).toSet()
         val resumedUserMessages = resumed.messages.filter { it.role == "user" }
         val latestResumedUserText = resumedUserMessages.lastOrNull()?.text?.let(::normalizedPromptText).orEmpty()

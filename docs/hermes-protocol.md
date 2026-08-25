@@ -61,7 +61,7 @@ Persisted history loads with `order=latest` and `include_compacted=true`. The tr
 
 Creation and resume include `source: "android"` and terminal columns. Hermes creates the durable session row lazily on first prompt submission, so an untouched local draft stays out of the catalog.
 
-Image and file bytes are staged into the current runtime before `prompt.submit`. File references returned by Hermes are prepended only to the model-facing prompt; the local transcript keeps the user’s natural text and attachment summaries. A text-only Send during live work uses `session.redirect`; attachments, reconnecting sessions, compaction, pending clarification, and rejected redirects use the per-session queue. Queue drains stage their own attachments first and submit with `queued: true`.
+Image and file bytes are staged into the current runtime before `prompt.submit`. File references returned by Hermes are prepended only to the model-facing prompt; the local transcript keeps the user’s natural text and attachment summaries. A text-only Send during live work uses `session.redirect`; attachments, reconnecting sessions, compaction, pending clarification, and rejected redirects use the per-session queue. A redirect with an uncertain transport outcome remains paused until authoritative reconciliation determines whether Hermes accepted it. Queue drains stage their own attachments first and submit with `queued: true`.
 
 ## Event projection
 
@@ -78,7 +78,7 @@ Celeste recognizes message lifecycle, interim assistant prose, reasoning, tools,
 - Background-process completion produces one compact result row with details available on demand.
 - Notifications with a blank session ID apply to the active conversation; nonblank mismatched runtime IDs are ignored.
 
-`session.resume` binds runtime state while the dashboard history route supplies persisted display history. Accepted mid-turn corrections are rebuilt from the inflight correction list and assistant-text offsets so reconnect preserves their arrival order. Resume retries are bounded, preserve readable history, and end in an explicit Retry surface.
+`session.resume` binds runtime state while the dashboard history route supplies persisted display history. Accepted mid-turn corrections are rebuilt from the inflight correction list and assistant-text offsets so reconnect preserves their arrival order. Hermes reports those offsets as Unicode code-point positions; Celeste translates them to Kotlin string indices at the protocol boundary. Resume retries are bounded, preserve readable history, and end in an explicit Retry surface.
 
 ## Update workflow
 
