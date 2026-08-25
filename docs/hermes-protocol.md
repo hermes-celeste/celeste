@@ -41,7 +41,7 @@ Session catalog pages use recent server ordering, 15-row windows, and response p
 
 Pin and read changes may update the projection optimistically, then accept Hermes as authoritative. Rename keeps the existing title until Hermes accepts a trimmed nonblank replacement.
 
-Persisted history loads with `order=latest` and `include_compacted=true`. The transcript decoder combines assistant prose, reasoning, tool calls/results, and structured process markers into the same projection used by live events. Gateway display metadata and reserved runtime markers keep hidden compaction handoffs and asynchronous delegation payloads outside the human transcript. Compatibility projection preserves genuine user content from older merged compaction carriers while removing only their internal summary suffix.
+Persisted history loads with `order=latest` and `include_compacted=true`. The transcript decoder combines assistant prose, reasoning, tool calls/results, and structured process markers into the same projection used by live events. Structured user content arrays contribute their text parts to transcript prose while image parts remain attachment data. Gateway display metadata and reserved runtime markers keep hidden compaction handoffs and asynchronous delegation payloads outside the human transcript. Compatibility projection preserves genuine user content from older merged compaction carriers while removing only their internal summary suffix.
 
 ## JSON-RPC surface
 

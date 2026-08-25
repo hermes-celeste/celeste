@@ -331,9 +331,9 @@ internal fun decodeGatewayConversation(elements: List<JsonElement>): DecodedGate
         val sourceIdentity = row["row_id"].scalarIdentity()?.let { "row-$it" }
             ?: row["id"].scalarIdentity()
             ?: row["message_id"].scalarIdentity()
-        val persistedText = row.string("text")
-            ?: row.string("content")
-            ?: row.string("context")
+        val persistedText = persistedContentText(row["text"])
+            ?: persistedContentText(row["content"])
+            ?: persistedContentText(row["context"])
             ?: ""
         val text = visiblePersistedText(row, role, persistedText) ?: return@forEachIndexed
 
@@ -490,6 +490,21 @@ internal fun decodeGatewayConversation(elements: List<JsonElement>): DecodedGate
         messages = messages.map(ConversationMessage::settledSteps),
         taskProgressSnapshot = taskProgressSnapshot,
     )
+}
+
+private fun persistedContentText(element: JsonElement?): String? = when (element) {
+    is JsonPrimitive -> element.contentOrNull
+    is JsonArray -> element.joinToString(separator = "", transform = ::persistedContentPartText)
+    else -> null
+}
+
+private fun persistedContentPartText(element: JsonElement): String = when (element) {
+    is JsonPrimitive -> element.contentOrNull.orEmpty()
+    is JsonObject -> {
+        val type = element.string("type")
+        if (type == null || type == "text") element.string("text").orEmpty() else ""
+    }
+    else -> ""
 }
 
 private fun visiblePersistedText(row: JsonObject, role: String, text: String): String? {

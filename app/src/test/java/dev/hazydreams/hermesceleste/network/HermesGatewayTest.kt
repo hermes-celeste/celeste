@@ -85,6 +85,26 @@ class HermesGatewayTest {
     }
 
     @Test
+    fun resumedHistoryPreservesTextFromMultimodalUserContent() {
+        val messages = decodeGatewayMessages(
+            Json.parseToJsonElement(
+                """[
+                    {
+                        "row_id":14,
+                        "role":"user",
+                        "content":[
+                            {"type":"text","text":"Which presentation looks better?"},
+                            {"type":"image_url","image_url":{"url":"data:image/png;base64,AAAA"}}
+                        ]
+                    }
+                ]""".trimIndent(),
+            ).jsonArray,
+        )
+
+        assertEquals("Which presentation looks better?", messages.single().text)
+    }
+
+    @Test
     fun websocketOpenDoesNotReportConnectedUntilGatewayReady() = runBlocking {
         lateinit var serverSocket: WebSocket
         val upgraded = CompletableDeferred<Unit>()
