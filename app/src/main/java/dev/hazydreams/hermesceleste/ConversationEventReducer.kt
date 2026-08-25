@@ -359,8 +359,13 @@ private fun ConversationProjection.finalizeAssistant(
 ): ConversationProjection {
     val latestUserIndex = messages.indexOfLast { it.role == "user" }
     val latestUserPlacement = messages.getOrNull(latestUserIndex)?.userPlacement
-    val adjustedSupplied = if (latestUserPlacement == UserMessagePlacement.MidTurnCorrection) {
-        redirectedAssistantSuffix(suppliedContent, messages, latestUserIndex)
+    val correctionIndex = when (latestUserPlacement) {
+        UserMessagePlacement.MidTurnCorrection -> latestUserIndex
+        UserMessagePlacement.NextTurn -> latestMidTurnCorrectionIndex(messages, latestUserIndex)
+        else -> -1
+    }
+    val adjustedSupplied = if (correctionIndex >= 0) {
+        redirectedAssistantSuffix(suppliedContent, messages, correctionIndex)
     } else {
         suppliedContent
     }
@@ -408,6 +413,20 @@ private fun mergedFinalText(suppliedContent: String, streamingText: String): Str
     streamingText.startsWith(suppliedContent) -> streamingText
     else -> suppliedContent
 }.trimEnd()
+
+private fun latestMidTurnCorrectionIndex(
+    messages: List<ConversationMessage>,
+    beforeUserIndex: Int,
+): Int {
+    if (beforeUserIndex <= 0) return -1
+    val turnStart = messages.subList(0, beforeUserIndex).indexOfLast { message ->
+        message.role == "user" && message.userPlacement == UserMessagePlacement.Prompt
+    }
+    return (beforeUserIndex - 1 downTo turnStart + 1).firstOrNull { index ->
+        messages[index].role == "user" &&
+            messages[index].userPlacement == UserMessagePlacement.MidTurnCorrection
+    } ?: -1
+}
 
 private fun redirectedAssistantSuffix(
     suppliedContent: String,

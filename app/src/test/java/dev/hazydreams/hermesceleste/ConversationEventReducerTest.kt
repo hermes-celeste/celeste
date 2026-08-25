@@ -339,6 +339,47 @@ class ConversationEventReducerTest {
     }
 
     @Test
+    fun redirectedCompletionBeforeQueuedTurnDoesNotRepeatEarlierAssistantSegments() {
+        val initial = ConversationEventReduction(
+            projection = projection().copy(
+                messages = listOf(
+                    ConversationMessage(
+                        role = "user",
+                        text = "First",
+                        userPlacement = UserMessagePlacement.Prompt,
+                    ),
+                    ConversationMessage(role = "assistant", text = "Before. "),
+                    ConversationMessage(
+                        role = "user",
+                        text = "Change direction",
+                        id = "redirect-1",
+                        userPlacement = UserMessagePlacement.MidTurnCorrection,
+                    ),
+                    ConversationMessage(role = "assistant", text = "After. ", interim = true),
+                    ConversationMessage(
+                        role = "user",
+                        text = "Run this next",
+                        id = "queued-1",
+                        userPlacement = UserMessagePlacement.NextTurn,
+                    ),
+                ),
+                turnState = TurnState.Running,
+            ),
+            localMessageCounter = 0L,
+        )
+
+        val result = initial.reduce(
+            event("message.complete", """{"content":"Before. After. Final.","status":"complete"}"""),
+        )
+
+        assertEquals(
+            listOf("First", "Before. ", "Change direction", "After. Final.", "Run this next"),
+            result.projection.messages.map { it.text },
+        )
+        assertEquals(UserMessagePlacement.Prompt, result.projection.messages.last().userPlacement)
+    }
+
+    @Test
     fun queuedTurnCompletionStaysBeforeThePriorTurnsChangesCapsule() {
         val initial = ConversationEventReduction(
             projection = projection().copy(
