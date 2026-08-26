@@ -58,4 +58,30 @@ class ConversationStepsSheetTest {
             stepDetail(reasoning),
         )
     }
+
+    @Test
+    fun reasoningDetailPreservesLiteralSyntaxAndFencedCode() {
+        val reasoning = ConversationStep(
+            id = "reasoning-technical",
+            kind = ConversationStepKind.Reasoning,
+            detail = """
+                - Call f(**kwargs) for src/**/*.kt
+                **kwargs**
+                ```python
+                def f(**kwargs):
+                    return __dirname
+                ```
+            """.trimIndent(),
+        )
+
+        assertEquals(
+            """
+                Call f(**kwargs) for src/**/*.kt
+                **kwargs**
+                def f(**kwargs):
+                    return __dirname
+            """.trimIndent(),
+            stepDetail(reasoning),
+        )
+    }
 }
