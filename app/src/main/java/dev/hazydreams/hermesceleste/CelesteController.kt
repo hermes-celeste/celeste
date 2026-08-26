@@ -2167,7 +2167,9 @@ internal class CelesteController(
     }
 
     private fun resumedLiveProjection(resumed: ResumedSession): ResumedLiveProjection {
-        val inflightProjection = if (resumed.inflightCorrections.isEmpty()) {
+        val inflightProjection = resumed.retainedFailureMessage?.let { failureMessage ->
+            resumedFailureProjection(resumed, failureMessage)
+        } ?: if (resumed.inflightCorrections.isEmpty()) {
             ResumedLiveProjection(
                 messages = resumed.messages,
                 streamingText = unpersistedInflightText(
@@ -2255,6 +2257,51 @@ internal class CelesteController(
             ),
             streamingText = "",
         )
+    }
+
+    private fun resumedFailureProjection(
+        resumed: ResumedSession,
+        failureMessage: String,
+    ): ResumedLiveProjection {
+        var messages = settleCurrentTurnSteps(resumed.messages)
+        val missingAssistant = unpersistedInflightText(
+            inflight = resumed.inflightAssistantText,
+            messages = messages,
+        )
+        if (missingAssistant.isNotBlank()) {
+            messages = appendCurrentTurnMessage(
+                messages = messages,
+                message = ConversationMessage(
+                    role = "assistant",
+                    text = missingAssistant,
+                    id = "retained-failure-${resumed.runtimeSessionId}",
+                    errorMessage = failureMessage,
+                ),
+            )
+        } else {
+            val promptStart = messages.indexOfLast { message ->
+                message.role == "user" && message.userPlacement == UserMessagePlacement.Prompt
+            }
+            val assistantIndex = (messages.lastIndex downTo (promptStart + 1)).firstOrNull { index ->
+                messages[index].role == "assistant"
+            }
+            if (assistantIndex != null) {
+                messages = messages.toMutableList().also { next ->
+                    next[assistantIndex] = next[assistantIndex].copy(errorMessage = failureMessage)
+                }
+            } else {
+                messages = appendCurrentTurnMessage(
+                    messages = messages,
+                    message = ConversationMessage(
+                        role = "assistant",
+                        text = "",
+                        id = "retained-failure-${resumed.runtimeSessionId}",
+                        errorMessage = failureMessage,
+                    ),
+                )
+            }
+        }
+        return ResumedLiveProjection(messages = messages, streamingText = "")
     }
 
     private fun isActiveSession(submitted: SubmittedSession): Boolean =

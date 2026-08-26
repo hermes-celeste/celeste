@@ -40,9 +40,11 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import dev.hazydreams.hermesceleste.network.ConversationMessage
 import dev.hazydreams.hermesceleste.ui.CelesteAccent
+import dev.hazydreams.hermesceleste.ui.CelesteError
 import dev.hazydreams.hermesceleste.ui.CelesteTextMuted
 import dev.hazydreams.hermesceleste.ui.CelesteSurfaceSelected
 import dev.hazydreams.hermesceleste.ui.CelestePanel
+import dev.hazydreams.hermesceleste.ui.StatusMessage
 
 internal const val STREAMING_TRANSCRIPT_KEY = "streaming:assistant"
 
@@ -220,6 +222,9 @@ private fun AssistantMessage(
                     gatewayImageScope = gatewayImageScope,
                 )
             }
+        }
+        message.errorMessage?.let { error ->
+            StatusMessage(error, CelesteError)
         }
     }
 }
