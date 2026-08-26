@@ -2271,6 +2271,33 @@ class CelesteViewModelTest {
     }
 
     @Test
+    fun reconnectFailurePreservesAcceptedRedirectAtItsAssistantOffset() = runTest {
+        val gateway = FakeGateway().apply {
+            resumePayload = resumePayload(
+                messages = listOf(ConversationMessage(role = "user", text = "First", id = "server-user")),
+                running = false,
+                inflightJson = """{"user":"First","assistant":"Before.After.","streaming":false,"corrections":["Change direction"],"correction_offsets":[7],"status":"error","error":"Codex response remained incomplete."}""",
+            )
+        }
+        val viewModel = openConversation(gateway)
+        advanceUntilIdle()
+
+        assertEquals(
+            listOf("First", "Before.", "Change direction", "After."),
+            viewModel.state.value.messages.map { it.text },
+        )
+        assertEquals(
+            UserMessagePlacement.MidTurnCorrection,
+            viewModel.state.value.messages[2].userPlacement,
+        )
+        assertEquals("Codex response remained incomplete.", viewModel.state.value.messages.last().errorMessage)
+        assertEquals(TurnState.Idle, viewModel.state.value.turnState)
+        assertEquals("", viewModel.state.value.streamingText)
+        assertEquals(0, gateway.methods.count { it == "prompt.submit" })
+        viewModel.controller.close()
+    }
+
+    @Test
     fun retainedTerminalFailureSurvivesAutomaticQueuedPromptDrain() = runTest {
         val gateway = FakeGateway()
         val viewModel = openConversation(gateway)

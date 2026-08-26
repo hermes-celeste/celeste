@@ -2167,9 +2167,7 @@ internal class CelesteController(
     }
 
     private fun resumedLiveProjection(resumed: ResumedSession): ResumedLiveProjection {
-        val inflightProjection = resumed.retainedFailureMessage?.let { failureMessage ->
-            resumedFailureProjection(resumed, failureMessage)
-        } ?: if (resumed.inflightCorrections.isEmpty()) {
+        val reconstructedInflight = if (resumed.inflightCorrections.isEmpty()) {
             ResumedLiveProjection(
                 messages = resumed.messages,
                 streamingText = unpersistedInflightText(
@@ -2236,6 +2234,13 @@ internal class CelesteController(
                 streamingText = if (offsetsUsable) assistant.substring(cursor) else "",
             )
         }
+        val inflightProjection = resumed.retainedFailureMessage?.let { failureMessage ->
+            resumedFailureProjection(
+                projection = reconstructedInflight,
+                failureMessage = failureMessage,
+                runtimeSessionId = resumed.runtimeSessionId,
+            )
+        } ?: reconstructedInflight
 
         val queuedText = resumed.queuedUserText.trim()
         if (queuedText.isEmpty()) return inflightProjection
@@ -2260,21 +2265,18 @@ internal class CelesteController(
     }
 
     private fun resumedFailureProjection(
-        resumed: ResumedSession,
+        projection: ResumedLiveProjection,
         failureMessage: String,
+        runtimeSessionId: String,
     ): ResumedLiveProjection {
-        var messages = settleCurrentTurnSteps(resumed.messages)
-        val missingAssistant = unpersistedInflightText(
-            inflight = resumed.inflightAssistantText,
-            messages = messages,
-        )
-        if (missingAssistant.isNotBlank()) {
+        var messages = settleCurrentTurnSteps(projection.messages)
+        if (projection.streamingText.isNotBlank()) {
             messages = appendCurrentTurnMessage(
                 messages = messages,
                 message = ConversationMessage(
                     role = "assistant",
-                    text = missingAssistant,
-                    id = "retained-failure-${resumed.runtimeSessionId}",
+                    text = projection.streamingText,
+                    id = "retained-failure-$runtimeSessionId",
                     errorMessage = failureMessage,
                 ),
             )
@@ -2285,7 +2287,10 @@ internal class CelesteController(
             val assistantIndex = (messages.lastIndex downTo (promptStart + 1)).firstOrNull { index ->
                 messages[index].role == "assistant"
             }
-            if (assistantIndex != null) {
+            val latestCorrectionIndex = (messages.lastIndex downTo (promptStart + 1)).firstOrNull { index ->
+                messages[index].userPlacement == UserMessagePlacement.MidTurnCorrection
+            }
+            if (assistantIndex != null && (latestCorrectionIndex == null || assistantIndex > latestCorrectionIndex)) {
                 messages = messages.toMutableList().also { next ->
                     next[assistantIndex] = next[assistantIndex].copy(errorMessage = failureMessage)
                 }
@@ -2295,7 +2300,7 @@ internal class CelesteController(
                     message = ConversationMessage(
                         role = "assistant",
                         text = "",
-                        id = "retained-failure-${resumed.runtimeSessionId}",
+                        id = "retained-failure-$runtimeSessionId",
                         errorMessage = failureMessage,
                     ),
                 )
