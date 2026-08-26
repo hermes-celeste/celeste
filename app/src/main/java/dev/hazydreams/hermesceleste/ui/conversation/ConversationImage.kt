@@ -1,16 +1,16 @@
 package dev.hazydreams.hermesceleste.ui.conversation
 
-import android.content.Context
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
@@ -18,6 +18,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
@@ -27,33 +28,24 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalInspectionMode
-import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
-import coil3.ImageLoader
 import coil3.compose.AsyncImage
 import coil3.compose.AsyncImagePainter
-import coil3.network.okhttp.OkHttpNetworkFetcherFactory
+import coil3.compose.LocalPlatformContext
 import coil3.request.CachePolicy
+import coil3.request.ImageRequest
 import dev.hazydreams.hermesceleste.ui.CelesteAccent
 import dev.hazydreams.hermesceleste.ui.CelesteSurfacePrimary
 import dev.hazydreams.hermesceleste.ui.CelesteSurfaceRaised
 import dev.hazydreams.hermesceleste.ui.CelesteTextMuted
 import dev.hazydreams.hermesceleste.ui.CelesteTextPrimary
-import java.io.IOException
 import kotlinx.coroutines.CancellationException
-import okhttp3.OkHttpClient
-
-internal sealed interface ConversationImageSource {
-    data class Https(val url: String) : ConversationImageSource
-    data class Gateway(val path: String) : ConversationImageSource
-}
 
 private sealed interface GatewayImageState {
     data object Loading : GatewayImageState
@@ -61,70 +53,22 @@ private sealed interface GatewayImageState {
     data object Failed : GatewayImageState
 }
 
-private object ConversationImageLoader {
-    @Volatile
-    private var instance: ImageLoader? = null
-
-    private val httpClient = OkHttpClient.Builder()
-        .addNetworkInterceptor { chain ->
-            if (!chain.request().url.isHttps) {
-                throw IOException("Conversation image redirects must stay on HTTPS.")
-            }
-            chain.proceed(chain.request())
-        }
-        .build()
-
-    fun get(context: Context): ImageLoader = instance ?: synchronized(this) {
-        instance ?: ImageLoader.Builder(context.applicationContext)
-            .diskCachePolicy(CachePolicy.DISABLED)
-            .components {
-                add(OkHttpNetworkFetcherFactory(callFactory = { httpClient }))
-            }
-            .build()
-            .also { instance = it }
-    }
-}
-
 @Composable
 internal fun ConversationImage(
-    source: ConversationImageSource,
+    path: String,
     alt: String,
     gatewayImageLoader: (suspend (String) -> ByteArray?)? = null,
     gatewayImageScope: Any? = null,
     modifier: Modifier = Modifier,
 ) {
-    when (source) {
-        is ConversationImageSource.Https -> LoadedConversationImage(
-            model = source.url,
-            alt = alt,
-            fallbackUri = source.url,
-            modifier = modifier,
-        )
-
-        is ConversationImageSource.Gateway -> GatewayConversationImage(
-            source = source,
-            alt = alt,
-            gatewayImageLoader = gatewayImageLoader,
-            gatewayImageScope = gatewayImageScope,
-            modifier = modifier,
-        )
-    }
-}
-
-@Composable
-private fun GatewayConversationImage(
-    source: ConversationImageSource.Gateway,
-    alt: String,
-    gatewayImageLoader: (suspend (String) -> ByteArray?)?,
-    gatewayImageScope: Any?,
-    modifier: Modifier,
-) {
+    var retryRequest by remember(path, gatewayImageScope) { mutableIntStateOf(0) }
     val currentLoader by rememberUpdatedState(gatewayImageLoader)
+
     if (LocalInspectionMode.current) {
         LoadedConversationImage(
-            model = source.path,
+            model = path,
             alt = alt,
-            fallbackUri = null,
+            onRetry = null,
             modifier = modifier,
         )
         return
@@ -132,12 +76,13 @@ private fun GatewayConversationImage(
 
     val loadState by produceState<GatewayImageState>(
         initialValue = GatewayImageState.Loading,
-        source.path,
+        path,
         gatewayImageScope,
         gatewayImageLoader != null,
+        retryRequest,
     ) {
         val bytes = try {
-            currentLoader?.invoke(source.path)
+            currentLoader?.invoke(path)
         } catch (failure: Throwable) {
             if (failure is CancellationException) throw failure
             null
@@ -154,13 +99,17 @@ private fun GatewayConversationImage(
         }
 
         GatewayImageState.Failed -> ConversationImageFrame(modifier) {
-            ConversationImageFailure(alt, fallbackUri = null, Modifier.fillMaxSize())
+            ConversationImageFailure(
+                alt = alt,
+                onRetry = { retryRequest += 1 },
+                modifier = Modifier.fillMaxSize(),
+            )
         }
 
         is GatewayImageState.Ready -> LoadedConversationImage(
             model = state.bytes,
             alt = alt,
-            fallbackUri = null,
+            onRetry = { retryRequest += 1 },
             modifier = modifier,
         )
     }
@@ -170,20 +119,24 @@ private fun GatewayConversationImage(
 private fun LoadedConversationImage(
     model: Any,
     alt: String,
-    fallbackUri: String?,
+    onRetry: (() -> Unit)?,
     modifier: Modifier,
 ) {
     var loadState by remember(model) { mutableStateOf<AsyncImagePainter.State>(AsyncImagePainter.State.Empty) }
     var previewOpen by remember(model) { mutableStateOf(false) }
-    val context = LocalContext.current
-    val imageLoader = remember(context) { ConversationImageLoader.get(context) }
+    val platformContext = LocalPlatformContext.current
+    val request = remember(model, platformContext) {
+        ImageRequest.Builder(platformContext)
+            .data(model)
+            .diskCachePolicy(CachePolicy.DISABLED)
+            .build()
+    }
     val inspectionMode = LocalInspectionMode.current
     val description = alt.ifBlank { "Conversation image" }
 
     ConversationImageFrame(modifier = modifier) {
         AsyncImage(
-            model = model,
-            imageLoader = imageLoader,
+            model = request,
             contentDescription = description.takeIf { loadState is AsyncImagePainter.State.Success },
             contentScale = ContentScale.Fit,
             onState = { loadState = it },
@@ -208,7 +161,7 @@ private fun LoadedConversationImage(
 
                 is AsyncImagePainter.State.Error -> ConversationImageFailure(
                     alt = description,
-                    fallbackUri = fallbackUri,
+                    onRetry = onRetry,
                     modifier = Modifier.fillMaxSize(),
                 )
 
@@ -219,8 +172,7 @@ private fun LoadedConversationImage(
 
     if (previewOpen) {
         ConversationImagePreview(
-            model = model,
-            imageLoader = imageLoader,
+            model = request,
             description = description,
             onDismiss = { previewOpen = false },
         )
@@ -233,18 +185,21 @@ private fun ConversationImageFrame(
     content: @Composable () -> Unit,
 ) {
     val inspectionMode = LocalInspectionMode.current
-    Box(
-        modifier = modifier
-            .fillMaxWidth()
-            .aspectRatio(16f / 9f)
-            .heightIn(min = 120.dp, max = 360.dp)
-            .clip(RoundedCornerShape(14.dp))
-            .background(
-                if (inspectionMode) CelesteAccent.copy(alpha = 0.32f) else CelesteSurfaceRaised,
-            ),
-        contentAlignment = Alignment.Center,
-    ) {
-        content()
+    BoxWithConstraints(modifier = modifier.fillMaxWidth()) {
+        val frameWidth = minOf(maxWidth, 640.dp)
+        val frameHeight = (frameWidth * 9f / 16f).coerceIn(120.dp, 360.dp)
+        Box(
+            modifier = Modifier
+                .width(frameWidth)
+                .height(frameHeight)
+                .clip(RoundedCornerShape(14.dp))
+                .background(
+                    if (inspectionMode) CelesteAccent.copy(alpha = 0.32f) else CelesteSurfaceRaised,
+                ),
+            contentAlignment = Alignment.Center,
+        ) {
+            content()
+        }
     }
 }
 
@@ -253,8 +208,6 @@ private fun ConversationImageLoading(alt: String, modifier: Modifier) {
     val description = alt.ifBlank { "Image" }
     Column(
         modifier = modifier
-            .fillMaxWidth()
-            .heightIn(min = 120.dp)
             .clearAndSetSemantics { contentDescription = "Loading $description" }
             .background(CelesteSurfaceRaised)
             .padding(16.dp),
@@ -277,15 +230,12 @@ private fun ConversationImageLoading(alt: String, modifier: Modifier) {
 @Composable
 private fun ConversationImageFailure(
     alt: String,
-    fallbackUri: String?,
+    onRetry: (() -> Unit)?,
     modifier: Modifier,
 ) {
-    val uriHandler = LocalUriHandler.current
     val description = alt.ifBlank { "Image" }
     Column(
         modifier = modifier
-            .fillMaxWidth()
-            .heightIn(min = 96.dp)
             .background(CelesteSurfaceRaised)
             .padding(16.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
@@ -299,9 +249,9 @@ private fun ConversationImageFailure(
             color = CelesteTextMuted,
             style = MaterialTheme.typography.bodySmall,
         )
-        if (fallbackUri != null) {
-            TextButton(onClick = { runCatching { uriHandler.openUri(fallbackUri) } }) {
-                Text("Open image")
+        if (onRetry != null) {
+            TextButton(onClick = onRetry) {
+                Text("Retry")
             }
         }
     }
@@ -310,7 +260,6 @@ private fun ConversationImageFailure(
 @Composable
 private fun ConversationImagePreview(
     model: Any,
-    imageLoader: ImageLoader,
     description: String,
     onDismiss: () -> Unit,
 ) {
@@ -326,7 +275,6 @@ private fun ConversationImagePreview(
         ) {
             AsyncImage(
                 model = model,
-                imageLoader = imageLoader,
                 contentDescription = description,
                 contentScale = ContentScale.Fit,
                 modifier = Modifier

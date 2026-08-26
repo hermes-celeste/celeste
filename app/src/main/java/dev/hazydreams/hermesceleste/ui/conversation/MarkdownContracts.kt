@@ -15,35 +15,6 @@ internal fun allowedMarkdownUri(uri: String): Boolean {
     return authorityEnd > authorityStart
 }
 
-/** Conversation images load only from explicit encrypted web destinations. */
-internal fun allowedConversationImageUri(uri: String): Boolean =
-    allowedMarkdownUri(uri) && uri.substringBefore("://").equals("https", ignoreCase = true)
-
-internal data class MarkdownImageTarget(
-    val url: String,
-    val alt: String,
-)
-
-/** Reads the direct image form handled by the conversation renderer. */
-internal fun markdownImageTarget(source: String): MarkdownImageTarget? {
-    if (!source.startsWith("![") || !source.endsWith(')')) return null
-    val destinationStart = source.indexOf("](", startIndex = 2)
-    if (destinationStart < 0) return null
-
-    val alt = source.substring(2, destinationStart).replace("\\]", "]")
-    val destinationAndTitle = source.substring(destinationStart + 2, source.lastIndex).trim()
-    if (destinationAndTitle.isEmpty()) return null
-
-    val destination = if (destinationAndTitle.startsWith('<')) {
-        val angleEnd = destinationAndTitle.indexOf('>', startIndex = 1)
-        if (angleEnd <= 1) return null
-        destinationAndTitle.substring(1, angleEnd)
-    } else {
-        destinationAndTitle.takeWhile { !it.isWhitespace() }
-    }
-    return destination.takeIf(String::isNotBlank)?.let { MarkdownImageTarget(url = it, alt = alt) }
-}
-
 internal sealed interface AssistantContentBlock {
     data class Text(val content: String) : AssistantContentBlock
 
@@ -72,15 +43,15 @@ internal fun assistantContentBlocks(
 
     content.lineSequence().forEach { line ->
         val trimmed = line.trimStart()
-        val fence = fenceMarker(trimmed)
         val currentFence = activeFence
         if (currentFence != null) {
             textLines += line
-            if (fence?.first == currentFence.first && fence.second >= currentFence.second) {
+            if (line.closesFence(currentFence)) {
                 activeFence = null
             }
             return@forEach
         }
+        val fence = fenceMarker(trimmed)
         if (!line.isIndentedCodeLine() && fence != null) {
             activeFence = fence
             textLines += line
@@ -113,6 +84,15 @@ private fun fenceMarker(line: String): Pair<Char, Int>? {
     return (marker to length).takeIf { length >= 3 }
 }
 
+private fun String.closesFence(openFence: Pair<Char, Int>): Boolean {
+    val indentation = takeWhile { it == ' ' }.length
+    if (indentation > 3 || startsWith('\t')) return false
+    val trimmed = drop(indentation)
+    val marker = trimmed.firstOrNull()?.takeIf { it == openFence.first } ?: return false
+    val length = trimmed.takeWhile { it == marker }.length
+    return length >= openFence.second && trimmed.drop(length).isBlank()
+}
+
 private fun String.isIndentedCodeLine(): Boolean = startsWith('\t') || takeWhile { it == ' ' }.length >= 4
 
 private fun gatewayMediaPath(line: String): String? {
@@ -122,19 +102,26 @@ private fun gatewayMediaPath(line: String): String? {
     if (path.isBlank()) return null
     val windowsAbsolute = path.length >= 3 && path[0].isLetter() && path[1] == ':' &&
         (path[2] == '\\' || path[2] == '/')
-    return path.takeIf { it.startsWith('/') || windowsAbsolute }
+    val imageExtension = path.substringAfterLast('.', missingDelimiterValue = "").lowercase()
+    return path.takeIf {
+        (it.startsWith('/') || windowsAbsolute) && imageExtension in gatewayImageExtensions
+    }
 }
 
 private fun String.removeMatchingQuotes(): String {
-    if (length < 2 || first() != last() || first() !in charArrayOf('`', '"', '\'')) return this
+    if (length < 2 || first() != last() || first() !in charArrayOf('"', '\'')) return this
     return substring(1, lastIndex).trim()
 }
 
 private const val MAX_GATEWAY_IMAGES_PER_MESSAGE = 4
+private val gatewayImageExtensions = setOf("png", "jpg", "jpeg", "gif", "webp", "bmp", "heic", "heif")
 
 /** Returns the append-only suffix, or null when a recovered stream replaced prior text. */
 internal fun markdownStreamDelta(rendered: String, incoming: String): String? =
     if (incoming.startsWith(rendered)) incoming.removePrefix(rendered) else null
+
+/** Keeps ordinary Markdown image syntax readable without resolving its destination. */
+internal fun containsMarkdownImageSyntax(content: String): Boolean = content.contains("![")
 
 private val orderedListMarker = Regex("^\\d+[.)]\\s+")
 private val tableSeparator = Regex("^\\|?\\s*:?-{3,}:?\\s*(\\|\\s*:?-{3,}:?\\s*)+\\|?$")

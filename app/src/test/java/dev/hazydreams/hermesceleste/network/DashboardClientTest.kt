@@ -79,12 +79,14 @@ class DashboardClientTest {
             baseUrl = baseUrl,
             credential = GatewayCredential.StaticToken("private-token"),
             path = "/home/juno/output/rendered image.png",
+            profile = "work",
         )
 
         assertArrayEquals("synthetic-image".encodeToByteArray(), bytes)
         val request = server.takeRequest()
         assertEquals("/api/fs/read-data-url", request.url.encodedPath)
         assertEquals("/home/juno/output/rendered image.png", request.url.queryParameter("path"))
+        assertEquals("work", request.url.queryParameter("profile"))
         assertEquals("private-token", request.headers["X-Hermes-Session-Token"])
     }
 
@@ -102,6 +104,28 @@ class DashboardClientTest {
                 baseUrl = server.url("/").toString().trimEnd('/'),
                 credential = GatewayCredential.None,
                 path = "/home/juno/output/not-an-image.txt",
+                profile = "default",
+            )
+        }.exceptionOrNull()
+
+        assertTrue(failure is InvalidDashboardResponse)
+    }
+
+    @Test
+    fun rejectsMalformedGatewayImageBase64() = runTest {
+        server.enqueue(
+            MockResponse.Builder()
+                .code(200)
+                .body("""{"dataUrl":"data:image/png;base64,%%%"}""")
+                .build(),
+        )
+
+        val failure = runCatching {
+            DashboardClient().loadGatewayImage(
+                baseUrl = server.url("/").toString().trimEnd('/'),
+                credential = GatewayCredential.None,
+                path = "/home/juno/output/broken.png",
+                profile = "default",
             )
         }.exceptionOrNull()
 

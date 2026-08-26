@@ -214,7 +214,7 @@ private fun AssistantMessage(
                 )
 
                 is AssistantContentBlock.GatewayImage -> ConversationImage(
-                    source = ConversationImageSource.Gateway(block.path),
+                    path = block.path,
                     alt = block.alt,
                     gatewayImageLoader = gatewayImageLoader,
                     gatewayImageScope = gatewayImageScope,

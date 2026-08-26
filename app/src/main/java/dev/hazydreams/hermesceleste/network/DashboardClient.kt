@@ -1,9 +1,9 @@
 package dev.hazydreams.hermesceleste.network
 
 import java.io.IOException
-import java.util.Base64
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
+import kotlin.io.encoding.Base64
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 import kotlinx.coroutines.Dispatchers
@@ -176,6 +176,7 @@ interface DashboardService {
         baseUrl: String,
         credential: GatewayCredential,
         path: String,
+        profile: String,
     ): ByteArray = throw UnsupportedOperationException("Gateway images are not available.")
 
     suspend fun markSessionRead(
@@ -495,11 +496,14 @@ class DashboardClient(
         baseUrl: String,
         credential: GatewayCredential,
         path: String,
+        profile: String,
     ): ByteArray {
         require(path.isNotBlank()) { "An image path is required." }
+        require(profile.isNotBlank()) { "A Hermes profile is required." }
         return withContext(Dispatchers.IO) {
             val url = "$baseUrl/api/fs/read-data-url".toHttpUrl().newBuilder()
                 .addQueryParameter("path", path)
+                .addQueryParameter("profile", profile)
                 .build()
             val request = Request.Builder()
                 .url(url)
@@ -841,7 +845,10 @@ class DashboardClient(
             throw InvalidDashboardResponse("Hermes returned an invalid image.")
         }
         val encoded = dataUrl.substring(markerIndex + marker.length)
-        val decoded = runCatching { Base64.getDecoder().decode(encoded) }
+        if (encoded.length > MAX_GATEWAY_IMAGE_BASE64_CHARS) {
+            throw InvalidDashboardResponse("Hermes returned an invalid image.")
+        }
+        val decoded = runCatching { Base64.decode(encoded) }
             .getOrElse { throw InvalidDashboardResponse("Hermes returned an invalid image.", it) }
         if (decoded.isEmpty() || decoded.size > MAX_GATEWAY_IMAGE_BYTES) {
             throw InvalidDashboardResponse("Hermes returned an invalid image.")
@@ -1070,6 +1077,7 @@ class DashboardClient(
 
     private companion object {
         const val MAX_GATEWAY_IMAGE_BYTES = 16 * 1024 * 1024
+        const val MAX_GATEWAY_IMAGE_BASE64_CHARS = ((MAX_GATEWAY_IMAGE_BYTES + 2) / 3) * 4
         const val MAX_GATEWAY_IMAGE_RESPONSE_BYTES = 24L * 1024 * 1024
         const val SESSION_RESUME_REQUEST_ID = "session-resume"
         val JSON_MEDIA_TYPE = "application/json; charset=utf-8".toMediaType()

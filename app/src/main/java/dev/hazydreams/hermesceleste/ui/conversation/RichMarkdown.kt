@@ -124,7 +124,7 @@ internal fun RichMarkdown(
 
     CompositionLocalProvider(LocalUriHandler provides safeUriHandler) {
         SelectionContainer {
-            if (!containsRichMarkdown(content)) {
+            if (!containsRichMarkdown(content) || containsMarkdownImageSyntax(content)) {
                 RawMarkdownFallback(content = content, modifier = contentModifier)
             } else {
                 BoxWithConstraints(modifier = contentModifier) {
@@ -291,18 +291,6 @@ private val CelesteMarkdownComponents = markdownComponents(
     },
     table = { model ->
         CelesteMarkdownTable(model.content, model.node, model.typography.table)
-    },
-    image = { model ->
-        val target = markdownImageTarget(model.node.getTextInNode(model.content).toString())
-        if (target != null && allowedConversationImageUri(target.url)) {
-            ConversationImage(
-                source = ConversationImageSource.Https(target.url),
-                alt = target.alt,
-                modifier = Modifier.padding(vertical = 7.dp),
-            )
-        } else {
-            RawMarkdownNodeFallback(model.content, model.node)
-        }
     },
     checkbox = { model ->
         CelesteTaskCheckbox(model.content, model.node)

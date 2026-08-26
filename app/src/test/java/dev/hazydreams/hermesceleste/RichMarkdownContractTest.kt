@@ -1,11 +1,10 @@
 package dev.hazydreams.hermesceleste
 
 import dev.hazydreams.hermesceleste.ui.conversation.AssistantContentBlock
-import dev.hazydreams.hermesceleste.ui.conversation.allowedConversationImageUri
 import dev.hazydreams.hermesceleste.ui.conversation.allowedMarkdownUri
 import dev.hazydreams.hermesceleste.ui.conversation.assistantContentBlocks
+import dev.hazydreams.hermesceleste.ui.conversation.containsMarkdownImageSyntax
 import dev.hazydreams.hermesceleste.ui.conversation.containsRichMarkdown
-import dev.hazydreams.hermesceleste.ui.conversation.markdownImageTarget
 import dev.hazydreams.hermesceleste.ui.conversation.markdownStreamDelta
 import org.intellij.markdown.MarkdownElementTypes
 import org.intellij.markdown.MarkdownTokenTypes
@@ -78,38 +77,6 @@ class RichMarkdownContractTest {
     }
 
     @Test
-    fun loadsOnlyExplicitHttpsConversationImages() {
-        assertTrue(allowedConversationImageUri("https://images.example.com/render.png"))
-        assertTrue(allowedConversationImageUri("HTTPS://images.example.com/render.webp?size=large"))
-        assertFalse(allowedConversationImageUri("http://images.example.com/render.png"))
-        assertFalse(allowedConversationImageUri("file:///data/private.png"))
-        assertFalse(allowedConversationImageUri("data:image/png;base64,AAAA"))
-        assertFalse(allowedConversationImageUri("javascript:alert(1)"))
-        assertFalse(allowedConversationImageUri("/relative/render.png"))
-    }
-
-    @Test
-    fun readsDirectMarkdownImageDestinations() {
-        assertEquals(
-            "https://images.example.com/architecture.png",
-            markdownImageTarget("![Architecture](https://images.example.com/architecture.png)")?.url,
-        )
-        assertEquals(
-            "https://images.example.com/render wide.png",
-            markdownImageTarget(
-                "![Rendered comparison](<https://images.example.com/render wide.png> \"Preview\")",
-            )?.url,
-        )
-        assertEquals(
-            "Rendered comparison",
-            markdownImageTarget(
-                "![Rendered comparison](https://images.example.com/render.png \"Preview\")",
-            )?.alt,
-        )
-        assertNull(markdownImageTarget("[Ordinary link](https://images.example.com/render.png)"))
-    }
-
-    @Test
     fun separatesStandaloneHermesMediaFromAssistantProse() {
         assertEquals(
             listOf(
@@ -129,7 +96,7 @@ class RichMarkdownContractTest {
                     Here is the rendered comparison.
                     MEDIA:"/home/juno/output/rendered comparison.png"
                     The narrow version follows.
-                    `MEDIA:/home/juno/output/narrow.png`
+                    MEDIA:/home/juno/output/narrow.png
                 """.trimIndent(),
             ),
         )
@@ -143,13 +110,26 @@ class RichMarkdownContractTest {
     }
 
     @Test
+    fun externalMarkdownImagesRemainAssistantText() {
+        val content = "![private render](https://images.example/private.png?conversation=secret)"
+
+        assertEquals(listOf(AssistantContentBlock.Text(content)), assistantContentBlocks(content))
+        assertTrue(containsMarkdownImageSyntax(content))
+        assertTrue(containsMarkdownImageSyntax("Before ![reference][private] after"))
+        assertFalse(containsMarkdownImageSyntax("[ordinary link](https://example.com)"))
+    }
+
+    @Test
     fun mediaInsideCodeBlocksRemainsReadableText() {
         val content = """
             ```text
             MEDIA:/home/juno/output/fenced.png
+            ```not-a-close
+            MEDIA:/home/juno/output/still-fenced.png
             ```
                 MEDIA:/home/juno/output/indented.png
-            `MEDIA:/home/juno/output/rendered.png`
+            `MEDIA:/home/juno/output/inline.png`
+            MEDIA:/home/juno/output/rendered.png
         """.trimIndent()
 
         assertEquals(
@@ -158,13 +138,38 @@ class RichMarkdownContractTest {
                     """
                         ```text
                         MEDIA:/home/juno/output/fenced.png
+                        ```not-a-close
+                        MEDIA:/home/juno/output/still-fenced.png
                         ```
                             MEDIA:/home/juno/output/indented.png
+                        `MEDIA:/home/juno/output/inline.png`
                     """.trimIndent(),
                 ),
                 AssistantContentBlock.GatewayImage(
                     path = "/home/juno/output/rendered.png",
                     alt = "rendered.png",
+                ),
+            ),
+            assistantContentBlocks(content),
+        )
+    }
+
+    @Test
+    fun recognizesOnlyAbsoluteImageMediaPaths() {
+        val content = """
+            MEDIA:/home/juno/output/report.pdf
+            MEDIA:relative.png
+            MEDIA:C:\output\rendered.webp
+        """.trimIndent()
+
+        assertEquals(
+            listOf(
+                AssistantContentBlock.Text(
+                    "MEDIA:/home/juno/output/report.pdf\nMEDIA:relative.png",
+                ),
+                AssistantContentBlock.GatewayImage(
+                    path = "C:\\output\\rendered.webp",
+                    alt = "rendered.webp",
                 ),
             ),
             assistantContentBlocks(content),

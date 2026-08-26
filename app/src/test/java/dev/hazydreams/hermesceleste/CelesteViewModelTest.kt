@@ -2441,6 +2441,25 @@ class CelesteViewModelTest {
     }
 
     @Test
+    fun gatewayImagesUseTheActiveSessionProfile() = runTest {
+        lateinit var dashboard: FakeDashboard
+        val viewModel = openConversation(FakeGateway()) {
+            dashboard = this
+            session = session.copy(profile = "work")
+        }
+        advanceUntilIdle()
+
+        val bytes = viewModel.controller.loadConversationImage("/home/juno/output/rendered.png")
+
+        assertEquals("synthetic-image", bytes?.decodeToString())
+        assertEquals(
+            listOf("/home/juno/output/rendered.png" to "work"),
+            dashboard.gatewayImageRequests,
+        )
+        viewModel.controller.close()
+    }
+
+    @Test
     fun profileCatalogFailureDoesNotBecomeAConnectedDefaultProfile() = runTest {
         val dashboard = FakeDashboard(FakeGateway()).apply {
             profileFailure = AuthenticationRejected("Hermes rejected profile access.")
@@ -2966,6 +2985,7 @@ class CelesteViewModelTest {
         val searchGates = mutableMapOf<String, CompletableDeferred<Unit>>()
         val searchRequests = mutableListOf<Triple<String, String, Int>>()
         val sessionMessageRequests = mutableListOf<Triple<String, String, Int>>()
+        val gatewayImageRequests = mutableListOf<Pair<String, String>>()
         var sessionMessages = emptyList<ConversationMessage>()
         var sessionTaskProgressSnapshot: TaskProgressSnapshot? = null
         val markReadRequests = mutableListOf<Pair<String, String>>()
@@ -3053,6 +3073,16 @@ class CelesteViewModelTest {
         ): ConversationHistory {
             sessionMessageRequests += Triple(sessionId, profile, limit)
             return ConversationHistory(sessionMessages, sessionTaskProgressSnapshot)
+        }
+
+        override suspend fun loadGatewayImage(
+            baseUrl: String,
+            credential: GatewayCredential,
+            path: String,
+            profile: String,
+        ): ByteArray {
+            gatewayImageRequests += path to profile
+            return "synthetic-image".encodeToByteArray()
         }
 
         override suspend fun markSessionRead(

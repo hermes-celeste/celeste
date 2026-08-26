@@ -367,6 +367,7 @@ internal class CelesteController(
                 baseUrl = baseUrl,
                 credential = activeCredential,
                 path = path,
+                profile = snapshot.activeSummary?.profile ?: snapshot.selectedProfile,
             )
         } catch (failure: Throwable) {
             if (failure is CancellationException) throw failure
