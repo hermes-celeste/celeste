@@ -30,4 +30,30 @@ class ConversationStepsSheetTest {
         assertEquals(421, stepDetail(rawOnly).length)
         assertTrue(stepDetail(rawOnly).endsWith("…"))
     }
+
+    @Test
+    fun reasoningDetailRemovesPresentationMarkdownWhilePreservingReadableStructure() {
+        val reasoning = ConversationStep(
+            id = "reasoning-1",
+            kind = ConversationStepKind.Reasoning,
+            detail = """
+                ## Closing issues
+                **Planning programmatic checkbox updates**
+                - Keep `TalkBack` validation visible
+
+                **Updating checkbox statuses and closing issue**
+            """.trimIndent(),
+        )
+
+        assertEquals(
+            """
+                Closing issues
+                Planning programmatic checkbox updates
+                Keep TalkBack validation visible
+
+                Updating checkbox statuses and closing issue
+            """.trimIndent(),
+            stepDetail(reasoning),
+        )
+    }
 }

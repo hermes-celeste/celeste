@@ -117,7 +117,12 @@ private val previewStepsMessage = ConversationMessage(
         ConversationStep(
             id = "preview-reasoning-1",
             kind = ConversationStepKind.Reasoning,
-            detail = "I’ll compare the current gateway contract before changing the mobile projection.",
+            detail = """
+                **Comparing the current gateway contract**
+                **Keeping the mobile projection readable**
+
+                **Preserving the original reasoning text**
+            """.trimIndent(),
         ),
         ConversationStep(
             id = "preview-tool-1",

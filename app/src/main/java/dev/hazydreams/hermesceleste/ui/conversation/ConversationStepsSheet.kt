@@ -340,7 +340,7 @@ internal fun stepTitle(step: ConversationStep): String = when (step.kind) {
 }
 
 internal fun stepDetail(step: ConversationStep): String = when (step.kind) {
-    ConversationStepKind.Reasoning -> step.detail.trim()
+    ConversationStepKind.Reasoning -> plainReasoningDetail(step.detail)
     ConversationStepKind.Tool -> listOf(step.context, step.summary)
         .map(String::trim)
         .filter(String::isNotBlank)
@@ -349,6 +349,25 @@ internal fun stepDetail(step: ConversationStep): String = when (step.kind) {
         .ifBlank { step.result.trim() }
         .let(::boundedStepDetail)
 }
+
+private fun plainReasoningDetail(value: String): String = value
+    .trim()
+    .lineSequence()
+    .joinToString("\n") { line ->
+        line
+            .replace(ReasoningHeadingPrefix, "")
+            .replace(ReasoningListPrefix, "")
+            .replace(ReasoningQuotePrefix, "")
+            .replace(ReasoningLink, "$1")
+            .replace(ReasoningDecoration, "")
+            .trimEnd()
+    }
+
+private val ReasoningHeadingPrefix = Regex("""^\s{0,3}#{1,6}\s+""")
+private val ReasoningListPrefix = Regex("""^\s*[-+*]\s+""")
+private val ReasoningQuotePrefix = Regex("""^\s*>\s?""")
+private val ReasoningLink = Regex("""!?\[([^]]+)]\([^)]+\)""")
+private val ReasoningDecoration = Regex("""\*\*|__|~~|`""")
 
 private fun boundedStepDetail(value: String, maximum: Int = 420): String {
     if (value.length <= maximum) return value
