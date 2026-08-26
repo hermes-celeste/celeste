@@ -82,7 +82,7 @@ Celeste recognizes message lifecycle, interim assistant prose, reasoning, tools,
 - Background-process completion produces one compact result row with details available on demand.
 - Notifications with a blank session ID apply to the active conversation; nonblank mismatched runtime IDs are ignored.
 
-`session.resume` binds runtime state while the dashboard history route supplies persisted display history. Accepted mid-turn corrections are rebuilt from the inflight correction list and assistant-text offsets so reconnect preserves their arrival order; a server-queued next turn is projected after the current inflight assistant output. Hermes reports correction offsets as Unicode code-point positions, and Celeste translates them to Kotlin string indices at the protocol boundary. Resume retries are bounded, preserve readable history, and end in an explicit Retry surface.
+`session.resume` binds runtime state while the dashboard history route supplies persisted display history. Accepted mid-turn corrections are rebuilt from the inflight correction list and assistant-text offsets so reconnect preserves their arrival order; a server-queued next turn is projected after the current inflight assistant output. A retained inflight terminal failure settles the runtime and remains attached to its assistant reply while local queued work continues from the authoritative idle state. Hermes reports correction offsets as Unicode code-point positions, and Celeste translates them to Kotlin string indices at the protocol boundary. Resume retries are bounded, preserve readable history, and end in an explicit Retry surface.
 
 ## Update workflow
 

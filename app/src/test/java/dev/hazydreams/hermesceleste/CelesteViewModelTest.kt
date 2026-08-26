@@ -2225,6 +2225,116 @@ class CelesteViewModelTest {
     }
 
     @Test
+    fun reconnectSurfacesRetainedTerminalFailureAndSettlesTheTurn() = runTest {
+        val gateway = FakeGateway()
+        val viewModel = openConversation(gateway)
+        viewModel.updateDraft("Do this once")
+        viewModel.sendMessage()
+        gateway.emit("message.start")
+        gateway.emit("message.delta", """{"text":"Half"}""")
+        gateway.emit("status.update", """{"kind":"compacting"}""")
+        advanceUntilIdle()
+
+        gateway.resumePayload = resumePayload(
+            messages = listOf(ConversationMessage(role = "user", text = "Do this once", id = "server-user")),
+            running = false,
+            inflightJson = """{"user":"Do this once","assistant":"Half","streaming":false,"status":"error","error":"Provider connection closed.","recoverable":true}""",
+        )
+        gateway.disconnect("dashboard restarted")
+        advanceUntilIdle()
+
+        val state = viewModel.state.value
+        val failedReply = state.messages.single { it.role == "assistant" }
+        assertEquals(TurnState.Idle, state.turnState)
+        assertFalse(state.isCompacting)
+        assertNull(state.taskProgress)
+        assertEquals("Half", failedReply.text)
+        assertEquals("Provider connection closed.", failedReply.errorMessage)
+        assertNull(state.errorMessage)
+        assertEquals(1, gateway.methods.count { it == "prompt.submit" })
+
+        gateway.resumePayload = resumePayload(
+            messages = listOf(
+                ConversationMessage(role = "user", text = "Do this once", id = "server-user"),
+                ConversationMessage(role = "assistant", text = "Recovered", id = "server-assistant"),
+            ),
+            running = false,
+        )
+        gateway.disconnect("dashboard restarted again")
+        advanceUntilIdle()
+
+        assertEquals(TurnState.Idle, viewModel.state.value.turnState)
+        assertTrue(viewModel.state.value.messages.none { it.errorMessage != null })
+        assertNull(viewModel.state.value.errorMessage)
+        assertEquals(1, gateway.methods.count { it == "prompt.submit" })
+        viewModel.controller.close()
+    }
+
+    @Test
+    fun reconnectFailurePreservesAcceptedRedirectAtItsAssistantOffset() = runTest {
+        val gateway = FakeGateway().apply {
+            resumePayload = resumePayload(
+                messages = emptyList(),
+                running = false,
+                inflightJson = """{"user":"First","assistant":"Before.After.","streaming":false,"corrections":["Change direction"],"correction_offsets":[7],"status":"error","error":"Codex response remained incomplete."}""",
+                messageRowsJson = """{"id":"server-user","role":"user","text":"First"},{"id":"server-reasoning","role":"assistant","text":"","reasoning":"Working through it."}""",
+            )
+        }
+        val viewModel = openConversation(gateway)
+        advanceUntilIdle()
+
+        assertEquals(
+            listOf("First", "Before.", "Change direction", "After."),
+            viewModel.state.value.messages.filterNot { it.role == "steps" }.map { it.text },
+        )
+        val steps = viewModel.state.value.messages.single { it.role == "steps" }
+        assertFalse(steps.pending)
+        assertTrue(steps.steps.none(ConversationStep::pending))
+        assertEquals(
+            UserMessagePlacement.MidTurnCorrection,
+            viewModel.state.value.messages.single { it.text == "Change direction" }.userPlacement,
+        )
+        assertEquals("Codex response remained incomplete.", viewModel.state.value.messages.last().errorMessage)
+        assertEquals(TurnState.Idle, viewModel.state.value.turnState)
+        assertEquals("", viewModel.state.value.streamingText)
+        assertEquals(0, gateway.methods.count { it == "prompt.submit" })
+        viewModel.controller.close()
+    }
+
+    @Test
+    fun retainedTerminalFailureSurvivesAutomaticQueuedPromptDrain() = runTest {
+        val gateway = FakeGateway()
+        val viewModel = openConversation(gateway)
+        viewModel.updateDraft("First")
+        viewModel.sendMessage()
+        viewModel.updateDraft("Second")
+        viewModel.sendMessage()
+        advanceUntilIdle()
+        assertEquals(listOf("Second"), viewModel.state.value.queuedPrompts.map { it.text })
+
+        gateway.resumePayload = resumePayload(
+            messages = listOf(ConversationMessage(role = "user", text = "First", id = "server-user")),
+            running = false,
+            inflightJson = """{"user":"First","assistant":"Partial","streaming":false,"status":"error","error":"The first turn failed.","recoverable":true}""",
+        )
+        gateway.disconnect("dashboard restarted")
+        advanceUntilIdle()
+
+        val state = viewModel.state.value
+        assertEquals(
+            listOf("First", "Second"),
+            gateway.requests.filter { it.first == "prompt.submit" }
+                .map { it.second["text"]?.jsonPrimitive?.content },
+        )
+        assertTrue(state.queuedPrompts.isEmpty())
+        assertEquals(TurnState.Running, state.turnState)
+        assertEquals("The first turn failed.", state.messages.single { it.role == "assistant" }.errorMessage)
+        assertEquals(1, state.messages.count { it.role == "user" && it.text == "First" })
+        assertEquals(1, state.messages.count { it.role == "user" && it.text == "Second" })
+        viewModel.controller.close()
+    }
+
+    @Test
     fun transientReconnectKeepsTheDraftAndTransportDetailsOutOfTheConversation() = runTest {
         val gateway = FakeGateway()
         val dashboard = FakeDashboard(gateway)
@@ -3304,8 +3414,9 @@ class CelesteViewModelTest {
             storedSessionId: String = "stored-42",
             inflightJson: String = "null",
             queuedJson: String = "null",
+            messageRowsJson: String? = null,
         ): JsonObject {
-            val encodedMessages = messages.joinToString(",") { message ->
+            val encodedMessages = messageRowsJson ?: messages.joinToString(",") { message ->
                 """{"id":${Json.encodeToString(message.id ?: "")},"role":${Json.encodeToString(message.role)},"text":${Json.encodeToString(message.text)}}"""
             }
             return Json.parseToJsonElement(

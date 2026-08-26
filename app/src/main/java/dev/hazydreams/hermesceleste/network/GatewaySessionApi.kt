@@ -95,6 +95,8 @@ suspend fun GatewayConnection.resumeStoredSession(
         ?: decoded.messages
     val inflightObject = inflight as? JsonObject
     val inflightAssistant = inflightAssistantText(inflight)
+    // Top-level status describes runtime liveness; a missed terminal outcome is retained here.
+    val retainedFailureMessage = inflightObject?.retainedTurnFailureMessage()
     val correctionOffsets = (inflightObject?.get("correction_offsets") as? JsonArray)
         ?.map { it.jsonPrimitive.intOrNull }
         .orEmpty()
@@ -126,8 +128,18 @@ suspend fun GatewayConnection.resumeStoredSession(
         queuedUserText = (queued as? JsonObject)?.string("user").orEmpty(),
         inflightAssistantText = inflightAssistant,
         inflightCorrections = inflightCorrections,
-        hasLiveProjection = inflight.isTruthy() || queued.isTruthy() || pendingClarification != null,
+        retainedFailureMessage = retainedFailureMessage,
+        hasLiveProjection = (inflight.isTruthy() && retainedFailureMessage == null) ||
+            queued.isTruthy() || pendingClarification != null,
     )
+}
+
+private fun JsonObject.retainedTurnFailureMessage(): String? {
+    if (string("status") != "error") return null
+    return string("error")
+        ?.trim()
+        ?.takeIf(String::isNotEmpty)
+        ?: "Hermes could not finish that response."
 }
 
 suspend fun GatewayConnection.submitPrompt(

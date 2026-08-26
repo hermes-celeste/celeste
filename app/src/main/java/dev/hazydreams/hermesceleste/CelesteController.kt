@@ -2167,16 +2167,21 @@ internal class CelesteController(
     }
 
     private fun resumedLiveProjection(resumed: ResumedSession): ResumedLiveProjection {
-        val inflightProjection = if (resumed.inflightCorrections.isEmpty()) {
+        val baseMessages = if (resumed.retainedFailureMessage != null) {
+            settleCurrentTurnSteps(resumed.messages)
+        } else {
+            resumed.messages
+        }
+        val reconstructedInflight = if (resumed.inflightCorrections.isEmpty()) {
             ResumedLiveProjection(
-                messages = resumed.messages,
+                messages = baseMessages,
                 streamingText = unpersistedInflightText(
                     inflight = resumed.inflightAssistantText,
-                    messages = resumed.messages,
+                    messages = baseMessages,
                 ),
             )
         } else {
-            var messages = resumed.messages
+            var messages = baseMessages
             val assistant = resumed.inflightAssistantText
             val offsetsUsable = resumed.inflightCorrections.all { correction ->
                 correction.assistantOffset?.let { it in 0..assistant.length } == true
@@ -2186,7 +2191,7 @@ internal class CelesteController(
                 if (segment.isBlank()) return ""
                 if (!persistedPrefixAvailable) return segment
                 persistedPrefixAvailable = false
-                return unpersistedInflightText(segment, resumed.messages)
+                return unpersistedInflightText(segment, baseMessages)
             }
             var cursor = 0
             resumed.inflightCorrections.forEachIndexed { index, correction ->
@@ -2234,6 +2239,13 @@ internal class CelesteController(
                 streamingText = if (offsetsUsable) assistant.substring(cursor) else "",
             )
         }
+        val inflightProjection = resumed.retainedFailureMessage?.let { failureMessage ->
+            resumedFailureProjection(
+                projection = reconstructedInflight,
+                failureMessage = failureMessage,
+                runtimeSessionId = resumed.runtimeSessionId,
+            )
+        } ?: reconstructedInflight
 
         val queuedText = resumed.queuedUserText.trim()
         if (queuedText.isEmpty()) return inflightProjection
@@ -2255,6 +2267,51 @@ internal class CelesteController(
             ),
             streamingText = "",
         )
+    }
+
+    private fun resumedFailureProjection(
+        projection: ResumedLiveProjection,
+        failureMessage: String,
+        runtimeSessionId: String,
+    ): ResumedLiveProjection {
+        var messages = settleCurrentTurnSteps(projection.messages)
+        if (projection.streamingText.isNotBlank()) {
+            messages = appendCurrentTurnMessage(
+                messages = messages,
+                message = ConversationMessage(
+                    role = "assistant",
+                    text = projection.streamingText,
+                    id = "retained-failure-$runtimeSessionId",
+                    errorMessage = failureMessage,
+                ),
+            )
+        } else {
+            val promptStart = messages.indexOfLast { message ->
+                message.role == "user" && message.userPlacement == UserMessagePlacement.Prompt
+            }
+            val assistantIndex = (messages.lastIndex downTo (promptStart + 1)).firstOrNull { index ->
+                messages[index].role == "assistant"
+            }
+            val latestCorrectionIndex = (messages.lastIndex downTo (promptStart + 1)).firstOrNull { index ->
+                messages[index].userPlacement == UserMessagePlacement.MidTurnCorrection
+            }
+            if (assistantIndex != null && (latestCorrectionIndex == null || assistantIndex > latestCorrectionIndex)) {
+                messages = messages.toMutableList().also { next ->
+                    next[assistantIndex] = next[assistantIndex].copy(errorMessage = failureMessage)
+                }
+            } else {
+                messages = appendCurrentTurnMessage(
+                    messages = messages,
+                    message = ConversationMessage(
+                        role = "assistant",
+                        text = "",
+                        id = "retained-failure-$runtimeSessionId",
+                        errorMessage = failureMessage,
+                    ),
+                )
+            }
+        }
+        return ResumedLiveProjection(messages = messages, streamingText = "")
     }
 
     private fun isActiveSession(submitted: SubmittedSession): Boolean =

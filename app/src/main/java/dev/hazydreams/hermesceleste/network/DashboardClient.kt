@@ -104,6 +104,7 @@ data class ResumedSession(
     val queuedUserText: String = "",
     val inflightAssistantText: String = "",
     val inflightCorrections: List<InflightCorrection> = emptyList(),
+    val retainedFailureMessage: String? = null,
     val hasLiveProjection: Boolean = false,
 )
 

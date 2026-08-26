@@ -30,6 +30,7 @@ data class ConversationMessage(
     val id: String? = null,
     val pending: Boolean = false,
     val interim: Boolean = false,
+    val errorMessage: String? = null,
     val userPlacement: UserMessagePlacement = UserMessagePlacement.Prompt,
     val steps: List<ConversationStep> = emptyList(),
     val processResult: BackgroundProcessResult? = null,
