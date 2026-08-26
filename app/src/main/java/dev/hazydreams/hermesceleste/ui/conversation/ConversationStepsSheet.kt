@@ -415,7 +415,7 @@ private fun closesReasoningFence(value: String, openingFence: String): Boolean {
 
 private val ReasoningHeadingPrefix = Regex("""^\s{0,3}#{1,6}\s+""")
 private val ReasoningListPrefix = Regex("""^\s{0,3}[-+*]\s+""")
-private val ReasoningQuotePrefix = Regex("""^\s*>\s?""")
+private val ReasoningQuotePrefix = Regex("""^\s{0,3}>\s?""")
 private val ReasoningInlineCode = Regex("""(?<!`)`([^`\n]+)`(?!`)""")
 
 private fun boundedStepDetail(value: String, maximum: Int = 420): String {

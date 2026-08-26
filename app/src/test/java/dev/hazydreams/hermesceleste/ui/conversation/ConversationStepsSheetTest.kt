@@ -94,6 +94,7 @@ class ConversationStepsSheetTest {
                 Before:
                     - old value
                     + new value
+                    > output
                 **
                 ***
                 ~~
@@ -105,6 +106,7 @@ class ConversationStepsSheetTest {
                 Before:
                     - old value
                     + new value
+                    > output
                 **
                 ***
                 ~~
