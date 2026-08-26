@@ -2,6 +2,7 @@ package dev.hazydreams.hermesceleste.ui.conversation
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
@@ -66,10 +67,12 @@ internal fun MessageBubble(
     initiallyExpandedUserMessage: Boolean = false,
     onOpenInspection: () -> Unit = {},
     onClarificationRespond: (messageId: String, requestId: String, answer: String) -> Unit = { _, _, _ -> },
+    gatewayImageLoader: (suspend (String) -> ByteArray?)? = null,
+    gatewayImageScope: Any? = null,
 ) {
     when (message.role) {
         "user" -> UserMessage(message, streaming, initiallyExpandedUserMessage)
-        "assistant" -> AssistantMessage(message, streaming)
+        "assistant" -> AssistantMessage(message, streaming, gatewayImageLoader, gatewayImageScope)
         "clarification" -> ClarificationTranscriptEntry(message, onClarificationRespond)
         "steps" -> StepsTranscriptEntry(message, onOpenInspection)
         "process" -> ProcessResultTranscriptEntry(message, onOpenInspection)
@@ -188,17 +191,35 @@ private fun UserMessage(
 }
 
 @Composable
-private fun AssistantMessage(message: ConversationMessage, streaming: Boolean) {
+private fun AssistantMessage(
+    message: ConversationMessage,
+    streaming: Boolean,
+    gatewayImageLoader: (suspend (String) -> ByteArray?)?,
+    gatewayImageScope: Any?,
+) {
     Column(
         modifier = Modifier
             .fillMaxWidth()
             .padding(horizontal = 2.dp, vertical = 2.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        if (message.text.isNotBlank()) {
-            RichMarkdown(
-                content = message.text,
-                streaming = streaming,
-            )
+        assistantContentBlocks(
+            content = message.text,
+            allowGatewayImages = !streaming,
+        ).forEach { block ->
+            when (block) {
+                is AssistantContentBlock.Text -> RichMarkdown(
+                    content = block.content,
+                    streaming = streaming,
+                )
+
+                is AssistantContentBlock.GatewayImage -> ConversationImage(
+                    path = block.path,
+                    alt = block.alt,
+                    gatewayImageLoader = gatewayImageLoader,
+                    gatewayImageScope = gatewayImageScope,
+                )
+            }
         }
     }
 }

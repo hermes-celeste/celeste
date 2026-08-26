@@ -1,7 +1,10 @@
 package dev.hazydreams.hermesceleste
 
+import dev.hazydreams.hermesceleste.ui.conversation.AssistantContentBlock
 import dev.hazydreams.hermesceleste.ui.conversation.allowedMarkdownUri
+import dev.hazydreams.hermesceleste.ui.conversation.assistantContentBlocks
 import dev.hazydreams.hermesceleste.ui.conversation.containsRichMarkdown
+import dev.hazydreams.hermesceleste.ui.conversation.inertMarkdownImageContent
 import dev.hazydreams.hermesceleste.ui.conversation.markdownStreamDelta
 import org.intellij.markdown.MarkdownElementTypes
 import org.intellij.markdown.MarkdownTokenTypes
@@ -71,6 +74,156 @@ class RichMarkdownContractTest {
         assertFalse(allowedMarkdownUri("file:///data/private"))
         assertFalse(allowedMarkdownUri("mailto:person@example.com"))
         assertFalse(allowedMarkdownUri("/relative/path"))
+    }
+
+    @Test
+    fun separatesStandaloneHermesMediaFromAssistantProse() {
+        assertEquals(
+            listOf(
+                AssistantContentBlock.Text("Here is the rendered comparison."),
+                AssistantContentBlock.GatewayImage(
+                    path = "/home/juno/output/rendered comparison.png",
+                    alt = "rendered comparison.png",
+                ),
+                AssistantContentBlock.Text("The narrow version follows."),
+                AssistantContentBlock.GatewayImage(
+                    path = "/home/juno/output/narrow.png",
+                    alt = "narrow.png",
+                ),
+            ),
+            assistantContentBlocks(
+                """
+                    Here is the rendered comparison.
+                    MEDIA:"/home/juno/output/rendered comparison.png"
+                    The narrow version follows.
+                    MEDIA:/home/juno/output/narrow.png
+                """.trimIndent(),
+            ),
+        )
+    }
+
+    @Test
+    fun ordinaryMediaMentionsRemainReadableAssistantText() {
+        val content = "The protocol label MEDIA: is documented here."
+
+        assertEquals(listOf(AssistantContentBlock.Text(content)), assistantContentBlocks(content))
+    }
+
+    @Test
+    fun externalMarkdownImagesRemainAssistantText() {
+        val content = "![private render](https://images.example/private.png?conversation=secret)"
+
+        assertEquals(listOf(AssistantContentBlock.Text(content)), assistantContentBlocks(content))
+    }
+
+    @Test
+    fun keepsMarkdownFormattingAroundInertImages() {
+        val content = """
+            # Comparison
+
+            Before **bold** ![private render](https://images.example/private.png) after.
+
+            `![code example](https://images.example/code.png)`
+
+            \![escaped example](https://images.example/escaped.png)
+        """.trimIndent()
+        val rendered = inertMarkdownImageContent(content)
+
+        assertEquals(
+            content.replace(
+                "![private render](https://images.example/private.png)",
+                "\\![private render](https://images.example/private.png)",
+            ),
+            rendered,
+        )
+        val nodeTypes = MarkdownParser(GFMFlavourDescriptor(), cancellationToken = CancellationToken.NonCancellable)
+            .buildMarkdownTreeFromString(rendered as CharSequence)
+            .walk()
+            .map(ASTNode::type)
+            .toSet()
+        assertTrue(MarkdownElementTypes.ATX_1 in nodeTypes)
+        assertTrue(MarkdownElementTypes.STRONG in nodeTypes)
+        assertFalse(MarkdownElementTypes.IMAGE in nodeTypes)
+    }
+
+    @Test
+    fun mediaInsideCodeBlocksRemainsReadableText() {
+        val content = """
+            ```text
+            MEDIA:/home/juno/output/fenced.png
+            ```not-a-close
+            MEDIA:/home/juno/output/still-fenced.png
+            ```
+                MEDIA:/home/juno/output/indented.png
+            `MEDIA:/home/juno/output/inline.png`
+            MEDIA:/home/juno/output/rendered.png
+        """.trimIndent()
+
+        assertEquals(
+            listOf(
+                AssistantContentBlock.Text(
+                    """
+                        ```text
+                        MEDIA:/home/juno/output/fenced.png
+                        ```not-a-close
+                        MEDIA:/home/juno/output/still-fenced.png
+                        ```
+                            MEDIA:/home/juno/output/indented.png
+                        `MEDIA:/home/juno/output/inline.png`
+                    """.trimIndent(),
+                ),
+                AssistantContentBlock.GatewayImage(
+                    path = "/home/juno/output/rendered.png",
+                    alt = "rendered.png",
+                ),
+            ),
+            assistantContentBlocks(content),
+        )
+    }
+
+    @Test
+    fun recognizesOnlyAbsoluteImageMediaPaths() {
+        val content = """
+            MEDIA:/home/juno/output/report.pdf
+            MEDIA:relative.png
+            MEDIA:C:\output\rendered.webp
+        """.trimIndent()
+
+        assertEquals(
+            listOf(
+                AssistantContentBlock.Text(
+                    "MEDIA:/home/juno/output/report.pdf\nMEDIA:relative.png",
+                ),
+                AssistantContentBlock.GatewayImage(
+                    path = "C:\\output\\rendered.webp",
+                    alt = "rendered.webp",
+                ),
+            ),
+            assistantContentBlocks(content),
+        )
+    }
+
+    @Test
+    fun boundsGatewayImagesPerAssistantMessage() {
+        val content = (1..6).joinToString("\n") { "MEDIA:/home/juno/output/render-$it.png" }
+
+        val blocks = assistantContentBlocks(content)
+
+        assertEquals(4, blocks.count { it is AssistantContentBlock.GatewayImage })
+        assertEquals(
+            "MEDIA:/home/juno/output/render-5.png\nMEDIA:/home/juno/output/render-6.png",
+            (blocks.last() as AssistantContentBlock.Text).content,
+        )
+    }
+
+    @Test
+    fun streamingMediaOutputStaysTextUntilThePathSettles() {
+        val content = "MEDIA:/home/juno/output/rendered"
+
+        assertEquals(
+            listOf(AssistantContentBlock.Text(content)),
+            assistantContentBlocks(content, allowGatewayImages = false),
+        )
     }
 
     @Test

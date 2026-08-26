@@ -166,6 +166,7 @@ internal fun CelesteRoutes(
                         },
                         composerFocusRequest = composerFocusRequest,
                         onComposerFocusRequestHandled = onComposerFocusRequestHandled,
+                        gatewayImageLoader = controller::loadConversationImage,
                     )
                 }
             }

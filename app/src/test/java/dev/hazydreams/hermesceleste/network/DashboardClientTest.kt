@@ -1,6 +1,9 @@
 package dev.hazydreams.hermesceleste.network
 
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.test.runTest
@@ -13,10 +16,14 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import mockwebserver3.MockResponse
 import mockwebserver3.MockWebServer
+import okhttp3.Call
+import okhttp3.EventListener
+import okhttp3.OkHttpClient
 import okhttp3.Response
 import okhttp3.WebSocket
 import okhttp3.WebSocketListener
 import org.junit.After
+import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertThrows
@@ -62,6 +69,137 @@ class DashboardClientTest {
         assertTrue(result.supportsPassword)
         assertEquals("/api/status", server.takeRequest().url.encodedPath)
         assertEquals("/api/auth/providers", server.takeRequest().url.encodedPath)
+    }
+
+    @Test
+    fun loadsGatewayImageBytesWithAuthentication() = runTest {
+        server.enqueue(
+            MockResponse.Builder()
+                .code(200)
+                .body("""{"dataUrl":"data:image/png;base64,c3ludGhldGljLWltYWdl"}""")
+                .build(),
+        )
+        val baseUrl = server.url("/").toString().trimEnd('/')
+
+        val bytes = DashboardClient().loadGatewayImage(
+            baseUrl = baseUrl,
+            credential = GatewayCredential.StaticToken("private-token"),
+            path = "/home/juno/output/rendered image.png",
+            profile = "work",
+        )
+
+        assertArrayEquals("synthetic-image".encodeToByteArray(), bytes)
+        val request = server.takeRequest()
+        assertEquals("/api/fs/read-data-url", request.url.encodedPath)
+        assertEquals("/home/juno/output/rendered image.png", request.url.queryParameter("path"))
+        assertEquals("work", request.url.queryParameter("profile"))
+        assertEquals("private-token", request.headers["X-Hermes-Session-Token"])
+    }
+
+    @Test
+    fun givesGatewayImagesAFullMinuteCallTimeout() = runTest {
+        val observedTimeout = CompletableDeferred<Long>()
+        val client = OkHttpClient.Builder()
+            .eventListener(
+                object : EventListener() {
+                    override fun callStart(call: Call) {
+                        observedTimeout.complete(call.timeout().timeoutNanos())
+                    }
+                },
+            )
+            .build()
+        server.enqueue(
+            MockResponse.Builder()
+                .code(200)
+                .body("""{"dataUrl":"data:image/png;base64,c3ludGhldGljLWltYWdl"}""")
+                .build(),
+        )
+
+        DashboardClient(httpClient = client).loadGatewayImage(
+            baseUrl = server.url("/").toString().trimEnd('/'),
+            credential = GatewayCredential.None,
+            path = "/home/juno/output/rendered.png",
+            profile = "default",
+        )
+
+        assertEquals(TimeUnit.SECONDS.toNanos(15), observedTimeout.await())
+    }
+
+    @Test
+    fun cancelsGatewayImageCallsWithTheLoadingCoroutine() = runTest {
+        val cancelled = CountDownLatch(1)
+        val client = OkHttpClient.Builder()
+            .eventListener(
+                object : EventListener() {
+                    override fun canceled(call: Call) {
+                        cancelled.countDown()
+                    }
+                },
+            )
+            .build()
+        server.enqueue(
+            MockResponse.Builder()
+                .code(200)
+                .headersDelay(30, TimeUnit.SECONDS)
+                .body("""{"dataUrl":"data:image/png;base64,c3ludGhldGljLWltYWdl"}""")
+                .build(),
+        )
+        val loading = async(Dispatchers.IO) {
+            DashboardClient(httpClient = client).loadGatewayImage(
+                baseUrl = server.url("/").toString().trimEnd('/'),
+                credential = GatewayCredential.None,
+                path = "/home/juno/output/rendered.png",
+                profile = "default",
+            )
+        }
+        assertTrue(server.takeRequest(2, TimeUnit.SECONDS) != null)
+
+        loading.cancelAndJoin()
+
+        assertTrue(cancelled.await(2, TimeUnit.SECONDS))
+        assertTrue(loading.isCancelled)
+    }
+
+    @Test
+    fun rejectsNonImageGatewayDataUrls() = runTest {
+        server.enqueue(
+            MockResponse.Builder()
+                .code(200)
+                .body("""{"dataUrl":"data:text/plain;base64,cHJpdmF0ZQ=="}""")
+                .build(),
+        )
+
+        val failure = runCatching {
+            DashboardClient().loadGatewayImage(
+                baseUrl = server.url("/").toString().trimEnd('/'),
+                credential = GatewayCredential.None,
+                path = "/home/juno/output/not-an-image.txt",
+                profile = "default",
+            )
+        }.exceptionOrNull()
+
+        assertTrue(failure is InvalidDashboardResponse)
+    }
+
+    @Test
+    fun rejectsMalformedGatewayImageBase64() = runTest {
+        server.enqueue(
+            MockResponse.Builder()
+                .code(200)
+                .body("""{"dataUrl":"data:image/png;base64,%%%"}""")
+                .build(),
+        )
+
+        val failure = runCatching {
+            DashboardClient().loadGatewayImage(
+                baseUrl = server.url("/").toString().trimEnd('/'),
+                credential = GatewayCredential.None,
+                path = "/home/juno/output/broken.png",
+                profile = "default",
+            )
+        }.exceptionOrNull()
+
+        assertTrue(failure is InvalidDashboardResponse)
     }
 
     @Test
