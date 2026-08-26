@@ -1120,7 +1120,7 @@ class DashboardClient(
         const val MAX_GATEWAY_IMAGE_BYTES = 16 * 1024 * 1024
         const val MAX_GATEWAY_IMAGE_BASE64_CHARS = ((MAX_GATEWAY_IMAGE_BYTES + 2) / 3) * 4
         const val MAX_GATEWAY_IMAGE_RESPONSE_BYTES = 24L * 1024 * 1024
-        const val GATEWAY_IMAGE_CALL_TIMEOUT_SECONDS = 60L
+        const val GATEWAY_IMAGE_CALL_TIMEOUT_SECONDS = 15L
         const val SESSION_RESUME_REQUEST_ID = "session-resume"
         val JSON_MEDIA_TYPE = "application/json; charset=utf-8".toMediaType()
     }

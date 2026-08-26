@@ -34,7 +34,7 @@ The manifest disables backup. Backup and extraction rules exclude application-da
 
 Celeste does not persist conversation content or transmit it outside the configured dashboard. Drafts, queued prompts, and selected attachment bytes remain in process memory; attachment bytes are Base64-encoded only while building the Hermes upload request. Attachment access uses Android’s system photo and document pickers with bounded content-URI reads; the app requests no broad media or storage permission. Explicit transcript selection and code-block Copy may place only user-selected content on the device clipboard. Automatic copying and credential copying are forbidden.
 
-Conversation images use authenticated dashboard media reads. Hermes `MEDIA:` paths are recognized only in settled assistant output outside Markdown code, with up to four rendered per message. The active profile and credential scope each cancellable, 60-second image read; responses remain bounded to 16 MiB of decoded in-memory image data, and disk caching is disabled. Failed loads offer explicit Retry.
+Conversation images use authenticated dashboard media reads. Hermes `MEDIA:` paths are recognized only in settled assistant output outside Markdown code, with up to four rendered per message. The active profile and credential scope each cancellable, 15-second image read; responses remain bounded to 16 MiB of decoded in-memory image data, and disk caching is disabled. Failed loads offer explicit Retry.
 
 Use synthetic data in tests. Never log or fixture real message bodies, assistant output, private tool context/results, attachments, file paths, dashboard addresses, profile/session identifiers, authenticated payloads, or live-test credentials.
 

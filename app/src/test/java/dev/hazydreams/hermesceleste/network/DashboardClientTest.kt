@@ -122,7 +122,7 @@ class DashboardClientTest {
             profile = "default",
         )
 
-        assertEquals(TimeUnit.SECONDS.toNanos(60), observedTimeout.await())
+        assertEquals(TimeUnit.SECONDS.toNanos(15), observedTimeout.await())
     }
 
     @Test
