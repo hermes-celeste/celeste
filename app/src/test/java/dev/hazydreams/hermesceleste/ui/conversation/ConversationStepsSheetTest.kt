@@ -30,4 +30,88 @@ class ConversationStepsSheetTest {
         assertEquals(421, stepDetail(rawOnly).length)
         assertTrue(stepDetail(rawOnly).endsWith("…"))
     }
+
+    @Test
+    fun reasoningDetailRemovesPresentationMarkdownWhilePreservingReadableStructure() {
+        val reasoning = ConversationStep(
+            id = "reasoning-1",
+            kind = ConversationStepKind.Reasoning,
+            detail = """
+                ## Closing issues
+                **Planning programmatic checkbox updates**
+                - Keep `TalkBack`, `__init__`, and `**kwargs` visible
+                - Preserve __dirname outside code too
+
+                **Updating checkbox statuses and closing issue**
+            """.trimIndent(),
+        )
+
+        assertEquals(
+            """
+                Closing issues
+                Planning programmatic checkbox updates
+                Keep TalkBack, __init__, and **kwargs visible
+                Preserve __dirname outside code too
+
+                Updating checkbox statuses and closing issue
+            """.trimIndent(),
+            stepDetail(reasoning),
+        )
+    }
+
+    @Test
+    fun reasoningDetailPreservesLiteralSyntaxAndFencedCode() {
+        val reasoning = ConversationStep(
+            id = "reasoning-technical",
+            kind = ConversationStepKind.Reasoning,
+            detail = """
+                - Call f(**kwargs) for src/**/*.kt
+                **kwargs**
+                ```python
+                def f(**kwargs):
+                    return __dirname
+                ```
+            """.trimIndent(),
+        )
+
+        assertEquals(
+            """
+                Call f(**kwargs) for src/**/*.kt
+                **kwargs**
+                def f(**kwargs):
+                    return __dirname
+            """.trimIndent(),
+            stepDetail(reasoning),
+        )
+    }
+
+    @Test
+    fun reasoningDetailPreservesIndentedCodeAndDelimiterOnlyLines() {
+        val reasoning = ConversationStep(
+            id = "reasoning-indented-code",
+            kind = ConversationStepKind.Reasoning,
+            detail = """
+                Before:
+                    - old value
+                    + new value
+                    > output
+                **
+                ***
+                ~~
+            """.trimIndent(),
+        )
+
+        assertEquals(
+            """
+                Before:
+                    - old value
+                    + new value
+                    > output
+                **
+                ***
+                ~~
+            """.trimIndent(),
+            stepDetail(reasoning),
+        )
+    }
 }

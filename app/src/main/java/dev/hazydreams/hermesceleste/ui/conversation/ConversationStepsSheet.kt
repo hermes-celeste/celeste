@@ -340,7 +340,7 @@ internal fun stepTitle(step: ConversationStep): String = when (step.kind) {
 }
 
 internal fun stepDetail(step: ConversationStep): String = when (step.kind) {
-    ConversationStepKind.Reasoning -> step.detail.trim()
+    ConversationStepKind.Reasoning -> plainReasoningDetail(step.detail)
     ConversationStepKind.Tool -> listOf(step.context, step.summary)
         .map(String::trim)
         .filter(String::isNotBlank)
@@ -349,6 +349,74 @@ internal fun stepDetail(step: ConversationStep): String = when (step.kind) {
         .ifBlank { step.result.trim() }
         .let(::boundedStepDetail)
 }
+
+private fun plainReasoningDetail(value: String): String {
+    val lines = mutableListOf<String>()
+    var activeFence: String? = null
+
+    value.trim().lineSequence().forEach { line ->
+        val fence = activeFence
+        when {
+            fence != null && closesReasoningFence(line, fence) -> activeFence = null
+            fence != null -> lines += line.trimEnd()
+            else -> {
+                val openingFence = reasoningFenceMarker(line)
+                if (openingFence != null) {
+                    activeFence = openingFence
+                } else {
+                    lines += plainReasoningLine(line)
+                }
+            }
+        }
+    }
+
+    return lines.joinToString("\n")
+}
+
+private fun plainReasoningLine(value: String): String {
+    val line = value
+        .replace(ReasoningHeadingPrefix, "")
+        .replace(ReasoningListPrefix, "")
+        .replace(ReasoningQuotePrefix, "")
+        .let(::unwrapReasoningDecoration)
+    return line.replace(ReasoningInlineCode, "$1").trimEnd()
+}
+
+private fun unwrapReasoningDecoration(value: String): String {
+    val trimmed = value.trim()
+    val marker = when {
+        trimmed.startsWith("**") && trimmed.endsWith("**") -> "**"
+        trimmed.startsWith("~~") && trimmed.endsWith("~~") -> "~~"
+        else -> return value
+    }
+    if (trimmed.length < marker.length * 2) return value
+    val content = trimmed.substring(marker.length, trimmed.length - marker.length)
+
+    // Whole-line prose emphasis is presentation; compact technical tokens stay literal.
+    return content.takeIf { inner -> inner.any(Char::isWhitespace) } ?: value
+}
+
+private fun reasoningFenceMarker(value: String): String? {
+    val content = value.dropWhile { character -> character == ' ' }
+    if (value.length - content.length > 3) return null
+    val markerCharacter = content.firstOrNull()?.takeIf { character ->
+        character == '`' || character == '~'
+    } ?: return null
+    return content.takeWhile { character -> character == markerCharacter }
+        .takeIf { marker -> marker.length >= 3 }
+}
+
+private fun closesReasoningFence(value: String, openingFence: String): Boolean {
+    val content = value.dropWhile { character -> character == ' ' }
+    if (value.length - content.length > 3) return false
+    val marker = content.takeWhile { character -> character == openingFence.first() }
+    return marker.length >= openingFence.length && content.drop(marker.length).isBlank()
+}
+
+private val ReasoningHeadingPrefix = Regex("""^\s{0,3}#{1,6}\s+""")
+private val ReasoningListPrefix = Regex("""^\s{0,3}[-+*]\s+""")
+private val ReasoningQuotePrefix = Regex("""^\s{0,3}>\s?""")
+private val ReasoningInlineCode = Regex("""(?<!`)`([^`\n]+)`(?!`)""")
 
 private fun boundedStepDetail(value: String, maximum: Int = 420): String {
     if (value.length <= maximum) return value
