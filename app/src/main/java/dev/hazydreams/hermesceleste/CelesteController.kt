@@ -2167,16 +2167,21 @@ internal class CelesteController(
     }
 
     private fun resumedLiveProjection(resumed: ResumedSession): ResumedLiveProjection {
+        val baseMessages = if (resumed.retainedFailureMessage != null) {
+            settleCurrentTurnSteps(resumed.messages)
+        } else {
+            resumed.messages
+        }
         val reconstructedInflight = if (resumed.inflightCorrections.isEmpty()) {
             ResumedLiveProjection(
-                messages = resumed.messages,
+                messages = baseMessages,
                 streamingText = unpersistedInflightText(
                     inflight = resumed.inflightAssistantText,
-                    messages = resumed.messages,
+                    messages = baseMessages,
                 ),
             )
         } else {
-            var messages = resumed.messages
+            var messages = baseMessages
             val assistant = resumed.inflightAssistantText
             val offsetsUsable = resumed.inflightCorrections.all { correction ->
                 correction.assistantOffset?.let { it in 0..assistant.length } == true
@@ -2186,7 +2191,7 @@ internal class CelesteController(
                 if (segment.isBlank()) return ""
                 if (!persistedPrefixAvailable) return segment
                 persistedPrefixAvailable = false
-                return unpersistedInflightText(segment, resumed.messages)
+                return unpersistedInflightText(segment, baseMessages)
             }
             var cursor = 0
             resumed.inflightCorrections.forEachIndexed { index, correction ->

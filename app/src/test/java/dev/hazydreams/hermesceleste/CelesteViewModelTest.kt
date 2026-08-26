@@ -2274,9 +2274,10 @@ class CelesteViewModelTest {
     fun reconnectFailurePreservesAcceptedRedirectAtItsAssistantOffset() = runTest {
         val gateway = FakeGateway().apply {
             resumePayload = resumePayload(
-                messages = listOf(ConversationMessage(role = "user", text = "First", id = "server-user")),
+                messages = emptyList(),
                 running = false,
                 inflightJson = """{"user":"First","assistant":"Before.After.","streaming":false,"corrections":["Change direction"],"correction_offsets":[7],"status":"error","error":"Codex response remained incomplete."}""",
+                messageRowsJson = """{"id":"server-user","role":"user","text":"First"},{"id":"server-reasoning","role":"assistant","text":"","reasoning":"Working through it."}""",
             )
         }
         val viewModel = openConversation(gateway)
@@ -2284,11 +2285,14 @@ class CelesteViewModelTest {
 
         assertEquals(
             listOf("First", "Before.", "Change direction", "After."),
-            viewModel.state.value.messages.map { it.text },
+            viewModel.state.value.messages.filterNot { it.role == "steps" }.map { it.text },
         )
+        val steps = viewModel.state.value.messages.single { it.role == "steps" }
+        assertFalse(steps.pending)
+        assertTrue(steps.steps.none(ConversationStep::pending))
         assertEquals(
             UserMessagePlacement.MidTurnCorrection,
-            viewModel.state.value.messages[2].userPlacement,
+            viewModel.state.value.messages.single { it.text == "Change direction" }.userPlacement,
         )
         assertEquals("Codex response remained incomplete.", viewModel.state.value.messages.last().errorMessage)
         assertEquals(TurnState.Idle, viewModel.state.value.turnState)
@@ -3410,8 +3414,9 @@ class CelesteViewModelTest {
             storedSessionId: String = "stored-42",
             inflightJson: String = "null",
             queuedJson: String = "null",
+            messageRowsJson: String? = null,
         ): JsonObject {
-            val encodedMessages = messages.joinToString(",") { message ->
+            val encodedMessages = messageRowsJson ?: messages.joinToString(",") { message ->
                 """{"id":${Json.encodeToString(message.id ?: "")},"role":${Json.encodeToString(message.role)},"text":${Json.encodeToString(message.text)}}"""
             }
             return Json.parseToJsonElement(
