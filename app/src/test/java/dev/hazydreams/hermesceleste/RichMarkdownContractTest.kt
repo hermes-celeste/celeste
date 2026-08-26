@@ -3,8 +3,8 @@ package dev.hazydreams.hermesceleste
 import dev.hazydreams.hermesceleste.ui.conversation.AssistantContentBlock
 import dev.hazydreams.hermesceleste.ui.conversation.allowedMarkdownUri
 import dev.hazydreams.hermesceleste.ui.conversation.assistantContentBlocks
-import dev.hazydreams.hermesceleste.ui.conversation.containsMarkdownImageSyntax
 import dev.hazydreams.hermesceleste.ui.conversation.containsRichMarkdown
+import dev.hazydreams.hermesceleste.ui.conversation.inertMarkdownImageContent
 import dev.hazydreams.hermesceleste.ui.conversation.markdownStreamDelta
 import org.intellij.markdown.MarkdownElementTypes
 import org.intellij.markdown.MarkdownTokenTypes
@@ -114,9 +114,36 @@ class RichMarkdownContractTest {
         val content = "![private render](https://images.example/private.png?conversation=secret)"
 
         assertEquals(listOf(AssistantContentBlock.Text(content)), assistantContentBlocks(content))
-        assertTrue(containsMarkdownImageSyntax(content))
-        assertTrue(containsMarkdownImageSyntax("Before ![reference][private] after"))
-        assertFalse(containsMarkdownImageSyntax("[ordinary link](https://example.com)"))
+    }
+
+    @Test
+    fun keepsMarkdownFormattingAroundInertImages() {
+        val content = """
+            # Comparison
+
+            Before **bold** ![private render](https://images.example/private.png) after.
+
+            `![code example](https://images.example/code.png)`
+
+            \![escaped example](https://images.example/escaped.png)
+        """.trimIndent()
+        val rendered = inertMarkdownImageContent(content)
+
+        assertEquals(
+            content.replace(
+                "![private render](https://images.example/private.png)",
+                "\\![private render](https://images.example/private.png)",
+            ),
+            rendered,
+        )
+        val nodeTypes = MarkdownParser(GFMFlavourDescriptor(), cancellationToken = CancellationToken.NonCancellable)
+            .buildMarkdownTreeFromString(rendered as CharSequence)
+            .walk()
+            .map(ASTNode::type)
+            .toSet()
+        assertTrue(MarkdownElementTypes.ATX_1 in nodeTypes)
+        assertTrue(MarkdownElementTypes.STRONG in nodeTypes)
+        assertFalse(MarkdownElementTypes.IMAGE in nodeTypes)
     }
 
     @Test

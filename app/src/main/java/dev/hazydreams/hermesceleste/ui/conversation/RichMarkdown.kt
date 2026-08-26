@@ -108,6 +108,7 @@ internal fun RichMarkdown(
     modifier: Modifier = Modifier,
     widthPolicy: MarkdownWidthPolicy = MarkdownWidthPolicy.Fill,
 ) {
+    val renderedContent = remember(content) { inertMarkdownImageContent(content) }
     val platformUriHandler = LocalUriHandler.current
     val safeUriHandler = remember(platformUriHandler) {
         object : UriHandler {
@@ -124,19 +125,19 @@ internal fun RichMarkdown(
 
     CompositionLocalProvider(LocalUriHandler provides safeUriHandler) {
         SelectionContainer {
-            if (!containsRichMarkdown(content) || containsMarkdownImageSyntax(content)) {
-                RawMarkdownFallback(content = content, modifier = contentModifier)
+            if (!containsRichMarkdown(renderedContent)) {
+                RawMarkdownFallback(content = renderedContent, modifier = contentModifier)
             } else {
                 BoxWithConstraints(modifier = contentModifier) {
                     if (streaming) {
                         StreamingRichMarkdown(
-                            content = content,
+                            content = renderedContent,
                             contentWidth = maxWidth,
                             modifier = Modifier.fillMaxWidth(),
                         )
                     } else {
                         StoredRichMarkdown(
-                            content = content,
+                            content = renderedContent,
                             contentWidth = maxWidth,
                             modifier = Modifier.fillMaxWidth(),
                         )

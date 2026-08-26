@@ -28,6 +28,8 @@ import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
+import okhttp3.Call
+import okhttp3.Callback
 import okhttp3.Cookie
 import okhttp3.CookieJar
 import okhttp3.HttpUrl
@@ -519,6 +521,7 @@ class DashboardClient(
                 request = request,
                 operation = "Hermes image",
                 maxBytes = MAX_GATEWAY_IMAGE_RESPONSE_BYTES,
+                callTimeoutSeconds = GATEWAY_IMAGE_CALL_TIMEOUT_SECONDS,
             ) as? JsonObject ?: throw InvalidDashboardResponse("Hermes returned no image.")
             decodeGatewayImageDataUrl(
                 root["dataUrl"]?.jsonPrimitive?.contentOrNull
@@ -815,8 +818,51 @@ class DashboardClient(
         throw TransportUnavailable("Could not reach Hermes for $operation.", error)
     }
 
-    private fun executeBoundedJson(request: Request, operation: String, maxBytes: Long): JsonElement = try {
-        httpClient.newCall(request).execute().use { response ->
+    private suspend fun executeBoundedJson(
+        request: Request,
+        operation: String,
+        maxBytes: Long,
+        callTimeoutSeconds: Long,
+    ): JsonElement = suspendCancellableCoroutine { continuation ->
+        val completed = AtomicBoolean(false)
+        val call = httpClient.newCall(request).apply {
+            timeout().timeout(callTimeoutSeconds, TimeUnit.SECONDS)
+        }
+
+        fun succeed(value: JsonElement) {
+            if (completed.compareAndSet(false, true)) continuation.resume(value)
+        }
+
+        fun fail(error: Throwable) {
+            if (completed.compareAndSet(false, true)) continuation.resumeWithException(error)
+        }
+
+        call.enqueue(
+            object : Callback {
+                override fun onFailure(call: Call, e: IOException) {
+                    fail(TransportUnavailable("Could not reach Hermes for $operation.", e))
+                }
+
+                override fun onResponse(call: Call, response: Response) {
+                    try {
+                        succeed(readBoundedJson(response, operation, maxBytes))
+                    } catch (error: DashboardFailure) {
+                        fail(error)
+                    } catch (error: IOException) {
+                        fail(TransportUnavailable("Could not reach Hermes for $operation.", error))
+                    } catch (error: Throwable) {
+                        fail(InvalidDashboardResponse("$operation returned an unreadable response.", error))
+                    }
+                }
+            },
+        )
+        continuation.invokeOnCancellation {
+            if (completed.compareAndSet(false, true)) call.cancel()
+        }
+    }
+
+    private fun readBoundedJson(response: Response, operation: String, maxBytes: Long): JsonElement =
+        response.use {
             if (!response.isSuccessful) throw failureFor(response.code, operation)
             if (response.body.contentLength() > maxBytes) {
                 throw InvalidDashboardResponse("$operation returned too much data.")
@@ -832,11 +878,6 @@ class DashboardClient(
             runCatching { json.parseToJsonElement(body.decodeToString()) }
                 .getOrElse { throw InvalidDashboardResponse("$operation returned an unreadable response.", it) }
         }
-    } catch (error: DashboardFailure) {
-        throw error
-    } catch (error: IOException) {
-        throw TransportUnavailable("Could not reach Hermes for $operation.", error)
-    }
 
     private fun decodeGatewayImageDataUrl(dataUrl: String): ByteArray {
         val marker = ";base64,"
@@ -1079,6 +1120,7 @@ class DashboardClient(
         const val MAX_GATEWAY_IMAGE_BYTES = 16 * 1024 * 1024
         const val MAX_GATEWAY_IMAGE_BASE64_CHARS = ((MAX_GATEWAY_IMAGE_BYTES + 2) / 3) * 4
         const val MAX_GATEWAY_IMAGE_RESPONSE_BYTES = 24L * 1024 * 1024
+        const val GATEWAY_IMAGE_CALL_TIMEOUT_SECONDS = 60L
         const val SESSION_RESUME_REQUEST_ID = "session-resume"
         val JSON_MEDIA_TYPE = "application/json; charset=utf-8".toMediaType()
     }

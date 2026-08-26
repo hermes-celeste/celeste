@@ -1,5 +1,11 @@
 package dev.hazydreams.hermesceleste.ui.conversation
 
+import org.intellij.markdown.MarkdownElementTypes
+import org.intellij.markdown.ast.ASTNode
+import org.intellij.markdown.flavours.gfm.GFMFlavourDescriptor
+import org.intellij.markdown.parser.CancellationToken
+import org.intellij.markdown.parser.MarkdownParser
+
 /** Only hand explicit web links to the host platform. */
 internal fun allowedMarkdownUri(uri: String): Boolean {
     if (uri.isBlank() || uri.any(Char::isWhitespace)) return false
@@ -120,8 +126,29 @@ private val gatewayImageExtensions = setOf("png", "jpg", "jpeg", "gif", "webp", 
 internal fun markdownStreamDelta(rendered: String, incoming: String): String? =
     if (incoming.startsWith(rendered)) incoming.removePrefix(rendered) else null
 
-/** Keeps ordinary Markdown image syntax readable without resolving its destination. */
-internal fun containsMarkdownImageSyntax(content: String): Boolean = content.contains("![")
+/** Keeps parsed Markdown images inert while preserving the rest of the document. */
+internal fun inertMarkdownImageContent(content: String): String {
+    if (!content.contains("![")) return content
+    val root = MarkdownParser(
+        GFMFlavourDescriptor(),
+        cancellationToken = CancellationToken.NonCancellable,
+    ).buildMarkdownTreeFromString(content as CharSequence)
+    val imageOffsets = root.descendants()
+        .filter { it.type == MarkdownElementTypes.IMAGE }
+        .map(ASTNode::startOffset)
+        .distinct()
+        .sortedDescending()
+        .toList()
+    if (imageOffsets.isEmpty()) return content
+    return StringBuilder(content).apply {
+        imageOffsets.forEach { insert(it, '\\') }
+    }.toString()
+}
+
+private fun ASTNode.descendants(): Sequence<ASTNode> = sequence {
+    yield(this@descendants)
+    children.forEach { yieldAll(it.descendants()) }
+}
 
 private val orderedListMarker = Regex("^\\d+[.)]\\s+")
 private val tableSeparator = Regex("^\\|?\\s*:?-{3,}:?\\s*(\\|\\s*:?-{3,}:?\\s*)+\\|?$")
