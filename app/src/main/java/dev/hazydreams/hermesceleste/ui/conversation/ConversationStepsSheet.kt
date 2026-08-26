@@ -353,21 +353,34 @@ internal fun stepDetail(step: ConversationStep): String = when (step.kind) {
 private fun plainReasoningDetail(value: String): String = value
     .trim()
     .lineSequence()
-    .joinToString("\n") { line ->
-        line
-            .replace(ReasoningHeadingPrefix, "")
-            .replace(ReasoningListPrefix, "")
-            .replace(ReasoningQuotePrefix, "")
-            .replace(ReasoningLink, "$1")
-            .replace(ReasoningDecoration, "")
-            .trimEnd()
+    .joinToString("\n", transform = ::plainReasoningLine)
+
+private fun plainReasoningLine(value: String): String {
+    val line = value
+        .replace(ReasoningHeadingPrefix, "")
+        .replace(ReasoningListPrefix, "")
+        .replace(ReasoningQuotePrefix, "")
+    val result = StringBuilder()
+    var cursor = 0
+    ReasoningInlineCode.findAll(line).forEach { match ->
+        result.append(plainReasoningSpan(line.substring(cursor, match.range.first)))
+        result.append(match.groupValues[1])
+        cursor = match.range.last + 1
     }
+    result.append(plainReasoningSpan(line.substring(cursor)))
+    return result.toString().trimEnd()
+}
+
+private fun plainReasoningSpan(value: String): String = value
+    .replace(ReasoningLink, "$1")
+    .replace(ReasoningDecoration, "")
 
 private val ReasoningHeadingPrefix = Regex("""^\s{0,3}#{1,6}\s+""")
 private val ReasoningListPrefix = Regex("""^\s*[-+*]\s+""")
 private val ReasoningQuotePrefix = Regex("""^\s*>\s?""")
+private val ReasoningInlineCode = Regex("""`([^`\n]+)`""")
 private val ReasoningLink = Regex("""!?\[([^]]+)]\([^)]+\)""")
-private val ReasoningDecoration = Regex("""\*\*|__|~~|`""")
+private val ReasoningDecoration = Regex("""\*\*|~~""")
 
 private fun boundedStepDetail(value: String, maximum: Int = 420): String {
     if (value.length <= maximum) return value

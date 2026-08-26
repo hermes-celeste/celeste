@@ -39,7 +39,8 @@ class ConversationStepsSheetTest {
             detail = """
                 ## Closing issues
                 **Planning programmatic checkbox updates**
-                - Keep `TalkBack` validation visible
+                - Keep `TalkBack`, `__init__`, and `**kwargs` visible
+                - Preserve __dirname outside code too
 
                 **Updating checkbox statuses and closing issue**
             """.trimIndent(),
@@ -49,7 +50,8 @@ class ConversationStepsSheetTest {
             """
                 Closing issues
                 Planning programmatic checkbox updates
-                Keep TalkBack validation visible
+                Keep TalkBack, __init__, and **kwargs visible
+                Preserve __dirname outside code too
 
                 Updating checkbox statuses and closing issue
             """.trimIndent(),
