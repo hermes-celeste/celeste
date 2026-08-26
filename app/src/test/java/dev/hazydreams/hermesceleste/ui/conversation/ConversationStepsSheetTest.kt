@@ -84,4 +84,32 @@ class ConversationStepsSheetTest {
             stepDetail(reasoning),
         )
     }
+
+    @Test
+    fun reasoningDetailPreservesIndentedCodeAndDelimiterOnlyLines() {
+        val reasoning = ConversationStep(
+            id = "reasoning-indented-code",
+            kind = ConversationStepKind.Reasoning,
+            detail = """
+                Before:
+                    - old value
+                    + new value
+                **
+                ***
+                ~~
+            """.trimIndent(),
+        )
+
+        assertEquals(
+            """
+                Before:
+                    - old value
+                    + new value
+                **
+                ***
+                ~~
+            """.trimIndent(),
+            stepDetail(reasoning),
+        )
+    }
 }

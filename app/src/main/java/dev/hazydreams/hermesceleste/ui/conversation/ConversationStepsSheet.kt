@@ -389,6 +389,7 @@ private fun unwrapReasoningDecoration(value: String): String {
         trimmed.startsWith("~~") && trimmed.endsWith("~~") -> "~~"
         else -> return value
     }
+    if (trimmed.length < marker.length * 2) return value
     val content = trimmed.substring(marker.length, trimmed.length - marker.length)
 
     // Whole-line prose emphasis is presentation; compact technical tokens stay literal.
@@ -413,7 +414,7 @@ private fun closesReasoningFence(value: String, openingFence: String): Boolean {
 }
 
 private val ReasoningHeadingPrefix = Regex("""^\s{0,3}#{1,6}\s+""")
-private val ReasoningListPrefix = Regex("""^\s*[-+*]\s+""")
+private val ReasoningListPrefix = Regex("""^\s{0,3}[-+*]\s+""")
 private val ReasoningQuotePrefix = Regex("""^\s*>\s?""")
 private val ReasoningInlineCode = Regex("""(?<!`)`([^`\n]+)`(?!`)""")
 
