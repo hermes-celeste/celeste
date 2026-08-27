@@ -587,6 +587,48 @@ class ConversationEventReducerTest {
     }
 
     @Test
+    fun midTurnInterimRetagsAToolSealedPrefixAsCommentary() {
+        val initial = ConversationEventReduction(
+            projection = projection().copy(
+                messages = listOf(
+                    ConversationMessage(
+                        role = "user",
+                        text = "First",
+                        userPlacement = UserMessagePlacement.Prompt,
+                    ),
+                    ConversationMessage(
+                        role = "assistant",
+                        text = "Before.",
+                        assistantContentKind = AssistantContentKind.Unclassified,
+                    ),
+                    ConversationMessage(
+                        role = "user",
+                        text = "Change direction",
+                        id = "redirect-1",
+                        userPlacement = UserMessagePlacement.MidTurnCorrection,
+                    ),
+                ),
+                streamingText = "After.",
+                turnState = TurnState.Running,
+            ),
+            localMessageCounter = 0L,
+        )
+
+        val result = initial.reduce(
+            event(
+                "message.interim",
+                """{"text":"Before.After.","already_streamed":true}""",
+            ),
+        )
+
+        val assistantSegments = result.projection.messages.filter { it.role == "assistant" }
+        assertEquals(listOf("Before.", "After."), assistantSegments.map { it.text })
+        assertTrue(assistantSegments.all {
+            it.assistantContentKind == AssistantContentKind.Commentary
+        })
+    }
+
+    @Test
     fun midTurnCompletionRetagsTheLocallySealedPrefixAsResponse() {
         val initial = ConversationEventReduction(
             projection = projection().copy(

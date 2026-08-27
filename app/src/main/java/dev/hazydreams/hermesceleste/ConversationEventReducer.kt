@@ -519,10 +519,7 @@ private fun reconcileRedirectedAssistantContent(
     val reconciledMessages = messages.toMutableList().also { next ->
         assistantIndices.forEach { index ->
             val message = next[index]
-            if (
-                message.interim &&
-                message.assistantContentKind == AssistantContentKind.Unclassified
-            ) {
+            if (message.assistantContentKind == AssistantContentKind.Unclassified) {
                 next[index] = message.copy(assistantContentKind = assistantContentKind)
             }
         }
