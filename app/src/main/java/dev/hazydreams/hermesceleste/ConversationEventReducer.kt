@@ -97,7 +97,11 @@ internal fun reduceConversationEvent(
         }
 
         "message.start" -> {
-            if (next.streamingText.isNotBlank()) next = next.finalizeAssistant()
+            if (next.streamingText.isNotBlank()) {
+                next = next.finalizeAssistant(
+                    assistantContentKind = AssistantContentKind.Unclassified,
+                )
+            }
             next.copy(
                 streamingText = "",
                 turnState = TurnState.Running,
@@ -167,7 +171,11 @@ internal fun reduceConversationEvent(
             if (echoedStreamingAnswer) {
                 next = next.removeTrailingReasoningEcho(content)
             }
-            next = next.finalizeAssistant(content, keepRunning = false)
+            next = next.finalizeAssistant(
+                suppliedContent = content,
+                keepRunning = false,
+                assistantContentKind = AssistantContentKind.Response,
+            )
             next = next.removeReasoningEchoOfFinalAnswer(echoedStreamingAnswer)
             next.copy(
                 messages = clearUnansweredClarifications(settleCurrentTurnSteps(next.messages)),
@@ -182,7 +190,10 @@ internal fun reduceConversationEvent(
         }
 
         "error", "message.error" -> {
-            next = next.finalizeAssistant(keepRunning = false)
+            next = next.finalizeAssistant(
+                keepRunning = false,
+                assistantContentKind = AssistantContentKind.Unclassified,
+            )
             next.copy(
                 messages = clearUnansweredClarifications(settleCurrentTurnSteps(next.messages)),
                 turnState = TurnState.Idle,
@@ -192,7 +203,10 @@ internal fun reduceConversationEvent(
         }
 
         "message.interrupted", "session.interrupted" -> {
-            next = next.finalizeAssistant(keepRunning = false)
+            next = next.finalizeAssistant(
+                keepRunning = false,
+                assistantContentKind = AssistantContentKind.Unclassified,
+            )
             next.copy(
                 messages = clearUnansweredClarifications(settleCurrentTurnSteps(next.messages)),
                 delegateAgents = interruptActiveDelegateAgents(next.delegateAgents),
@@ -232,7 +246,11 @@ internal fun reduceConversationEvent(
                 next
             } else {
                 if (next.streamingText.isNotBlank()) {
-                    next = next.finalizeAssistant(keepRunning = true, interim = true)
+                    next = next.finalizeAssistant(
+                        keepRunning = true,
+                        interim = true,
+                        assistantContentKind = AssistantContentKind.Unclassified,
+                    )
                 }
                 next.copy(
                     messages = appendReasoningToCurrentTurn(
@@ -249,7 +267,10 @@ internal fun reduceConversationEvent(
 
         "tool.start" -> {
             if (next.streamingText.isNotBlank()) {
-                next = next.finalizeAssistant(keepRunning = true)
+                next = next.finalizeAssistant(
+                    keepRunning = true,
+                    assistantContentKind = AssistantContentKind.Unclassified,
+                )
             }
             val name = event.payload.string("name") ?: "tool"
             val context = event.payload.string("args_text")
@@ -385,7 +406,7 @@ private fun ConversationProjection.finalizeAssistant(
     suppliedContent: String = "",
     keepRunning: Boolean = turnState == TurnState.Running,
     interim: Boolean = false,
-    assistantContentKind: AssistantContentKind = AssistantContentKind.Response,
+    assistantContentKind: AssistantContentKind,
 ): ConversationProjection {
     val latestUserIndex = messages.indexOfLast { it.role == "user" }
     val latestUserPlacement = messages.getOrNull(latestUserIndex)?.userPlacement

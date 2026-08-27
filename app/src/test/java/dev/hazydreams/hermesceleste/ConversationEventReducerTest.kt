@@ -387,6 +387,28 @@ class ConversationEventReducerTest {
     }
 
     @Test
+    fun localStreamSealsRemainUnclassifiedUntilHermesNamesThePhase() {
+        val localBoundaries = listOf(
+            event("message.start"),
+            event("reasoning.delta", """{"text":"Check the next step."}"""),
+            event("tool.start", """{"tool_id":"tool-1","name":"read_file"}"""),
+            event("message.interrupted"),
+            event("message.error", """{"message":"The provider connection closed."}"""),
+        )
+
+        localBoundaries.forEach { boundary ->
+            val result = reduceEvents(
+                event("message.start"),
+                event("message.delta", """{"text":"I’m checking."}"""),
+                boundary,
+            )
+
+            val assistant = result.projection.messages.single { it.role == "assistant" }
+            assertEquals(boundary.type, AssistantContentKind.Unclassified, assistant.assistantContentKind)
+        }
+    }
+
+    @Test
     fun finalCompletionThatCoalescesInterimBecomesAResponse() {
         val result = reduceEvents(
             event("message.start"),
