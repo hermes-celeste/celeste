@@ -317,6 +317,7 @@ private fun CompletedTimelineItem() {
 
 internal fun stepTitle(step: ConversationStep): String = when (step.kind) {
     ConversationStepKind.Reasoning -> "Thought"
+    ConversationStepKind.Commentary -> "Update"
     ConversationStepKind.Tool -> when (step.toolName.orEmpty().lowercase()) {
         "terminal" -> "Ran command"
         "execute_code" -> "Ran code"
@@ -340,7 +341,8 @@ internal fun stepTitle(step: ConversationStep): String = when (step.kind) {
 }
 
 internal fun stepDetail(step: ConversationStep): String = when (step.kind) {
-    ConversationStepKind.Reasoning -> plainReasoningDetail(step.detail)
+    ConversationStepKind.Reasoning,
+    ConversationStepKind.Commentary -> plainReasoningDetail(step.detail)
     ConversationStepKind.Tool -> listOf(step.context, step.summary)
         .map(String::trim)
         .filter(String::isNotBlank)

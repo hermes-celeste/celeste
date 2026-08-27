@@ -400,6 +400,7 @@ internal fun decodeGatewayConversation(elements: List<JsonElement>): DecodedGate
                                 fallback = "resume-$index-commentary-$commentaryIndex",
                             ),
                             interim = true,
+                            assistantContentKind = AssistantContentKind.Commentary,
                         ),
                     )
                     commentaryIndex += 1

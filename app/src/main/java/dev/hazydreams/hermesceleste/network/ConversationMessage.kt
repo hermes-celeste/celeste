@@ -2,8 +2,14 @@ package dev.hazydreams.hermesceleste.network
 
 import dev.hazydreams.hermesceleste.ConversationAttachment
 
+enum class AssistantContentKind {
+    Response,
+    Commentary,
+}
+
 enum class ConversationStepKind {
     Reasoning,
+    Commentary,
     Tool,
 }
 
@@ -30,6 +36,7 @@ data class ConversationMessage(
     val id: String? = null,
     val pending: Boolean = false,
     val interim: Boolean = false,
+    val assistantContentKind: AssistantContentKind = AssistantContentKind.Response,
     val errorMessage: String? = null,
     val userPlacement: UserMessagePlacement = UserMessagePlacement.Prompt,
     val steps: List<ConversationStep> = emptyList(),

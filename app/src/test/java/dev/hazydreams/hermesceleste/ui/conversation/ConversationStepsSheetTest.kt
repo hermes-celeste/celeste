@@ -60,6 +60,21 @@ class ConversationStepsSheetTest {
     }
 
     @Test
+    fun commentaryUsesAnUpdateLabelAndTheSameReadableDetailProjection() {
+        val commentary = ConversationStep(
+            id = "commentary-1",
+            kind = ConversationStepKind.Commentary,
+            detail = "**Checking the current implementation**\n- Reading `GatewaySessionApi.kt`",
+        )
+
+        assertEquals("Update", stepTitle(commentary))
+        assertEquals(
+            "Checking the current implementation\nReading GatewaySessionApi.kt",
+            stepDetail(commentary),
+        )
+    }
+
+    @Test
     fun reasoningDetailPreservesLiteralSyntaxAndFencedCode() {
         val reasoning = ConversationStep(
             id = "reasoning-technical",

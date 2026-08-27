@@ -137,7 +137,7 @@ internal fun CelesteRoutes(
                     ConversationScreen(
                         conversationKey = activeSummary?.id ?: LOCAL_DRAFT_KEY,
                         title = activeSummary?.title ?: "New conversation",
-                        messages = ui.messages,
+                        messages = ui.presentedMessages,
                         taskProgress = ui.taskProgress,
                         delegateAgents = ui.delegateAgents,
                         streamingText = ui.streamingText,

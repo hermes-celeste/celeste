@@ -1,5 +1,6 @@
 package dev.hazydreams.hermesceleste
 
+import dev.hazydreams.hermesceleste.network.AssistantContentKind
 import dev.hazydreams.hermesceleste.network.ConversationMessage
 import dev.hazydreams.hermesceleste.network.ConversationStepKind
 import dev.hazydreams.hermesceleste.network.DelegateAgentActivity
@@ -140,8 +141,14 @@ internal fun reduceConversationEvent(
                     text.ifBlank { next.streamingText },
                     keepRunning = true,
                     interim = true,
+                    assistantContentKind = AssistantContentKind.Commentary,
                 )
-                text.isNotBlank() -> next.finalizeAssistant(text, keepRunning = true, interim = true)
+                text.isNotBlank() -> next.finalizeAssistant(
+                    suppliedContent = text,
+                    keepRunning = true,
+                    interim = true,
+                    assistantContentKind = AssistantContentKind.Commentary,
+                )
                 else -> next
             }
         }
@@ -378,6 +385,7 @@ private fun ConversationProjection.finalizeAssistant(
     suppliedContent: String = "",
     keepRunning: Boolean = turnState == TurnState.Running,
     interim: Boolean = false,
+    assistantContentKind: AssistantContentKind = AssistantContentKind.Response,
 ): ConversationProjection {
     val latestUserIndex = messages.indexOfLast { it.role == "user" }
     val latestUserPlacement = messages.getOrNull(latestUserIndex)?.userPlacement
@@ -407,6 +415,7 @@ private fun ConversationProjection.finalizeAssistant(
                 next[previousIndex] = previous.copy(
                     text = if (finalText.length >= previous.text.length) finalText else previous.text,
                     interim = false,
+                    assistantContentKind = assistantContentKind,
                 )
             }
             finalText.isNotBlank() && previous?.let { it.role == "assistant" && it.text == finalText } != true ->
@@ -416,6 +425,7 @@ private fun ConversationProjection.finalizeAssistant(
                         role = "assistant",
                         text = finalText,
                         interim = interim,
+                        assistantContentKind = assistantContentKind,
                     ),
                 )
             else -> messages
@@ -492,6 +502,7 @@ private fun finalizeAssistantBeforeNextTurn(
             next[previousAssistantIndex] = previous.copy(
                 text = if (finalText.length >= previous.text.length) finalText else previous.text,
                 interim = false,
+                assistantContentKind = AssistantContentKind.Response,
             )
         }
         previous?.text == finalText -> messages

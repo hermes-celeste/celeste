@@ -1,0 +1,65 @@
+package dev.hazydreams.hermesceleste
+
+import dev.hazydreams.hermesceleste.network.AssistantContentKind
+import dev.hazydreams.hermesceleste.network.ConversationMessage
+import dev.hazydreams.hermesceleste.network.ConversationStep
+import dev.hazydreams.hermesceleste.network.ConversationStepKind
+
+internal enum class CommentaryPresentation {
+    Transcript,
+    Thinking,
+}
+
+/**
+ * Projects canonical conversation content into its display placement without discarding provenance.
+ * Streaming remains outside this settled-message projection until Hermes seals the segment.
+ */
+internal fun presentConversationMessages(
+    messages: List<ConversationMessage>,
+    commentaryPresentation: CommentaryPresentation,
+): List<ConversationMessage> {
+    if (commentaryPresentation == CommentaryPresentation.Transcript) return messages
+
+    return buildList {
+        messages.forEachIndexed { index, message ->
+            val presented = if (
+                message.role == "assistant" &&
+                message.assistantContentKind == AssistantContentKind.Commentary &&
+                message.text.isNotBlank()
+            ) {
+                message.asCommentarySteps(index)
+            } else {
+                message
+            }
+            appendPresentedMessage(presented)
+        }
+    }
+}
+
+private fun ConversationMessage.asCommentarySteps(index: Int): ConversationMessage {
+    val identity = id?.takeIf(String::isNotBlank) ?: "index-$index"
+    return ConversationMessage(
+        role = "steps",
+        text = "",
+        id = "steps:commentary:$identity",
+        steps = listOf(
+            ConversationStep(
+                id = "commentary:$identity",
+                kind = ConversationStepKind.Commentary,
+                detail = text,
+            ),
+        ),
+    )
+}
+
+private fun MutableList<ConversationMessage>.appendPresentedMessage(message: ConversationMessage) {
+    val previous = lastOrNull()
+    if (previous?.role == "steps" && message.role == "steps") {
+        this[lastIndex] = previous.copy(
+            pending = previous.pending || message.pending,
+            steps = previous.steps + message.steps,
+        )
+    } else {
+        add(message)
+    }
+}

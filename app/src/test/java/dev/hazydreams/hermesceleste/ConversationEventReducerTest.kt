@@ -1,5 +1,6 @@
 package dev.hazydreams.hermesceleste
 
+import dev.hazydreams.hermesceleste.network.AssistantContentKind
 import dev.hazydreams.hermesceleste.network.ConversationMessage
 import dev.hazydreams.hermesceleste.network.ConversationStep
 import dev.hazydreams.hermesceleste.network.ConversationStepKind
@@ -352,11 +353,51 @@ class ConversationEventReducerTest {
         )
         assertEquals("I checked the first part.", messages[2].text)
         assertTrue(messages[2].interim)
+        assertEquals(AssistantContentKind.Commentary, messages[2].assistantContentKind)
+        assertEquals(AssistantContentKind.Response, messages.last().assistantContentKind)
         assertEquals("First thought.", messages[1].steps.single().detail)
         assertEquals("Second thought.", messages[3].steps.single().detail)
         val thinkingCapsules = messages.filter { it.role == "steps" }
         assertTrue(thinkingCapsules.none { it.pending })
         assertTrue(thinkingCapsules.flatMap { it.steps }.none { it.pending })
+    }
+
+    @Test
+    fun assistantDeltasStreamNormallyUntilInterimSealsCommentary() {
+        var result = reduceEvents(
+            event("message.start"),
+            event("message.delta", """{"text":"I’m checking the implementation."}"""),
+        )
+
+        assertEquals("I’m checking the implementation.", result.projection.streamingText)
+        assertEquals(listOf("user"), result.projection.messages.map { it.role })
+
+        result = result.reduce(
+            event(
+                "message.interim",
+                """{"text":"I’m checking the implementation.","already_streamed":true}""",
+            ),
+        )
+
+        assertEquals("", result.projection.streamingText)
+        val commentary = result.projection.messages.last()
+        assertEquals("I’m checking the implementation.", commentary.text)
+        assertTrue(commentary.interim)
+        assertEquals(AssistantContentKind.Commentary, commentary.assistantContentKind)
+    }
+
+    @Test
+    fun finalCompletionThatCoalescesInterimBecomesAResponse() {
+        val result = reduceEvents(
+            event("message.start"),
+            event("message.interim", """{"text":"Everything checks out."}"""),
+            event("message.complete", """{"content":"Everything checks out.","status":"complete"}"""),
+        )
+
+        val assistant = result.projection.messages.single { it.role == "assistant" }
+        assertEquals("Everything checks out.", assistant.text)
+        assertFalse(assistant.interim)
+        assertEquals(AssistantContentKind.Response, assistant.assistantContentKind)
     }
 
     @Test

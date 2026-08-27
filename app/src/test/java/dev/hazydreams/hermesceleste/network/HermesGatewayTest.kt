@@ -495,6 +495,8 @@ One test failed
         assertEquals("Compare current state.", messages[1].steps.single().detail)
         assertEquals(commentary, messages[2].text)
         assertTrue(messages[2].interim)
+        assertEquals(AssistantContentKind.Commentary, messages[2].assistantContentKind)
+        assertEquals(AssistantContentKind.Response, messages.last().assistantContentKind)
         assertEquals(
             listOf(ConversationStepKind.Reasoning, ConversationStepKind.Tool),
             messages[3].steps.map { it.kind },

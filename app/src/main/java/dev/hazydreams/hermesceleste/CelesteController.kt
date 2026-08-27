@@ -105,6 +105,7 @@ internal data class CelesteUiState(
     val selectedProfile: String = "default",
     val activeSummary: StoredSession? = null,
     val messages: List<ConversationMessage> = emptyList(),
+    val commentaryPresentation: CommentaryPresentation = CommentaryPresentation.Transcript,
     val taskProgress: TaskProgress? = null,
     val delegateAgents: List<DelegateAgentActivity> = emptyList(),
     val streamingText: String = "",
@@ -118,7 +119,10 @@ internal data class CelesteUiState(
     val resumeExhausted: Boolean = false,
     val loadingMessage: String? = null,
     val errorMessage: String? = null,
-)
+) {
+    val presentedMessages: List<ConversationMessage>
+        get() = presentConversationMessages(messages, commentaryPresentation)
+}
 
 private data class LoadedDashboard(
     val credential: GatewayCredential,
