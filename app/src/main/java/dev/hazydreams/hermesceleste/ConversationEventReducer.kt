@@ -401,7 +401,12 @@ private fun ConversationProjection.finalizeAssistant(
     }
     val finalText = mergedFinalText(adjustedSupplied, streamingText)
     val nextMessages = if (latestUserPlacement == UserMessagePlacement.NextTurn) {
-        finalizeAssistantBeforeNextTurn(messages, latestUserIndex, finalText)
+        finalizeAssistantBeforeNextTurn(
+            messages = messages,
+            nextTurnUserIndex = latestUserIndex,
+            finalText = finalText,
+            assistantContentKind = assistantContentKind,
+        )
     } else {
         val previousIndex = currentTurnLastAssistantIndex(messages)
         val previous = messages.getOrNull(previousIndex)
@@ -483,6 +488,7 @@ private fun finalizeAssistantBeforeNextTurn(
     messages: List<ConversationMessage>,
     nextTurnUserIndex: Int,
     finalText: String,
+    assistantContentKind: AssistantContentKind,
 ): List<ConversationMessage> {
     if (nextTurnUserIndex < 0) return messages
     val markerId = messages[nextTurnUserIndex].id
@@ -502,14 +508,18 @@ private fun finalizeAssistantBeforeNextTurn(
             next[previousAssistantIndex] = previous.copy(
                 text = if (finalText.length >= previous.text.length) finalText else previous.text,
                 interim = false,
-                assistantContentKind = AssistantContentKind.Response,
+                assistantContentKind = assistantContentKind,
             )
         }
         previous?.text == finalText -> messages
         else -> messages.toMutableList().also { next ->
             next.add(
                 completionInsertionIndex,
-                ConversationMessage(role = "assistant", text = finalText),
+                ConversationMessage(
+                    role = "assistant",
+                    text = finalText,
+                    assistantContentKind = assistantContentKind,
+                ),
             )
         }
     }

@@ -419,6 +419,72 @@ class ConversationEventReducerTest {
     }
 
     @Test
+    fun queuedTurnInterimPreservesCommentaryProvenance() {
+        val commentary = "I checked the first part."
+        val initial = ConversationEventReduction(
+            projection = projection().copy(
+                messages = listOf(
+                    ConversationMessage(
+                        role = "user",
+                        text = "First",
+                        userPlacement = UserMessagePlacement.Prompt,
+                    ),
+                    ConversationMessage(
+                        role = "assistant",
+                        text = commentary,
+                        interim = true,
+                    ),
+                    ConversationMessage(
+                        role = "user",
+                        text = "Run this next",
+                        id = "queued-1",
+                        userPlacement = UserMessagePlacement.NextTurn,
+                    ),
+                ),
+                turnState = TurnState.Running,
+            ),
+            localMessageCounter = 0L,
+        )
+
+        val result = initial.reduce(
+            event("message.interim", """{"text":"$commentary"}"""),
+        )
+
+        val assistant = result.projection.messages.single { it.role == "assistant" }
+        assertEquals(AssistantContentKind.Commentary, assistant.assistantContentKind)
+    }
+
+    @Test
+    fun queuedTurnInterimInsertionPreservesCommentaryProvenance() {
+        val initial = ConversationEventReduction(
+            projection = projection().copy(
+                messages = listOf(
+                    ConversationMessage(
+                        role = "user",
+                        text = "First",
+                        userPlacement = UserMessagePlacement.Prompt,
+                    ),
+                    ConversationMessage(
+                        role = "user",
+                        text = "Run this next",
+                        id = "queued-1",
+                        userPlacement = UserMessagePlacement.NextTurn,
+                    ),
+                ),
+                turnState = TurnState.Running,
+            ),
+            localMessageCounter = 0L,
+        )
+
+        val result = initial.reduce(
+            event("message.interim", """{"text":"I checked the first part."}"""),
+        )
+
+        val assistant = result.projection.messages.single { it.role == "assistant" }
+        assertEquals(AssistantContentKind.Commentary, assistant.assistantContentKind)
+    }
+
+    @Test
     fun queuedTurnPreservesDistinctInterimAndFinalAssistantSegments() {
         val initial = ConversationEventReduction(
             projection = projection().copy(
