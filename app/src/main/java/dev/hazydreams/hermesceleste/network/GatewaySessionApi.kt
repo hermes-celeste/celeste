@@ -490,6 +490,11 @@ internal fun decodeGatewayConversation(elements: List<JsonElement>): DecodedGate
             role = role,
             text = userPresentation?.text ?: text,
             id = uniqueMessageId(sourceIdentity, "resume-$index"),
+            assistantContentKind = if (role == "assistant") {
+                AssistantContentKind.Response
+            } else {
+                AssistantContentKind.Unclassified
+            },
             attachments = userPresentation?.attachments.orEmpty(),
         )
         messages = if (role == "user") {

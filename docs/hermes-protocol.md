@@ -71,7 +71,7 @@ Image and file bytes are staged into the current runtime before `prompt.submit`.
 Celeste recognizes message lifecycle, interim assistant prose, reasoning, tools, delegated-agent activity, interruption, busy/session status, compaction, background-process completion, and top-level errors.
 
 - Reasoning and tools form chronological Steps segments.
-- Assistant deltas stream normally; `message.interim` seals the streamed segment as commentary.
+- Assistant deltas stream normally. Locally sealed fragments remain unclassified until `message.interim` or `message.complete` reconciles them with authoritative commentary or response provenance.
 - Commentary retains its semantic provenance in canonical conversation content. The current presentation keeps it as ordinary transcript prose and splits adjacent Steps segments.
 - `thinking.delta` is transient activity status, not a persisted reasoning step.
 - Tool start and completion correlate by stable tool-call identity.

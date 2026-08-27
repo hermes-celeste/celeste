@@ -394,29 +394,35 @@ private fun ConversationProjection.finalizeAssistant(
         UserMessagePlacement.NextTurn -> latestMidTurnCorrectionIndex(messages, latestUserIndex)
         else -> -1
     }
-    val adjustedSupplied = if (correctionIndex >= 0) {
-        redirectedAssistantSuffix(suppliedContent, messages, correctionIndex)
+    val redirectedContent = if (correctionIndex >= 0) {
+        reconcileRedirectedAssistantContent(
+            suppliedContent = suppliedContent,
+            messages = messages,
+            correctionIndex = correctionIndex,
+            assistantContentKind = assistantContentKind,
+        )
     } else {
-        suppliedContent
+        RedirectedAssistantContent(messages, suppliedContent)
     }
-    val finalText = mergedFinalText(adjustedSupplied, streamingText)
+    val reconciledMessages = redirectedContent.messages
+    val finalText = mergedFinalText(redirectedContent.remainingContent, streamingText)
     val nextMessages = if (latestUserPlacement == UserMessagePlacement.NextTurn) {
         finalizeAssistantBeforeNextTurn(
-            messages = messages,
+            messages = reconciledMessages,
             nextTurnUserIndex = latestUserIndex,
             finalText = finalText,
             assistantContentKind = assistantContentKind,
         )
     } else {
-        val previousIndex = currentTurnLastAssistantIndex(messages)
-        val previous = messages.getOrNull(previousIndex)
+        val previousIndex = currentTurnLastAssistantIndex(reconciledMessages)
+        val previous = reconciledMessages.getOrNull(previousIndex)
         val continuesInterim = !interim &&
             previous?.role == "assistant" &&
             previous.interim &&
             finalText.isNotBlank() &&
             (finalText.startsWith(previous.text) || previous.text.startsWith(finalText))
         when {
-            continuesInterim -> messages.toMutableList().also { next ->
+            continuesInterim -> reconciledMessages.toMutableList().also { next ->
                 next[previousIndex] = previous.copy(
                     text = if (finalText.length >= previous.text.length) finalText else previous.text,
                     interim = false,
@@ -425,7 +431,7 @@ private fun ConversationProjection.finalizeAssistant(
             }
             finalText.isNotBlank() && previous?.let { it.role == "assistant" && it.text == finalText } != true ->
                 appendCurrentTurnMessage(
-                    messages = messages,
+                    messages = reconciledMessages,
                     message = ConversationMessage(
                         role = "assistant",
                         text = finalText,
@@ -433,7 +439,7 @@ private fun ConversationProjection.finalizeAssistant(
                         assistantContentKind = assistantContentKind,
                     ),
                 )
-            else -> messages
+            else -> reconciledMessages
         }
     }
     return copy(
@@ -465,23 +471,45 @@ private fun latestMidTurnCorrectionIndex(
     } ?: -1
 }
 
-private fun redirectedAssistantSuffix(
+private data class RedirectedAssistantContent(
+    val messages: List<ConversationMessage>,
+    val remainingContent: String,
+)
+
+private fun reconcileRedirectedAssistantContent(
     suppliedContent: String,
     messages: List<ConversationMessage>,
     correctionIndex: Int,
-): String {
-    if (suppliedContent.isBlank() || correctionIndex < 0) return suppliedContent
+    assistantContentKind: AssistantContentKind,
+): RedirectedAssistantContent {
+    if (suppliedContent.isBlank() || correctionIndex < 0) {
+        return RedirectedAssistantContent(messages, suppliedContent)
+    }
     val turnStart = messages.subList(0, correctionIndex).indexOfLast { message ->
         message.role == "user" && message.userPlacement == UserMessagePlacement.Prompt
     }
-    val sealedPrefix = messages.subList(turnStart + 1, correctionIndex)
-        .filter { it.role == "assistant" }
-        .joinToString(separator = "", transform = ConversationMessage::text)
-    return if (sealedPrefix.isNotBlank() && suppliedContent.startsWith(sealedPrefix)) {
-        suppliedContent.removePrefix(sealedPrefix).trimStart()
-    } else {
-        suppliedContent
+    val assistantIndices = (turnStart + 1 until correctionIndex)
+        .filter { messages[it].role == "assistant" }
+    val sealedPrefix = assistantIndices.joinToString(separator = "") { messages[it].text }
+    if (sealedPrefix.isBlank() || !suppliedContent.startsWith(sealedPrefix)) {
+        return RedirectedAssistantContent(messages, suppliedContent)
     }
+
+    val reconciledMessages = messages.toMutableList().also { next ->
+        assistantIndices.forEach { index ->
+            val message = next[index]
+            if (
+                message.interim &&
+                message.assistantContentKind == AssistantContentKind.Unclassified
+            ) {
+                next[index] = message.copy(assistantContentKind = assistantContentKind)
+            }
+        }
+    }
+    return RedirectedAssistantContent(
+        messages = reconciledMessages,
+        remainingContent = suppliedContent.removePrefix(sealedPrefix).trimStart(),
+    )
 }
 
 private fun finalizeAssistantBeforeNextTurn(

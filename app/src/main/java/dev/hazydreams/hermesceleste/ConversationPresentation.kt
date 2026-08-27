@@ -22,16 +22,16 @@ internal fun presentConversationMessages(
 
     return buildList {
         messages.forEachIndexed { index, message ->
-            val presented = if (
+            if (
                 message.role == "assistant" &&
                 message.assistantContentKind == AssistantContentKind.Commentary &&
                 message.text.isNotBlank()
             ) {
-                message.asCommentarySteps(index)
+                appendPresentedMessage(message.asCommentarySteps(index))
+                message.asStatusOnlyMessage()?.let(::appendPresentedMessage)
             } else {
-                message
+                appendPresentedMessage(message)
             }
-            appendPresentedMessage(presented)
         }
     }
 }
@@ -49,6 +49,17 @@ private fun ConversationMessage.asCommentarySteps(index: Int): ConversationMessa
                 detail = text,
             ),
         ),
+    )
+}
+
+private fun ConversationMessage.asStatusOnlyMessage(): ConversationMessage? {
+    val failure = errorMessage ?: return null
+    return ConversationMessage(
+        role = "assistant",
+        text = "",
+        id = id,
+        assistantContentKind = AssistantContentKind.Unclassified,
+        errorMessage = failure,
     )
 }
 

@@ -66,6 +66,7 @@ class ConversationPresentationTest {
                 role = "assistant",
                 text = "Everything checks out.",
                 id = "answer-1",
+                assistantContentKind = AssistantContentKind.Response,
             ),
             ConversationMessage(role = "changes", text = "", id = "changes-1"),
         )
@@ -93,12 +94,42 @@ class ConversationPresentationTest {
     }
 
     @Test
+    fun thinkingPresentationKeepsACommentaryFailureVisible() {
+        val messages = listOf(
+            ConversationMessage(role = "user", text = "Check it", id = "user-1"),
+            ConversationMessage(
+                role = "assistant",
+                text = "I was checking the implementation.",
+                id = "commentary-1",
+                interim = true,
+                assistantContentKind = AssistantContentKind.Commentary,
+                errorMessage = "The provider connection closed.",
+            ),
+        )
+
+        val presented = CelesteUiState(
+            messages = messages,
+            commentaryPresentation = CommentaryPresentation.Thinking,
+        ).presentedMessages
+
+        assertEquals(listOf("user", "steps", "assistant"), presented.map { it.role })
+        assertEquals(
+            "I was checking the implementation.",
+            presented[1].steps.single().detail,
+        )
+        assertEquals("", presented[2].text)
+        assertEquals("The provider connection closed.", presented[2].errorMessage)
+    }
+
+    @Test
     fun thinkingPresentationLeavesUnclassifiedInterimAssistantTextVisible() {
         val interimResponse = ConversationMessage(
             role = "assistant",
             text = "A response still being streamed",
             interim = true,
         )
+
+        assertEquals(AssistantContentKind.Unclassified, interimResponse.assistantContentKind)
 
         assertEquals(
             listOf(interimResponse),

@@ -3,6 +3,7 @@ package dev.hazydreams.hermesceleste.network
 import dev.hazydreams.hermesceleste.ConversationAttachment
 
 enum class AssistantContentKind {
+    Unclassified,
     Response,
     Commentary,
 }
@@ -36,7 +37,7 @@ data class ConversationMessage(
     val id: String? = null,
     val pending: Boolean = false,
     val interim: Boolean = false,
-    val assistantContentKind: AssistantContentKind = AssistantContentKind.Response,
+    val assistantContentKind: AssistantContentKind = AssistantContentKind.Unclassified,
     val errorMessage: String? = null,
     val userPlacement: UserMessagePlacement = UserMessagePlacement.Prompt,
     val steps: List<ConversationStep> = emptyList(),
