@@ -55,8 +55,8 @@ android {
 }
 
 dependencies {
-    val composeBom = platform("androidx.compose:compose-bom:2026.08.00")
-    val okhttpBom = platform("com.squareup.okhttp3:okhttp-bom:5.5.0")
+    val composeBom = platform("androidx.compose:compose-bom:2026.09.00")
+    val okhttpBom = platform("com.squareup.okhttp3:okhttp-bom:5.5.1")
 
     implementation(composeBom)
     androidTestImplementation(composeBom)
@@ -72,12 +72,12 @@ dependencies {
     implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.11.0")
     implementation("androidx.lifecycle:lifecycle-viewmodel-ktx:2.11.0")
     implementation("com.squareup.okhttp3:okhttp")
-    implementation("io.coil-kt.coil3:coil-compose:3.6.0")
-    implementation("io.coil-kt.coil3:coil-svg:3.6.0")
-    implementation("com.mikepenz:multiplatform-markdown-renderer-m3:0.45.0")
-    implementation("org.jetbrains:markdown:0.7.9")
+    implementation("io.coil-kt.coil3:coil-compose:3.6.3")
+    implementation("io.coil-kt.coil3:coil-svg:3.6.3")
+    implementation("com.mikepenz:multiplatform-markdown-renderer-m3:0.46.0")
+    implementation("org.jetbrains:markdown:0.7.18")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.11.0")
-    implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.11.0")
+    implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.12.0")
 
     debugImplementation("androidx.compose.ui:ui-tooling")
     testImplementation("junit:junit:4.13.2")
